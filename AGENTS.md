@@ -70,6 +70,6 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 
 ## Git
 
-- Ветки: `feat/…`, `fix/…`, `chore/…`, ключ задачи Jira в имени, если есть: `feat/ORBIT-5-voice-token`.
+- Задачи — в Jira, проект SCRUM (эпик SCRUM-5). Ветки: `feat/…`, `fix/…`, `chore/…`, ключ задачи Jira в имени: `feat/SCRUM-7-voice-token`.
 - Сообщения коммитов — на английском, в повелительном наклонении: `Add LiveKit token endpoint`.
 - Не коммить `.env` и секреты. Не делай push и не создавай PR без просьбы.
