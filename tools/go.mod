@@ -1,4 +1,4 @@
-module github.com/orbit/orbit-server/tools
+module github.com/ruslancode23/orbit-server/tools
 
 go 1.26.3
 

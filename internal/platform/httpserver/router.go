@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
-	"github.com/orbit/orbit-server/internal/health"
+	"github.com/ruslancode23/orbit-server/internal/health"
 )
 
 type Deps struct {

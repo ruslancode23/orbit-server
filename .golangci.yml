@@ -22,7 +22,7 @@ linters:
   settings:
     wrapcheck:
       ignore-package-globs:
-        - github.com/orbit/orbit-server/*
+        - github.com/ruslancode23/orbit-server/*
     revive:
       rules:
         - name: exported
@@ -41,4 +41,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/orbit/orbit-server
+        - github.com/ruslancode23/orbit-server

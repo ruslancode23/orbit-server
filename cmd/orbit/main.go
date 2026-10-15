@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/orbit/orbit-server/internal/config"
-	"github.com/orbit/orbit-server/internal/health"
-	"github.com/orbit/orbit-server/internal/platform/httpserver"
-	"github.com/orbit/orbit-server/internal/platform/logger"
-	"github.com/orbit/orbit-server/internal/platform/postgres"
+	"github.com/ruslancode23/orbit-server/internal/config"
+	"github.com/ruslancode23/orbit-server/internal/health"
+	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
+	"github.com/ruslancode23/orbit-server/internal/platform/logger"
+	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 )
 
 func main() {
