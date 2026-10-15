@@ -15,6 +15,18 @@ make run       # API на http://localhost:8080
 
 Проверка: `curl localhost:8080/readyz` → `{"database":"up","status":"ok"}`.
 
+## API для разработки
+
+В `ORBIT_ENV=development` включён `POST /api/v1/voice/token` — токен LiveKit без авторизации, для spike:
+
+```bash
+curl -X POST localhost:8080/api/v1/voice/token -d '{"room":"dev-room","displayName":"Anna"}'
+# {"token":"eyJ…","url":"ws://localhost:7880","identity":"guest-…","expiresAt":"…"}
+```
+
+Токен даёт вход в одну комнату на 10 минут. В production маршрута нет (404). Ошибки API — в едином
+формате `{"error":{"code":"invalid_request","message":"…"}}`.
+
 ## Команды
 
 `make help` выводит все цели. Основные: `make test`, `make lint`, `make fmt`, `make sqlc`,

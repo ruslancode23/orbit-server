@@ -10,7 +10,7 @@ import (
 // so tests do not depend on the developer's environment or .env.
 func setRequired(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS"} {
+	for _, name := range []string{"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "LIVEKIT_PUBLIC_URL"} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("ORBIT_DATABASE_URL", "postgres://orbit:orbit@localhost:5432/orbit")
@@ -34,6 +34,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.IsDevelopment() {
 		t.Error("default env must be production")
+	}
+	if cfg.LiveKit.PublicURL != cfg.LiveKit.URL {
+		t.Errorf("PublicURL = %q, want it to default to URL %q", cfg.LiveKit.PublicURL, cfg.LiveKit.URL)
 	}
 }
 

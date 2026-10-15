@@ -19,7 +19,8 @@ type Config struct {
 }
 
 type LiveKit struct {
-	URL       string
+	URL       string // used by the server to reach LiveKit
+	PublicURL string // returned to clients; differs from URL behind Docker or a proxy
 	APIKey    string
 	APISecret string
 }
@@ -55,6 +56,8 @@ func Load() (Config, error) {
 			APISecret: required("LIVEKIT_API_SECRET"),
 		},
 	}
+
+	cfg.LiveKit.PublicURL = getenv("LIVEKIT_PUBLIC_URL", cfg.LiveKit.URL)
 
 	if cfg.Env != "development" && cfg.Env != "production" {
 		errs = append(errs, fmt.Errorf("ORBIT_ENV must be development or production, got %q", cfg.Env))

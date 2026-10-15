@@ -17,6 +17,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
+	"github.com/ruslancode23/orbit-server/internal/voice"
 )
 
 func main() {
@@ -42,13 +43,20 @@ func run() error {
 	}
 	defer db.Close()
 
+	deps := httpserver.Deps{
+		Logger:      log,
+		CORSOrigins: cfg.CORSOrigins,
+		Health:      health.NewHandler(db),
+	}
+	if cfg.IsDevelopment() {
+		issuer := voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL)
+		deps.Voice = voice.NewHandler(issuer, log)
+		log.Warn("dev voice token endpoint enabled: POST /api/v1/voice/token has no authorization")
+	}
+
 	srv := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: httpserver.NewRouter(httpserver.Deps{
-			Logger:      log,
-			CORSOrigins: cfg.CORSOrigins,
-			Health:      health.NewHandler(db),
-		}),
+		Addr:              cfg.HTTPAddr,
+		Handler:           httpserver.NewRouter(deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
