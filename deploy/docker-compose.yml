@@ -68,6 +68,7 @@ services:
     environment:
       ORBIT_DATABASE_URL: postgres://orbit:orbit@postgres:5432/orbit?sslmode=disable
       LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_PUBLIC_URL: ws://localhost:7880
     ports:
       - "8080:8080"
     depends_on:
