@@ -1,6 +1,6 @@
 # orbit-server
 
-API-сервер Orbit: модульный монолит на Go. Данные — PostgreSQL, файлы — S3 (MinIO), голос и экран — LiveKit.
+API-сервер Orbit: модульный монолит на Go. Данные — PostgreSQL, файлы — S3 (SeaweedFS), голос и экран — LiveKit.
 
 ## Запуск
 
@@ -8,7 +8,7 @@ API-сервер Orbit: модульный монолит на Go. Данные 
 
 ```bash
 cp .env.example .env
-make up        # PostgreSQL, MinIO, LiveKit
+make up        # PostgreSQL, SeaweedFS (S3), LiveKit
 make migrate
 make run       # API на http://localhost:8080
 ```
@@ -45,7 +45,7 @@ docs/adr/               архитектурные решения
 | Сервис | Адрес | Доступ |
 | --- | --- | --- |
 | PostgreSQL | localhost:5433 (`ORBIT_POSTGRES_PORT`) | orbit / orbit |
-| MinIO API / консоль | localhost:9000 / localhost:9001 | orbit / orbit-dev-secret |
+| SeaweedFS S3 / master UI | localhost:8333 / localhost:9333 | orbit / orbit-dev-secret ([ADR-0003](docs/adr/0003-seaweedfs-instead-of-minio.md)) |
 | LiveKit | ws://localhost:7880 | devkey / secret (dev mode) |
 
 Все значения — только для локальной разработки.

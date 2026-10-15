@@ -19,31 +19,35 @@ services:
       timeout: 3s
       retries: 10
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: orbit
-      MINIO_ROOT_PASSWORD: orbit-dev-secret
+  # S3-compatible file storage. MinIO no longer publishes community images (ADR-0003).
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "8333:8333" # S3 API
+      - "9333:9333" # master UI
     volumes:
-      - minio-data:/data
+      - seaweedfs-data:/data
+      - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9333/cluster/status"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
 
-  minio-init:
-    image: minio/mc:latest
+  # One-shot bucket creation, run by `make up` after the services are healthy.
+  seaweedfs-init:
+    profiles: [init]
+    image: chrislusf/seaweedfs:latest
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
-    entrypoint: >
-      sh -c "mc alias set local http://minio:9000 orbit orbit-dev-secret &&
-             mc mb --ignore-existing local/orbit"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo 's3.bucket.list' | weed shell -master=seaweedfs:9333 | grep -qw orbit ||
+          echo 's3.bucket.create -name orbit' | weed shell -master=seaweedfs:9333
     restart: "no"
 
   livekit:
@@ -72,4 +76,4 @@ services:
 
 volumes:
   postgres-data:
-  minio-data:
+  seaweedfs-data:
