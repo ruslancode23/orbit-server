@@ -11,8 +11,9 @@ export
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
-up: ## Start PostgreSQL, MinIO and LiveKit
+up: ## Start PostgreSQL, SeaweedFS (S3) and LiveKit
 	$(COMPOSE) up -d --wait
+	$(COMPOSE) run --rm seaweedfs-init
 
 down: ## Stop local infrastructure
 	$(COMPOSE) down

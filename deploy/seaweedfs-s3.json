@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "orbit",
+      "credentials": [{ "accessKey": "orbit", "secretKey": "orbit-dev-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

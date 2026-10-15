@@ -10,7 +10,7 @@ Orbit — открытое приложение с постоянными гол
 
 ```bash
 cp .env.example .env
-make up           # PostgreSQL (localhost:5433), MinIO, LiveKit в Docker
+make up           # PostgreSQL (localhost:5433), SeaweedFS (S3), LiveKit в Docker
 make migrate
 make run          # API на :8080
 make check        # golangci-lint + go test -race — запускай перед тем, как считать задачу готовой
@@ -26,7 +26,7 @@ make help         # все цели
 ## Стек (PRD 11.2)
 
 Go 1.26, `net/http` + chi, `coder/websocket`, PostgreSQL через pgx + sqlc, миграции goose, slog,
-LiveKit (SFU) для голоса и экрана, S3 (MinIO). Позже: oapi-codegen, river для фоновых задач.
+LiveKit (SFU) для голоса и экрана, S3 (SeaweedFS локально, ADR-0003). Позже: oapi-codegen, river для фоновых задач.
 
 Не добавляй: ORM (gorm, ent), Redis, брокеры сообщений, микросервисы, logrus/zap, testify/mock-фреймворки
 без необходимости. Решение уровня стека фиксируй в `docs/adr/`.
