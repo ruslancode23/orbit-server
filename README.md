@@ -67,6 +67,6 @@ docs/adr/               архитектурные решения
 | --- | --- | --- |
 | PostgreSQL | localhost:5433 (`ORBIT_POSTGRES_PORT`) | orbit / orbit |
 | SeaweedFS S3 / master UI | localhost:8333 / localhost:9333 | orbit / orbit-dev-secret ([ADR-0003](docs/adr/0003-seaweedfs-instead-of-minio.md)) |
-| LiveKit | ws://localhost:7880 | devkey / secret (dev mode) |
+| LiveKit | ws://localhost:7880 | devkey / secret (dev mode), настройки поверх — `deploy/livekit.yaml` |
 
 Все значения — только для локальной разработки.

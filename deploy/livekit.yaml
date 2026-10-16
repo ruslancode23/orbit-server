@@ -1,0 +1,6 @@
+# Merged on top of --dev (keys devkey/secret, single UDP port).
+audio:
+  # Speaker updates every 100 ms without smoothing (defaults give ~250–450 ms): the speaking
+  # indicator must light up < 300 ms after speech starts (SCRUM-16). Use the same on the VPS stand.
+  update_interval: 100
+  smooth_intervals: 1
