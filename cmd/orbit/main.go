@@ -12,11 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/config"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
+	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
 
@@ -37,16 +39,22 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := postgres.Connect(ctx, cfg.DatabaseURL)
+	pool, err := postgres.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
-	defer db.Close()
+	defer pool.Close()
+
+	queries := db.New(pool)
+	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
 	deps := httpserver.Deps{
 		Logger:      log,
 		CORSOrigins: cfg.CORSOrigins,
-		Health:      health.NewHandler(db),
+		Health:      health.NewHandler(pool),
+		// Cookies go over TLS everywhere but local development.
+		Auth:     auth.NewHandler(sessions, !cfg.IsDevelopment(), log),
+		Sessions: sessions,
 	}
 	if cfg.IsDevelopment() {
 		issuer := voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL)

@@ -9,6 +9,12 @@ info:
 tags:
   - name: system
     description: Probes for orchestrators and load balancers.
+  - name: auth
+    description: |
+      Accounts and sessions. A session lives in the `orbit_session` cookie: it is set on
+      register and login and cleared on logout. The cookie is HttpOnly, so a script cannot
+      read it, and the browser sends it on a WebSocket upgrade as well, which a header
+      cannot do. Endpoints marked below as needing a session answer 401 without a live one.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -39,6 +45,114 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Readiness" }
+  /api/v1/auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Create an account and start a session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Account created; the session cookie is set.
+          headers:
+            Set-Cookie:
+              description: The session cookie, HttpOnly.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409":
+          description: The nickname or email is taken.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Start a session for an existing account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Session started; the cookie is set.
+          headers:
+            Set-Cookie:
+              description: The session cookie, HttpOnly.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401":
+          description: Wrong login or password. The response does not say which.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End this session. Needs a session.
+      description: Revokes only the session that made the request; other devices stay signed in.
+      responses:
+        "204":
+          description: Session ended; the cookie is cleared.
+          headers:
+            Set-Cookie:
+              description: The cleared session cookie.
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: The account of this session. Needs a session.
+      responses:
+        "200":
+          description: The current account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/password:
+    post:
+      operationId: changePassword
+      tags: [auth]
+      summary: Change the password. Needs a session.
+      description: |
+        Every session of the account is revoked, this one included: a stolen session
+        dies with the password change, and the client signs in again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordChangeRequest" }
+      responses:
+        "204":
+          description: Password changed; every session is revoked and the cookie is cleared.
+          headers:
+            Set-Cookie:
+              description: The cleared session cookie.
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -64,6 +178,12 @@ paths:
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
 components:
+  securitySchemes:
+    # Documented here; enforced by the server's own middleware, not by schema validation.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: orbit_session
   responses:
     Error:
       description: Error in the common API format.
@@ -106,6 +226,76 @@ components:
         database:
           type: string
           enum: [up, down]
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, nickname, isGuest, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 32
+          example: Anna
+        email:
+          type: string
+          format: email
+          description: Absent for an account registered by nickname alone, and for a guest.
+        isGuest:
+          type: boolean
+          description: A guest has no password and keeps its id when it signs up.
+        createdAt:
+          type: string
+          format: date-time
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [nickname, password]
+      properties:
+        nickname:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$"
+          description: Shown to other people. Compared without case, so "Anna" and "anna" collide.
+          example: Anna
+        email:
+          type: string
+          format: email
+          description: Optional; lets the account sign in by email as well.
+        password:
+          type: string
+          minLength: 10
+          maxLength: 256
+          description: Stored only as an argon2id hash.
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [login, password]
+      properties:
+        login:
+          type: string
+          minLength: 1
+          maxLength: 254
+          description: Nickname or email, either case.
+          example: Anna
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 256
+        newPassword:
+          type: string
+          minLength: 10
+          maxLength: 256
     VoiceTokenRequest:
       type: object
       additionalProperties: false

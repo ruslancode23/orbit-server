@@ -15,6 +15,7 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	DatabaseURL     string
 	CORSOrigins     []string
+	SessionTTL      time.Duration
 	LiveKit         LiveKit
 }
 
@@ -44,12 +45,18 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_SHUTDOWN_TIMEOUT: %w", err))
 	}
 
+	sessionTTL, err := time.ParseDuration(getenv("ORBIT_SESSION_TTL", "720h"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_SESSION_TTL: %w", err))
+	}
+
 	cfg := Config{
 		Env:             getenv("ORBIT_ENV", "production"),
 		HTTPAddr:        getenv("ORBIT_HTTP_ADDR", ":8080"),
 		ShutdownTimeout: shutdownTimeout,
 		DatabaseURL:     required("ORBIT_DATABASE_URL"),
 		CORSOrigins:     splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
+		SessionTTL:      sessionTTL,
 		LiveKit: LiveKit{
 			URL:       required("LIVEKIT_URL"),
 			APIKey:    required("LIVEKIT_API_KEY"),

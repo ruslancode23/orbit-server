@@ -21,3 +21,8 @@ UPDATE users
 SET nickname = $2, email = $3, password_hash = $4, is_guest = false, updated_at = now()
 WHERE id = $1 AND is_guest
 RETURNING *;
+
+-- Sign-in accepts either a nickname or an email, in any case.
+-- name: GetUserByLogin :one
+SELECT * FROM users
+WHERE lower(nickname) = lower($1) OR lower(email) = lower($1);

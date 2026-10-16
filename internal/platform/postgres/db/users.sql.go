@@ -82,6 +82,27 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 	return i, err
 }
 
+const getUserByLogin = `-- name: GetUserByLogin :one
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at FROM users
+WHERE lower(nickname) = lower($1) OR lower(email) = lower($1)
+`
+
+// Sign-in accepts either a nickname or an email, in any case.
+func (q *Queries) GetUserByLogin(ctx context.Context, lower string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByLogin, lower)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Nickname,
+		&i.Email,
+		&i.PasswordHash,
+		&i.IsGuest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getUserByNickname = `-- name: GetUserByNickname :one
 SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at FROM users WHERE lower(nickname) = lower($1)
 `

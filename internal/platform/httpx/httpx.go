@@ -21,6 +21,8 @@ type ErrorDetail struct {
 // Error codes returned in ErrorDetail.Code.
 const (
 	CodeInvalidRequest   = "invalid_request"
+	CodeUnauthorized     = "unauthorized"
+	CodeConflict         = "conflict"
 	CodeNotFound         = "not_found"
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeBodyTooLarge     = "body_too_large"

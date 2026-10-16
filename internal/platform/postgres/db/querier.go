@@ -44,6 +44,8 @@ type Querier interface {
 	GetMessage(ctx context.Context, id pgtype.UUID) (Message, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
+	// Sign-in accepts either a nickname or an email, in any case.
+	GetUserByLogin(ctx context.Context, lower string) (User, error)
 	GetUserByNickname(ctx context.Context, lower string) (User, error)
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error)
 	// Every handler asks this before it acts: no row means no access at all.

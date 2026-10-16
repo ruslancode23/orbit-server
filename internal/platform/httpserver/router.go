@@ -17,6 +17,7 @@ import (
 	nethttpmiddleware "github.com/oapi-codegen/nethttp-middleware"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/voice"
@@ -31,6 +32,9 @@ type Deps struct {
 	Logger      *slog.Logger
 	CORSOrigins []string
 	Health      *health.Handler
+	// Auth serves accounts and sessions; its middleware resolves the session cookie.
+	Auth     *auth.Handler
+	Sessions auth.Resolver
 	// Voice is nil outside development: the token endpoint has no real authorization yet.
 	Voice *voice.Handler
 }
@@ -38,6 +42,12 @@ type Deps struct {
 // NewRouter serves the API described by api/openapi.yaml. Every request is
 // validated against the spec before it reaches a handler.
 func NewRouter(d Deps) (http.Handler, error) {
+	// A nil auth dependency would silently turn every session check into a panic
+	// (or worse, into open access): refuse to build such a router.
+	if d.Auth == nil || d.Sessions == nil {
+		return nil, errors.New("httpserver: Deps.Auth and Deps.Sessions are required")
+	}
+
 	spec, err := api.GetSpec()
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAPI spec: %w", err)
@@ -55,6 +65,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	// Before validation: a handler reads the session from the context, and the
+	// WebSocket upgrade will need it too.
+	r.Use(auth.Middleware(d.Sessions, d.Logger))
 	if d.Voice == nil {
 		// Hide the dev endpoint before validation, so a production instance
 		// does not reveal it through 400 responses.
@@ -70,7 +83,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		},
 	}))
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -90,6 +103,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 // server assembles the module handlers into the generated interface.
 type server struct {
 	health *health.Handler
+	auth   *auth.Handler
 	voice  *voice.Handler
 }
 
@@ -108,6 +122,26 @@ func (s *server) CreateVoiceToken(ctx context.Context, req api.CreateVoiceTokenR
 		return api.CreateVoiceToken404JSONResponse{Error: api.ErrorDetail{Code: httpx.CodeNotFound, Message: "not found"}}, nil
 	}
 	return s.voice.CreateVoiceToken(ctx, req)
+}
+
+func (s *server) Register(ctx context.Context, req api.RegisterRequestObject) (api.RegisterResponseObject, error) {
+	return s.auth.Register(ctx, req)
+}
+
+func (s *server) Login(ctx context.Context, req api.LoginRequestObject) (api.LoginResponseObject, error) {
+	return s.auth.Login(ctx, req)
+}
+
+func (s *server) Logout(ctx context.Context, req api.LogoutRequestObject) (api.LogoutResponseObject, error) {
+	return s.auth.Logout(ctx, req)
+}
+
+func (s *server) GetCurrentUser(ctx context.Context, req api.GetCurrentUserRequestObject) (api.GetCurrentUserResponseObject, error) {
+	return s.auth.GetCurrentUser(ctx, req)
+}
+
+func (s *server) ChangePassword(ctx context.Context, req api.ChangePasswordRequestObject) (api.ChangePasswordResponseObject, error) {
+	return s.auth.ChangePassword(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

@@ -10,7 +10,7 @@ import (
 // so tests do not depend on the developer's environment or .env.
 func setRequired(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "LIVEKIT_PUBLIC_URL"} {
+	for _, name := range []string{"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "ORBIT_SESSION_TTL", "LIVEKIT_PUBLIC_URL"} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("ORBIT_DATABASE_URL", "postgres://orbit:orbit@localhost:5432/orbit")
@@ -68,4 +68,40 @@ func TestLoadParsesCORSOrigins(t *testing.T) {
 	if strings.Join(cfg.CORSOrigins, "|") != strings.Join(want, "|") {
 		t.Errorf("CORSOrigins = %v, want %v", cfg.CORSOrigins, want)
 	}
+}
+
+func TestLoadSessionTTL(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		setRequired(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.SessionTTL != 720*time.Hour {
+			t.Errorf("SessionTTL = %v, want 720h", cfg.SessionTTL)
+		}
+	})
+
+	t.Run("from the environment", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_SESSION_TTL", "48h")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.SessionTTL != 48*time.Hour {
+			t.Errorf("SessionTTL = %v, want 48h", cfg.SessionTTL)
+		}
+	})
+
+	t.Run("unparsable", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_SESSION_TTL", "a month")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_SESSION_TTL")
+		}
+	})
 }

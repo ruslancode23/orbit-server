@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/voice"
@@ -23,7 +25,14 @@ func (p pinger) Ping(context.Context) error { return p.err }
 func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	d := Deps{Logger: log, Health: health.NewHandler(pinger{dbErr})}
+	// The auth store is never reached here: these tests send no session cookie.
+	sessions := auth.NewService(nil, time.Hour)
+	d := Deps{
+		Logger:   log,
+		Health:   health.NewHandler(pinger{dbErr}),
+		Auth:     auth.NewHandler(sessions, false, log),
+		Sessions: sessions,
+	}
 	if voiceEnabled {
 		d.Voice = voice.NewHandler(voice.NewTokenIssuer("devkey", "a-secret-that-is-long-enough-for-hs256", "ws://lk"), log)
 	}
