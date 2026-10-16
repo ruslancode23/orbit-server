@@ -19,6 +19,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
 
@@ -53,8 +54,9 @@ func run() error {
 		CORSOrigins: cfg.CORSOrigins,
 		Health:      health.NewHandler(pool),
 		// Cookies go over TLS everywhere but local development.
-		Auth:     auth.NewHandler(sessions, !cfg.IsDevelopment(), log),
-		Sessions: sessions,
+		Auth:       auth.NewHandler(sessions, !cfg.IsDevelopment(), log),
+		Sessions:   sessions,
+		Workspaces: servers.NewHandler(servers.NewService(servers.NewPostgresStore(pool)), log),
 	}
 	if cfg.IsDevelopment() {
 		issuer := voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL)

@@ -15,6 +15,11 @@ tags:
       register and login and cleared on logout. The cookie is HttpOnly, so a script cannot
       read it, and the browser sends it on a WebSocket upgrade as well, which a header
       cannot do. Endpoints marked below as needing a session answer 401 without a live one.
+  - name: workspaces
+    description: |
+      Servers (a workspace) and their members. Every operation checks the caller's role
+      on the server itself: a hidden button is not protection. A caller who is not a member
+      gets 404, not 403, so the API does not reveal which servers exist.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -153,6 +158,208 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces:
+    get:
+      operationId: listWorkspaces
+      tags: [workspaces]
+      summary: The servers this account belongs to, with its role in each. Needs a session.
+      responses:
+        "200":
+          description: The servers of this account.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createWorkspace
+      tags: [workspaces]
+      summary: Create a server. Needs a session.
+      description: The caller becomes its owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceCreateRequest" }
+      responses:
+        "201":
+          description: Server created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: getWorkspace
+      tags: [workspaces]
+      summary: One server and the caller's role in it. Needs membership.
+      responses:
+        "200":
+          description: The server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateWorkspace
+      tags: [workspaces]
+      summary: Rename a server. Admin or owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceUpdateRequest" }
+      responses:
+        "200":
+          description: The renamed server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteWorkspace
+      tags: [workspaces]
+      summary: Delete a server with everything in it. Owner only.
+      responses:
+        "204":
+          description: Server deleted.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/members:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listWorkspaceMembers
+      tags: [workspaces]
+      summary: Members of a server and their roles. Needs membership.
+      responses:
+        "200":
+          description: The members.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkspaceMember" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/UserId"
+    patch:
+      operationId: setWorkspaceMemberRole
+      tags: [workspaces]
+      summary: Change a member's role. Owner only.
+      description: |
+        Only the owner moves people between roles, and a server always keeps an owner:
+        the owner can hand the role over, which makes them an admin, but cannot leave the
+        server without one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceMemberRoleRequest" }
+      responses:
+        "200":
+          description: The member with their new role.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMember" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: removeWorkspaceMember
+      tags: [workspaces]
+      summary: Remove a member. Admin or owner; anyone may remove themselves.
+      description: |
+        An admin cannot remove another admin or the owner. Removal takes effect at once:
+        the next request or event subscription of that member is refused.
+      responses:
+        "204":
+          description: Member removed.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/bans:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listWorkspaceBans
+      tags: [workspaces]
+      summary: Who is banned from this server. Admin or owner.
+      responses:
+        "200":
+          description: The bans.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkspaceBan" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/bans/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/UserId"
+    put:
+      operationId: banWorkspaceMember
+      tags: [workspaces]
+      summary: Ban someone from a server. Admin or owner.
+      description: |
+        Removes the member and keeps them out: an invite link does not let them back.
+        An admin cannot ban another admin or the owner.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceBanRequest" }
+      responses:
+        "200":
+          description: The ban.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceBan" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: unbanWorkspaceMember
+      tags: [workspaces]
+      summary: Lift a ban. Admin or owner.
+      responses:
+        "204":
+          description: Ban lifted.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -178,6 +385,19 @@ paths:
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
 components:
+  parameters:
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      description: Server identifier.
+      schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: Account identifier.
+      schema: { type: string, format: uuid }
   securitySchemes:
     # Documented here; enforced by the server's own middleware, not by schema validation.
     sessionCookie:
@@ -204,7 +424,9 @@ components:
       properties:
         code:
           type: string
-          description: Machine-readable code, e.g. invalid_request, not_found, body_too_large, internal.
+          description: |
+            Machine-readable code: invalid_request, unauthorized, forbidden, not_found,
+            conflict, method_not_allowed, body_too_large, internal.
           example: invalid_request
         message:
           type: string
@@ -296,6 +518,89 @@ components:
           type: string
           minLength: 10
           maxLength: 256
+    WorkspaceRole:
+      type: string
+      enum: [owner, admin, member]
+      description: |
+        owner — one per server: everything, including deleting it and handing the role over.
+        admin — renames the server, manages channels, removes and bans members.
+        member — reads and writes where the channel allows it.
+    Workspace:
+      type: object
+      additionalProperties: false
+      required: [id, name, ownerId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: Команда Orbit
+        ownerId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    WorkspaceMembership:
+      type: object
+      additionalProperties: false
+      required: [workspace, role]
+      description: A server together with the caller's role in it.
+      properties:
+        workspace: { $ref: "#/components/schemas/Workspace" }
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+    WorkspaceMember:
+      type: object
+      additionalProperties: false
+      required: [user, role, joinedAt]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+        joinedAt: { type: string, format: date-time }
+    WorkspaceBan:
+      type: object
+      additionalProperties: false
+      required: [user, createdAt]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        reason:
+          type: string
+          maxLength: 500
+        bannedBy:
+          type: string
+          format: uuid
+          description: Absent when the account that banned has been deleted.
+        createdAt: { type: string, format: date-time }
+    WorkspaceCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: Команда Orbit
+    WorkspaceUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+    WorkspaceMemberRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+    WorkspaceBanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          description: Shown to admins in the ban list, not to the banned person.
     VoiceTokenRequest:
       type: object
       additionalProperties: false

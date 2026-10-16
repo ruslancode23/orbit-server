@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -72,6 +75,27 @@ func (e ReadinessStatus) Valid() bool {
 	}
 }
 
+// Defines values for WorkspaceRole.
+const (
+	Admin  WorkspaceRole = "admin"
+	Member WorkspaceRole = "member"
+	Owner  WorkspaceRole = "owner"
+)
+
+// Valid indicates whether the value is a known member of the WorkspaceRole enum.
+func (e WorkspaceRole) Valid() bool {
+	switch e {
+	case Admin:
+		return true
+	case Member:
+		return true
+	case Owner:
+		return true
+	default:
+		return false
+	}
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error ErrorDetail `json:"error"`
@@ -79,7 +103,9 @@ type Error struct {
 
 // ErrorDetail defines model for ErrorDetail.
 type ErrorDetail struct {
-	// Code Machine-readable code, e.g. invalid_request, not_found, body_too_large, internal.
+	// Code Machine-readable code: invalid_request, unauthorized, forbidden, not_found,
+	// conflict, method_not_allowed, body_too_large, internal.
+	//
 	//
 	// Example: invalid_request
 	Code string `json:"code"`
@@ -184,6 +210,81 @@ type VoiceTokenRequest struct {
 	Room string `json:"room"`
 }
 
+// Workspace defines model for Workspace.
+type Workspace struct {
+	CreatedAt time.Time          `json:"createdAt"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Name Example: Команда Orbit
+	Name    string             `json:"name"`
+	OwnerId openapi_types.UUID `json:"ownerId"`
+}
+
+// WorkspaceBan defines model for WorkspaceBan.
+type WorkspaceBan struct {
+	// BannedBy Absent when the account that banned has been deleted.
+	BannedBy  *openapi_types.UUID `json:"bannedBy,omitempty"`
+	CreatedAt time.Time           `json:"createdAt"`
+	Reason    *string             `json:"reason,omitempty"`
+	User      User                `json:"user"`
+}
+
+// WorkspaceBanRequest defines model for WorkspaceBanRequest.
+type WorkspaceBanRequest struct {
+	// Reason Shown to admins in the ban list, not to the banned person.
+	Reason *string `json:"reason,omitempty"`
+}
+
+// WorkspaceCreateRequest defines model for WorkspaceCreateRequest.
+type WorkspaceCreateRequest struct {
+	// Name Example: Команда Orbit
+	Name string `json:"name"`
+}
+
+// WorkspaceMember defines model for WorkspaceMember.
+type WorkspaceMember struct {
+	JoinedAt time.Time `json:"joinedAt"`
+
+	// Role owner — one per server: everything, including deleting it and handing the role over.
+	// admin — renames the server, manages channels, removes and bans members.
+	// member — reads and writes where the channel allows it.
+	Role WorkspaceRole `json:"role"`
+	User User          `json:"user"`
+}
+
+// WorkspaceMemberRoleRequest defines model for WorkspaceMemberRoleRequest.
+type WorkspaceMemberRoleRequest struct {
+	// Role owner — one per server: everything, including deleting it and handing the role over.
+	// admin — renames the server, manages channels, removes and bans members.
+	// member — reads and writes where the channel allows it.
+	Role WorkspaceRole `json:"role"`
+}
+
+// WorkspaceMembership A server together with the caller's role in it.
+type WorkspaceMembership struct {
+	// Role owner — one per server: everything, including deleting it and handing the role over.
+	// admin — renames the server, manages channels, removes and bans members.
+	// member — reads and writes where the channel allows it.
+	Role      WorkspaceRole `json:"role"`
+	Workspace Workspace     `json:"workspace"`
+}
+
+// WorkspaceRole owner — one per server: everything, including deleting it and handing the role over.
+// admin — renames the server, manages channels, removes and bans members.
+// member — reads and writes where the channel allows it.
+type WorkspaceRole string
+
+// WorkspaceUpdateRequest defines model for WorkspaceUpdateRequest.
+type WorkspaceUpdateRequest struct {
+	Name string `json:"name"`
+}
+
+// UserId defines model for UserId.
+type UserId = openapi_types.UUID
+
+// WorkspaceId defines model for WorkspaceId.
+type WorkspaceId = openapi_types.UUID
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -195,6 +296,18 @@ type RegisterJSONRequestBody = RegisterRequest
 
 // CreateVoiceTokenJSONRequestBody defines body for CreateVoiceToken for application/json ContentType.
 type CreateVoiceTokenJSONRequestBody = VoiceTokenRequest
+
+// CreateWorkspaceJSONRequestBody defines body for CreateWorkspace for application/json ContentType.
+type CreateWorkspaceJSONRequestBody = WorkspaceCreateRequest
+
+// UpdateWorkspaceJSONRequestBody defines body for UpdateWorkspace for application/json ContentType.
+type UpdateWorkspaceJSONRequestBody = WorkspaceUpdateRequest
+
+// BanWorkspaceMemberJSONRequestBody defines body for BanWorkspaceMember for application/json ContentType.
+type BanWorkspaceMemberJSONRequestBody = WorkspaceBanRequest
+
+// SetWorkspaceMemberRoleJSONRequestBody defines body for SetWorkspaceMemberRole for application/json ContentType.
+type SetWorkspaceMemberRoleJSONRequestBody = WorkspaceMemberRoleRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -216,6 +329,39 @@ type ServerInterface interface {
 	// CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 	// (POST /api/v1/voice/token)
 	CreateVoiceToken(w http.ResponseWriter, r *http.Request)
+	// ListWorkspaces The servers this account belongs to, with its role in each. Needs a session.
+	// (GET /api/v1/workspaces)
+	ListWorkspaces(w http.ResponseWriter, r *http.Request)
+	// CreateWorkspace Create a server. Needs a session.
+	// (POST /api/v1/workspaces)
+	CreateWorkspace(w http.ResponseWriter, r *http.Request)
+	// DeleteWorkspace Delete a server with everything in it. Owner only.
+	// (DELETE /api/v1/workspaces/{workspaceId})
+	DeleteWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// GetWorkspace One server and the caller's role in it. Needs membership.
+	// (GET /api/v1/workspaces/{workspaceId})
+	GetWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// UpdateWorkspace Rename a server. Admin or owner.
+	// (PATCH /api/v1/workspaces/{workspaceId})
+	UpdateWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// ListWorkspaceBans Who is banned from this server. Admin or owner.
+	// (GET /api/v1/workspaces/{workspaceId}/bans)
+	ListWorkspaceBans(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// UnbanWorkspaceMember Lift a ban. Admin or owner.
+	// (DELETE /api/v1/workspaces/{workspaceId}/bans/{userId})
+	UnbanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId)
+	// BanWorkspaceMember Ban someone from a server. Admin or owner.
+	// (PUT /api/v1/workspaces/{workspaceId}/bans/{userId})
+	BanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId)
+	// ListWorkspaceMembers Members of a server and their roles. Needs membership.
+	// (GET /api/v1/workspaces/{workspaceId}/members)
+	ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// RemoveWorkspaceMember Remove a member. Admin or owner; anyone may remove themselves.
+	// (DELETE /api/v1/workspaces/{workspaceId}/members/{userId})
+	RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId)
+	// SetWorkspaceMemberRole Change a member's role. Owner only.
+	// (PATCH /api/v1/workspaces/{workspaceId}/members/{userId})
+	SetWorkspaceMemberRole(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId)
 	// GetLiveness Liveness probe — the process is running.
 	// (GET /healthz)
 	GetLiveness(w http.ResponseWriter, r *http.Request)
@@ -261,6 +407,72 @@ func (_ Unimplemented) Register(w http.ResponseWriter, r *http.Request) {
 // CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 // (POST /api/v1/voice/token)
 func (_ Unimplemented) CreateVoiceToken(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListWorkspaces The servers this account belongs to, with its role in each. Needs a session.
+// (GET /api/v1/workspaces)
+func (_ Unimplemented) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateWorkspace Create a server. Needs a session.
+// (POST /api/v1/workspaces)
+func (_ Unimplemented) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteWorkspace Delete a server with everything in it. Owner only.
+// (DELETE /api/v1/workspaces/{workspaceId})
+func (_ Unimplemented) DeleteWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetWorkspace One server and the caller's role in it. Needs membership.
+// (GET /api/v1/workspaces/{workspaceId})
+func (_ Unimplemented) GetWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateWorkspace Rename a server. Admin or owner.
+// (PATCH /api/v1/workspaces/{workspaceId})
+func (_ Unimplemented) UpdateWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListWorkspaceBans Who is banned from this server. Admin or owner.
+// (GET /api/v1/workspaces/{workspaceId}/bans)
+func (_ Unimplemented) ListWorkspaceBans(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UnbanWorkspaceMember Lift a ban. Admin or owner.
+// (DELETE /api/v1/workspaces/{workspaceId}/bans/{userId})
+func (_ Unimplemented) UnbanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// BanWorkspaceMember Ban someone from a server. Admin or owner.
+// (PUT /api/v1/workspaces/{workspaceId}/bans/{userId})
+func (_ Unimplemented) BanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListWorkspaceMembers Members of a server and their roles. Needs membership.
+// (GET /api/v1/workspaces/{workspaceId}/members)
+func (_ Unimplemented) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RemoveWorkspaceMember Remove a member. Admin or owner; anyone may remove themselves.
+// (DELETE /api/v1/workspaces/{workspaceId}/members/{userId})
+func (_ Unimplemented) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SetWorkspaceMemberRole Change a member's role. Owner only.
+// (PATCH /api/v1/workspaces/{workspaceId}/members/{userId})
+func (_ Unimplemented) SetWorkspaceMemberRole(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -360,6 +572,304 @@ func (siw *ServerInterfaceWrapper) CreateVoiceToken(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateVoiceToken(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListWorkspaces operation middleware
+func (siw *ServerInterfaceWrapper) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWorkspaces(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateWorkspace operation middleware
+func (siw *ServerInterfaceWrapper) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateWorkspace(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteWorkspace operation middleware
+func (siw *ServerInterfaceWrapper) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteWorkspace(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetWorkspace operation middleware
+func (siw *ServerInterfaceWrapper) GetWorkspace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetWorkspace(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateWorkspace operation middleware
+func (siw *ServerInterfaceWrapper) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateWorkspace(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListWorkspaceBans operation middleware
+func (siw *ServerInterfaceWrapper) ListWorkspaceBans(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWorkspaceBans(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UnbanWorkspaceMember operation middleware
+func (siw *ServerInterfaceWrapper) UnbanWorkspaceMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", chi.URLParam(r, "userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UnbanWorkspaceMember(w, r, workspaceId, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// BanWorkspaceMember operation middleware
+func (siw *ServerInterfaceWrapper) BanWorkspaceMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", chi.URLParam(r, "userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BanWorkspaceMember(w, r, workspaceId, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListWorkspaceMembers operation middleware
+func (siw *ServerInterfaceWrapper) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWorkspaceMembers(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveWorkspaceMember operation middleware
+func (siw *ServerInterfaceWrapper) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", chi.URLParam(r, "userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveWorkspaceMember(w, r, workspaceId, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetWorkspaceMemberRole operation middleware
+func (siw *ServerInterfaceWrapper) SetWorkspaceMemberRole(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", chi.URLParam(r, "userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetWorkspaceMemberRole(w, r, workspaceId, userId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -530,6 +1040,39 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/v1/auth/password", wrapper.ChangePassword)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/workspaces", wrapper.ListWorkspaces)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/workspaces", wrapper.CreateWorkspace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/workspaces/{workspaceId}", wrapper.DeleteWorkspace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/workspaces/{workspaceId}", wrapper.GetWorkspace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/v1/workspaces/{workspaceId}", wrapper.UpdateWorkspace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/workspaces/{workspaceId}/members", wrapper.ListWorkspaceMembers)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/workspaces/{workspaceId}/members/{userId}", wrapper.RemoveWorkspaceMember)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/v1/workspaces/{workspaceId}/members/{userId}", wrapper.SetWorkspaceMemberRole)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/workspaces/{workspaceId}/bans", wrapper.ListWorkspaceBans)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/workspaces/{workspaceId}/bans/{userId}", wrapper.UnbanWorkspaceMember)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/v1/workspaces/{workspaceId}/bans/{userId}", wrapper.BanWorkspaceMember)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/v1/voice/token", wrapper.CreateVoiceToken)
@@ -974,6 +1517,880 @@ func (response CreateVoiceToken500JSONResponse) VisitCreateVoiceTokenResponse(w 
 	return err
 }
 
+type ListWorkspacesRequestObject struct {
+}
+
+type ListWorkspacesResponseObject interface {
+	VisitListWorkspacesResponse(w http.ResponseWriter) error
+}
+
+type ListWorkspaces200JSONResponse []WorkspaceMembership
+
+func (response ListWorkspaces200JSONResponse) VisitListWorkspacesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaces401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListWorkspaces401JSONResponse) VisitListWorkspacesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaces500JSONResponse Error
+
+func (response ListWorkspaces500JSONResponse) VisitListWorkspacesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWorkspaceRequestObject struct {
+	Body *CreateWorkspaceJSONRequestBody
+}
+
+type CreateWorkspaceResponseObject interface {
+	VisitCreateWorkspaceResponse(w http.ResponseWriter) error
+}
+
+type CreateWorkspace201JSONResponse WorkspaceMembership
+
+func (response CreateWorkspace201JSONResponse) VisitCreateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWorkspace400JSONResponse struct{ ErrorJSONResponse }
+
+func (response CreateWorkspace400JSONResponse) VisitCreateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWorkspace401JSONResponse Error
+
+func (response CreateWorkspace401JSONResponse) VisitCreateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWorkspace413JSONResponse Error
+
+func (response CreateWorkspace413JSONResponse) VisitCreateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWorkspace500JSONResponse Error
+
+func (response CreateWorkspace500JSONResponse) VisitCreateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWorkspaceRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+}
+
+type DeleteWorkspaceResponseObject interface {
+	VisitDeleteWorkspaceResponse(w http.ResponseWriter) error
+}
+
+type DeleteWorkspace204Response struct {
+}
+
+func (response DeleteWorkspace204Response) VisitDeleteWorkspaceResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteWorkspace401JSONResponse struct{ ErrorJSONResponse }
+
+func (response DeleteWorkspace401JSONResponse) VisitDeleteWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWorkspace403JSONResponse Error
+
+func (response DeleteWorkspace403JSONResponse) VisitDeleteWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWorkspace404JSONResponse Error
+
+func (response DeleteWorkspace404JSONResponse) VisitDeleteWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWorkspace500JSONResponse Error
+
+func (response DeleteWorkspace500JSONResponse) VisitDeleteWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWorkspaceRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+}
+
+type GetWorkspaceResponseObject interface {
+	VisitGetWorkspaceResponse(w http.ResponseWriter) error
+}
+
+type GetWorkspace200JSONResponse WorkspaceMembership
+
+func (response GetWorkspace200JSONResponse) VisitGetWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWorkspace401JSONResponse struct{ ErrorJSONResponse }
+
+func (response GetWorkspace401JSONResponse) VisitGetWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWorkspace404JSONResponse Error
+
+func (response GetWorkspace404JSONResponse) VisitGetWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWorkspace500JSONResponse Error
+
+func (response GetWorkspace500JSONResponse) VisitGetWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspaceRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	Body        *UpdateWorkspaceJSONRequestBody
+}
+
+type UpdateWorkspaceResponseObject interface {
+	VisitUpdateWorkspaceResponse(w http.ResponseWriter) error
+}
+
+type UpdateWorkspace200JSONResponse WorkspaceMembership
+
+func (response UpdateWorkspace200JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspace400JSONResponse struct{ ErrorJSONResponse }
+
+func (response UpdateWorkspace400JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspace401JSONResponse Error
+
+func (response UpdateWorkspace401JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspace403JSONResponse Error
+
+func (response UpdateWorkspace403JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspace404JSONResponse Error
+
+func (response UpdateWorkspace404JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspace413JSONResponse Error
+
+func (response UpdateWorkspace413JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWorkspace500JSONResponse Error
+
+func (response UpdateWorkspace500JSONResponse) VisitUpdateWorkspaceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceBansRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+}
+
+type ListWorkspaceBansResponseObject interface {
+	VisitListWorkspaceBansResponse(w http.ResponseWriter) error
+}
+
+type ListWorkspaceBans200JSONResponse []WorkspaceBan
+
+func (response ListWorkspaceBans200JSONResponse) VisitListWorkspaceBansResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceBans401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListWorkspaceBans401JSONResponse) VisitListWorkspaceBansResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceBans403JSONResponse Error
+
+func (response ListWorkspaceBans403JSONResponse) VisitListWorkspaceBansResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceBans404JSONResponse Error
+
+func (response ListWorkspaceBans404JSONResponse) VisitListWorkspaceBansResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceBans500JSONResponse Error
+
+func (response ListWorkspaceBans500JSONResponse) VisitListWorkspaceBansResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnbanWorkspaceMemberRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	UserId      UserId      `json:"userId"`
+}
+
+type UnbanWorkspaceMemberResponseObject interface {
+	VisitUnbanWorkspaceMemberResponse(w http.ResponseWriter) error
+}
+
+type UnbanWorkspaceMember204Response struct {
+}
+
+func (response UnbanWorkspaceMember204Response) VisitUnbanWorkspaceMemberResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type UnbanWorkspaceMember401JSONResponse struct{ ErrorJSONResponse }
+
+func (response UnbanWorkspaceMember401JSONResponse) VisitUnbanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnbanWorkspaceMember403JSONResponse Error
+
+func (response UnbanWorkspaceMember403JSONResponse) VisitUnbanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnbanWorkspaceMember404JSONResponse Error
+
+func (response UnbanWorkspaceMember404JSONResponse) VisitUnbanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnbanWorkspaceMember500JSONResponse Error
+
+func (response UnbanWorkspaceMember500JSONResponse) VisitUnbanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMemberRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	UserId      UserId      `json:"userId"`
+	Body        *BanWorkspaceMemberJSONRequestBody
+}
+
+type BanWorkspaceMemberResponseObject interface {
+	VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error
+}
+
+type BanWorkspaceMember200JSONResponse WorkspaceBan
+
+func (response BanWorkspaceMember200JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMember400JSONResponse struct{ ErrorJSONResponse }
+
+func (response BanWorkspaceMember400JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMember401JSONResponse Error
+
+func (response BanWorkspaceMember401JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMember403JSONResponse Error
+
+func (response BanWorkspaceMember403JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMember404JSONResponse Error
+
+func (response BanWorkspaceMember404JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMember413JSONResponse Error
+
+func (response BanWorkspaceMember413JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BanWorkspaceMember500JSONResponse Error
+
+func (response BanWorkspaceMember500JSONResponse) VisitBanWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceMembersRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+}
+
+type ListWorkspaceMembersResponseObject interface {
+	VisitListWorkspaceMembersResponse(w http.ResponseWriter) error
+}
+
+type ListWorkspaceMembers200JSONResponse []WorkspaceMember
+
+func (response ListWorkspaceMembers200JSONResponse) VisitListWorkspaceMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceMembers401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListWorkspaceMembers401JSONResponse) VisitListWorkspaceMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceMembers404JSONResponse Error
+
+func (response ListWorkspaceMembers404JSONResponse) VisitListWorkspaceMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWorkspaceMembers500JSONResponse Error
+
+func (response ListWorkspaceMembers500JSONResponse) VisitListWorkspaceMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveWorkspaceMemberRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	UserId      UserId      `json:"userId"`
+}
+
+type RemoveWorkspaceMemberResponseObject interface {
+	VisitRemoveWorkspaceMemberResponse(w http.ResponseWriter) error
+}
+
+type RemoveWorkspaceMember204Response struct {
+}
+
+func (response RemoveWorkspaceMember204Response) VisitRemoveWorkspaceMemberResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RemoveWorkspaceMember401JSONResponse struct{ ErrorJSONResponse }
+
+func (response RemoveWorkspaceMember401JSONResponse) VisitRemoveWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveWorkspaceMember403JSONResponse Error
+
+func (response RemoveWorkspaceMember403JSONResponse) VisitRemoveWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveWorkspaceMember404JSONResponse Error
+
+func (response RemoveWorkspaceMember404JSONResponse) VisitRemoveWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveWorkspaceMember500JSONResponse Error
+
+func (response RemoveWorkspaceMember500JSONResponse) VisitRemoveWorkspaceMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRoleRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	UserId      UserId      `json:"userId"`
+	Body        *SetWorkspaceMemberRoleJSONRequestBody
+}
+
+type SetWorkspaceMemberRoleResponseObject interface {
+	VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error
+}
+
+type SetWorkspaceMemberRole200JSONResponse WorkspaceMember
+
+func (response SetWorkspaceMemberRole200JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRole400JSONResponse struct{ ErrorJSONResponse }
+
+func (response SetWorkspaceMemberRole400JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRole401JSONResponse Error
+
+func (response SetWorkspaceMemberRole401JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRole403JSONResponse Error
+
+func (response SetWorkspaceMemberRole403JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRole404JSONResponse Error
+
+func (response SetWorkspaceMemberRole404JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRole413JSONResponse Error
+
+func (response SetWorkspaceMemberRole413JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetWorkspaceMemberRole500JSONResponse Error
+
+func (response SetWorkspaceMemberRole500JSONResponse) VisitSetWorkspaceMemberRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetLivenessRequestObject struct {
 }
 
@@ -1050,6 +2467,39 @@ type StrictServerInterface interface {
 	// CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 	// (POST /api/v1/voice/token)
 	CreateVoiceToken(ctx context.Context, request CreateVoiceTokenRequestObject) (CreateVoiceTokenResponseObject, error)
+	// ListWorkspaces The servers this account belongs to, with its role in each. Needs a session.
+	// (GET /api/v1/workspaces)
+	ListWorkspaces(ctx context.Context, request ListWorkspacesRequestObject) (ListWorkspacesResponseObject, error)
+	// CreateWorkspace Create a server. Needs a session.
+	// (POST /api/v1/workspaces)
+	CreateWorkspace(ctx context.Context, request CreateWorkspaceRequestObject) (CreateWorkspaceResponseObject, error)
+	// DeleteWorkspace Delete a server with everything in it. Owner only.
+	// (DELETE /api/v1/workspaces/{workspaceId})
+	DeleteWorkspace(ctx context.Context, request DeleteWorkspaceRequestObject) (DeleteWorkspaceResponseObject, error)
+	// GetWorkspace One server and the caller's role in it. Needs membership.
+	// (GET /api/v1/workspaces/{workspaceId})
+	GetWorkspace(ctx context.Context, request GetWorkspaceRequestObject) (GetWorkspaceResponseObject, error)
+	// UpdateWorkspace Rename a server. Admin or owner.
+	// (PATCH /api/v1/workspaces/{workspaceId})
+	UpdateWorkspace(ctx context.Context, request UpdateWorkspaceRequestObject) (UpdateWorkspaceResponseObject, error)
+	// ListWorkspaceBans Who is banned from this server. Admin or owner.
+	// (GET /api/v1/workspaces/{workspaceId}/bans)
+	ListWorkspaceBans(ctx context.Context, request ListWorkspaceBansRequestObject) (ListWorkspaceBansResponseObject, error)
+	// UnbanWorkspaceMember Lift a ban. Admin or owner.
+	// (DELETE /api/v1/workspaces/{workspaceId}/bans/{userId})
+	UnbanWorkspaceMember(ctx context.Context, request UnbanWorkspaceMemberRequestObject) (UnbanWorkspaceMemberResponseObject, error)
+	// BanWorkspaceMember Ban someone from a server. Admin or owner.
+	// (PUT /api/v1/workspaces/{workspaceId}/bans/{userId})
+	BanWorkspaceMember(ctx context.Context, request BanWorkspaceMemberRequestObject) (BanWorkspaceMemberResponseObject, error)
+	// ListWorkspaceMembers Members of a server and their roles. Needs membership.
+	// (GET /api/v1/workspaces/{workspaceId}/members)
+	ListWorkspaceMembers(ctx context.Context, request ListWorkspaceMembersRequestObject) (ListWorkspaceMembersResponseObject, error)
+	// RemoveWorkspaceMember Remove a member. Admin or owner; anyone may remove themselves.
+	// (DELETE /api/v1/workspaces/{workspaceId}/members/{userId})
+	RemoveWorkspaceMember(ctx context.Context, request RemoveWorkspaceMemberRequestObject) (RemoveWorkspaceMemberResponseObject, error)
+	// SetWorkspaceMemberRole Change a member's role. Owner only.
+	// (PATCH /api/v1/workspaces/{workspaceId}/members/{userId})
+	SetWorkspaceMemberRole(ctx context.Context, request SetWorkspaceMemberRoleRequestObject) (SetWorkspaceMemberRoleResponseObject, error)
 	// GetLiveness Liveness probe — the process is running.
 	// (GET /healthz)
 	GetLiveness(ctx context.Context, request GetLivenessRequestObject) (GetLivenessResponseObject, error)
@@ -1269,6 +2719,323 @@ func (sh *strictHandler) CreateVoiceToken(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// ListWorkspaces operation middleware
+func (sh *strictHandler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	var request ListWorkspacesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWorkspaces(ctx, request.(ListWorkspacesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWorkspaces")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWorkspacesResponseObject); ok {
+		if err := validResponse.VisitListWorkspacesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateWorkspace operation middleware
+func (sh *strictHandler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	var request CreateWorkspaceRequestObject
+
+	var body CreateWorkspaceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateWorkspace(ctx, request.(CreateWorkspaceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateWorkspace")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateWorkspaceResponseObject); ok {
+		if err := validResponse.VisitCreateWorkspaceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteWorkspace operation middleware
+func (sh *strictHandler) DeleteWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request DeleteWorkspaceRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteWorkspace(ctx, request.(DeleteWorkspaceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteWorkspace")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteWorkspaceResponseObject); ok {
+		if err := validResponse.VisitDeleteWorkspaceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetWorkspace operation middleware
+func (sh *strictHandler) GetWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request GetWorkspaceRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetWorkspace(ctx, request.(GetWorkspaceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetWorkspace")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetWorkspaceResponseObject); ok {
+		if err := validResponse.VisitGetWorkspaceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateWorkspace operation middleware
+func (sh *strictHandler) UpdateWorkspace(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request UpdateWorkspaceRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	var body UpdateWorkspaceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateWorkspace(ctx, request.(UpdateWorkspaceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateWorkspace")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateWorkspaceResponseObject); ok {
+		if err := validResponse.VisitUpdateWorkspaceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListWorkspaceBans operation middleware
+func (sh *strictHandler) ListWorkspaceBans(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request ListWorkspaceBansRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWorkspaceBans(ctx, request.(ListWorkspaceBansRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWorkspaceBans")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWorkspaceBansResponseObject); ok {
+		if err := validResponse.VisitListWorkspaceBansResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UnbanWorkspaceMember operation middleware
+func (sh *strictHandler) UnbanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	var request UnbanWorkspaceMemberRequestObject
+
+	request.WorkspaceId = workspaceId
+	request.UserId = userId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UnbanWorkspaceMember(ctx, request.(UnbanWorkspaceMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UnbanWorkspaceMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UnbanWorkspaceMemberResponseObject); ok {
+		if err := validResponse.VisitUnbanWorkspaceMemberResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// BanWorkspaceMember operation middleware
+func (sh *strictHandler) BanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	var request BanWorkspaceMemberRequestObject
+
+	request.WorkspaceId = workspaceId
+	request.UserId = userId
+
+	var body BanWorkspaceMemberJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.BanWorkspaceMember(ctx, request.(BanWorkspaceMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "BanWorkspaceMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(BanWorkspaceMemberResponseObject); ok {
+		if err := validResponse.VisitBanWorkspaceMemberResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListWorkspaceMembers operation middleware
+func (sh *strictHandler) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request ListWorkspaceMembersRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWorkspaceMembers(ctx, request.(ListWorkspaceMembersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWorkspaceMembers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWorkspaceMembersResponseObject); ok {
+		if err := validResponse.VisitListWorkspaceMembersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RemoveWorkspaceMember operation middleware
+func (sh *strictHandler) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	var request RemoveWorkspaceMemberRequestObject
+
+	request.WorkspaceId = workspaceId
+	request.UserId = userId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveWorkspaceMember(ctx, request.(RemoveWorkspaceMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveWorkspaceMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveWorkspaceMemberResponseObject); ok {
+		if err := validResponse.VisitRemoveWorkspaceMemberResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetWorkspaceMemberRole operation middleware
+func (sh *strictHandler) SetWorkspaceMemberRole(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	var request SetWorkspaceMemberRoleRequestObject
+
+	request.WorkspaceId = workspaceId
+	request.UserId = userId
+
+	var body SetWorkspaceMemberRoleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetWorkspaceMemberRole(ctx, request.(SetWorkspaceMemberRoleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetWorkspaceMemberRole")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetWorkspaceMemberRoleResponseObject); ok {
+		if err := validResponse.VisitSetWorkspaceMemberRoleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetLiveness operation middleware
 func (sh *strictHandler) GetLiveness(w http.ResponseWriter, r *http.Request) {
 	var request GetLivenessRequestObject
@@ -1322,46 +3089,70 @@ func (sh *strictHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
+	"WZCxL99R4dBqv3p39X8BAAD//w==",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

@@ -22,6 +22,7 @@ type ErrorDetail struct {
 const (
 	CodeInvalidRequest   = "invalid_request"
 	CodeUnauthorized     = "unauthorized"
+	CodeForbidden        = "forbidden"
 	CodeConflict         = "conflict"
 	CodeNotFound         = "not_found"
 	CodeMethodNotAllowed = "method_not_allowed"

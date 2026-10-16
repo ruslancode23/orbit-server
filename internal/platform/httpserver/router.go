@@ -20,6 +20,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
 
@@ -35,6 +36,8 @@ type Deps struct {
 	// Auth serves accounts and sessions; its middleware resolves the session cookie.
 	Auth     *auth.Handler
 	Sessions auth.Resolver
+	// Workspaces serves servers, members and roles.
+	Workspaces *servers.Handler
 	// Voice is nil outside development: the token endpoint has no real authorization yet.
 	Voice *voice.Handler
 }
@@ -44,8 +47,8 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil {
-		return nil, errors.New("httpserver: Deps.Auth and Deps.Sessions are required")
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil {
+		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions and Deps.Workspaces are required")
 	}
 
 	spec, err := api.GetSpec()
@@ -83,7 +86,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		},
 	}))
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -102,9 +105,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 // server assembles the module handlers into the generated interface.
 type server struct {
-	health *health.Handler
-	auth   *auth.Handler
-	voice  *voice.Handler
+	health     *health.Handler
+	auth       *auth.Handler
+	workspaces *servers.Handler
+	voice      *voice.Handler
 }
 
 var _ api.StrictServerInterface = (*server)(nil)
@@ -142,6 +146,50 @@ func (s *server) GetCurrentUser(ctx context.Context, req api.GetCurrentUserReque
 
 func (s *server) ChangePassword(ctx context.Context, req api.ChangePasswordRequestObject) (api.ChangePasswordResponseObject, error) {
 	return s.auth.ChangePassword(ctx, req)
+}
+
+func (s *server) ListWorkspaces(ctx context.Context, req api.ListWorkspacesRequestObject) (api.ListWorkspacesResponseObject, error) {
+	return s.workspaces.ListWorkspaces(ctx, req)
+}
+
+func (s *server) CreateWorkspace(ctx context.Context, req api.CreateWorkspaceRequestObject) (api.CreateWorkspaceResponseObject, error) {
+	return s.workspaces.CreateWorkspace(ctx, req)
+}
+
+func (s *server) GetWorkspace(ctx context.Context, req api.GetWorkspaceRequestObject) (api.GetWorkspaceResponseObject, error) {
+	return s.workspaces.GetWorkspace(ctx, req)
+}
+
+func (s *server) UpdateWorkspace(ctx context.Context, req api.UpdateWorkspaceRequestObject) (api.UpdateWorkspaceResponseObject, error) {
+	return s.workspaces.UpdateWorkspace(ctx, req)
+}
+
+func (s *server) DeleteWorkspace(ctx context.Context, req api.DeleteWorkspaceRequestObject) (api.DeleteWorkspaceResponseObject, error) {
+	return s.workspaces.DeleteWorkspace(ctx, req)
+}
+
+func (s *server) ListWorkspaceMembers(ctx context.Context, req api.ListWorkspaceMembersRequestObject) (api.ListWorkspaceMembersResponseObject, error) {
+	return s.workspaces.ListWorkspaceMembers(ctx, req)
+}
+
+func (s *server) SetWorkspaceMemberRole(ctx context.Context, req api.SetWorkspaceMemberRoleRequestObject) (api.SetWorkspaceMemberRoleResponseObject, error) {
+	return s.workspaces.SetWorkspaceMemberRole(ctx, req)
+}
+
+func (s *server) RemoveWorkspaceMember(ctx context.Context, req api.RemoveWorkspaceMemberRequestObject) (api.RemoveWorkspaceMemberResponseObject, error) {
+	return s.workspaces.RemoveWorkspaceMember(ctx, req)
+}
+
+func (s *server) BanWorkspaceMember(ctx context.Context, req api.BanWorkspaceMemberRequestObject) (api.BanWorkspaceMemberResponseObject, error) {
+	return s.workspaces.BanWorkspaceMember(ctx, req)
+}
+
+func (s *server) UnbanWorkspaceMember(ctx context.Context, req api.UnbanWorkspaceMemberRequestObject) (api.UnbanWorkspaceMemberResponseObject, error) {
+	return s.workspaces.UnbanWorkspaceMember(ctx, req)
+}
+
+func (s *server) ListWorkspaceBans(ctx context.Context, req api.ListWorkspaceBansRequestObject) (api.ListWorkspaceBansResponseObject, error) {
+	return s.workspaces.ListWorkspaceBans(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

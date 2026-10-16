@@ -17,6 +17,8 @@ type Querier interface {
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
+	// A server always keeps exactly one owner; the count guards the last one.
+	CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	// Unread and mention counts for every channel of one workspace in a single query (task 2.8).
 	CountWorkspaceUnread(ctx context.Context, arg CountWorkspaceUnreadParams) ([]CountWorkspaceUnreadRow, error)
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (Attachment, error)
@@ -60,6 +62,7 @@ type Querier interface {
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)
 	ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListUserWorkspacesRow, error)
+	ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error)
 	ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.UUID) ([]Channel, error)
 	ListWorkspaceInvites(ctx context.Context, workspaceID pgtype.UUID) ([]Invite, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error)

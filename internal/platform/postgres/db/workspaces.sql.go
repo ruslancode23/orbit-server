@@ -68,6 +68,18 @@ func (q *Queries) BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMember
 	return i, err
 }
 
+const countWorkspaceOwners = `-- name: CountWorkspaceOwners :one
+SELECT count(*) FROM workspace_members WHERE workspace_id = $1 AND role = 'owner'
+`
+
+// A server always keeps exactly one owner; the count guards the last one.
+func (q *Queries) CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceOwners, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createWorkspace = `-- name: CreateWorkspace :one
 INSERT INTO workspaces (name, owner_id) VALUES ($1, $2) RETURNING id, name, owner_id, created_at, updated_at
 `
@@ -178,6 +190,52 @@ func (q *Queries) ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([
 			&i.Workspace.CreatedAt,
 			&i.Workspace.UpdatedAt,
 			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaceBans = `-- name: ListWorkspaceBans :many
+SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, bans.reason, bans.banned_by, bans.created_at
+FROM bans
+    JOIN users ON users.id = bans.user_id
+WHERE bans.workspace_id = $1
+ORDER BY bans.created_at DESC
+`
+
+type ListWorkspaceBansRow struct {
+	User      User               `json:"user"`
+	Reason    pgtype.Text        `json:"reason"`
+	BannedBy  pgtype.UUID        `json:"banned_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceBans, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceBansRow{}
+	for rows.Next() {
+		var i ListWorkspaceBansRow
+		if err := rows.Scan(
+			&i.User.ID,
+			&i.User.Nickname,
+			&i.User.Email,
+			&i.User.PasswordHash,
+			&i.User.IsGuest,
+			&i.User.CreatedAt,
+			&i.User.UpdatedAt,
+			&i.Reason,
+			&i.BannedBy,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

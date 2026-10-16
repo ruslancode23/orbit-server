@@ -51,3 +51,14 @@ DELETE FROM bans WHERE workspace_id = $1 AND user_id = $2;
 
 -- name: IsWorkspaceMemberBanned :one
 SELECT EXISTS (SELECT 1 FROM bans WHERE workspace_id = $1 AND user_id = $2);
+
+-- name: ListWorkspaceBans :many
+SELECT sqlc.embed(users), bans.reason, bans.banned_by, bans.created_at
+FROM bans
+    JOIN users ON users.id = bans.user_id
+WHERE bans.workspace_id = $1
+ORDER BY bans.created_at DESC;
+
+-- A server always keeps exactly one owner; the count guards the last one.
+-- name: CountWorkspaceOwners :one
+SELECT count(*) FROM workspace_members WHERE workspace_id = $1 AND role = 'owner';

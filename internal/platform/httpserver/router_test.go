@@ -15,6 +15,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
 
@@ -32,6 +33,8 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Health:   health.NewHandler(pinger{dbErr}),
 		Auth:     auth.NewHandler(sessions, false, log),
 		Sessions: sessions,
+		// Reached only with a session, and these tests send no cookie.
+		Workspaces: servers.NewHandler(servers.NewService(nil), log),
 	}
 	if voiceEnabled {
 		d.Voice = voice.NewHandler(voice.NewTokenIssuer("devkey", "a-secret-that-is-long-enough-for-hs256", "ws://lk"), log)
