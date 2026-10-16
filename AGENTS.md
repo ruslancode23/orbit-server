@@ -78,4 +78,5 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 
 - Задачи — в Jira, проект SCRUM (эпик SCRUM-5). Ветки: `feat/…`, `fix/…`, `chore/…`, ключ задачи Jira в имени: `feat/SCRUM-7-voice-token`.
 - Сообщения коммитов — на английском, в повелительном наклонении: `Add LiveKit token endpoint`.
+- Заголовок и описание PR — на русском: что сделано, зачем, как проверено, что не покрыто.
 - Не коммить `.env` и секреты. Не делай push и не создавай PR без просьбы.
