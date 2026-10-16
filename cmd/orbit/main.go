@@ -54,9 +54,14 @@ func run() error {
 		log.Warn("dev voice token endpoint enabled: POST /api/v1/voice/token has no authorization")
 	}
 
+	router, err := httpserver.NewRouter(deps)
+	if err != nil {
+		return fmt.Errorf("build router: %w", err)
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.NewRouter(deps),
+		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

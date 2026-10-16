@@ -15,12 +15,21 @@ make run       # API на http://localhost:8080
 
 Проверка: `curl localhost:8080/readyz` → `{"database":"up","status":"ok"}`.
 
+## Контракт API
+
+[`api/openapi.yaml`](api/openapi.yaml) — источник правды. Из него `make api` генерирует сервер
+(`internal/api/api.gen.go`, oapi-codegen strict server), а orbit-web — клиент, типы и функции для TanStack Query.
+Каждый запрос проверяется по схеме до хендлера: неверное тело, лишние поля и неизвестные пути получают ответ
+в едином формате ошибки. Порядок изменения API: правишь `openapi.yaml` → `make api` → реализуешь метод
+сгенерированного интерфейса. CI падает, если сгенерированный код не совпадает со спецификацией.
+
 ## API для разработки
 
 В `ORBIT_ENV=development` включён `POST /api/v1/voice/token` — токен LiveKit без авторизации, для spike:
 
 ```bash
-curl -X POST localhost:8080/api/v1/voice/token -d '{"room":"dev-room","displayName":"Anna"}'
+curl -X POST localhost:8080/api/v1/voice/token -H 'Content-Type: application/json' \
+  -d '{"room":"dev-room","displayName":"Anna"}'
 # {"token":"eyJ…","url":"ws://localhost:7880","identity":"guest-…","expiresAt":"…"}
 ```
 
