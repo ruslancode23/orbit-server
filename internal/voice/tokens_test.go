@@ -56,6 +56,9 @@ func TestIssueGrantsOneRoom(t *testing.T) {
 	if g.Video.CanPublish == nil || !*g.Video.CanPublish || g.Video.CanSubscribe == nil || !*g.Video.CanSubscribe {
 		t.Error("token must allow publish and subscribe")
 	}
+	if g.Video.CanUpdateOwnMetadata == nil || !*g.Video.CanUpdateOwnMetadata {
+		t.Error("token must allow updating own attributes (voice state)")
+	}
 	if g.Name != "Руслан" {
 		t.Errorf("name = %q, want trimmed %q", g.Name, "Руслан")
 	}

@@ -78,6 +78,8 @@ func (i *TokenIssuer) Issue(room, displayName string) (Token, error) {
 			CanPublish:     &allow,
 			CanSubscribe:   &allow,
 			CanPublishData: &allow,
+			// Clients publish voice state (deafened) as participant attributes.
+			CanUpdateOwnMetadata: &allow,
 		})
 	jwt, err := at.ToJWT()
 	if err != nil {
