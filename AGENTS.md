@@ -15,6 +15,7 @@ make migrate
 make run          # API на :8080
 make check        # golangci-lint + go test -race — запускай перед тем, как считать задачу готовой
 make fmt          # gofumpt + goimports
+make api          # после изменения api/openapi.yaml
 make sqlc         # после изменения db/queries или миграций
 make migrate-new name=create_users
 make help         # все цели
@@ -25,8 +26,9 @@ make help         # все цели
 
 ## Стек (PRD 11.2)
 
-Go 1.26, `net/http` + chi, `coder/websocket`, PostgreSQL через pgx + sqlc, миграции goose, slog,
-LiveKit (SFU) для голоса и экрана, S3 (SeaweedFS локально, ADR-0003). Позже: oapi-codegen, river для фоновых задач.
+Go 1.26, `net/http` + chi, OpenAPI + oapi-codegen (strict server) с валидацией kin-openapi,
+`coder/websocket`, PostgreSQL через pgx + sqlc, миграции goose, slog,
+LiveKit (SFU) для голоса и экрана, S3 (SeaweedFS локально, ADR-0003). Позже: river для фоновых задач.
 
 Не добавляй: ORM (gorm, ent), Redis, брокеры сообщений, микросервисы, logrus/zap, testify/mock-фреймворки
 без необходимости. Решение уровня стека фиксируй в `docs/adr/`.
@@ -36,6 +38,7 @@ LiveKit (SFU) для голоса и экрана, S3 (SeaweedFS локальн�
 ```
 cmd/orbit/            сборка зависимостей, запуск, graceful shutdown — без бизнес-логики
 internal/config/      конфиг только из переменных окружения
+internal/api/         сгенерировано из api/openapi.yaml (make api), не править
 internal/platform/    инфраструктура: httpserver, postgres, logger
 internal/<module>/    доменные модули: auth, servers, messages, voice, files, moderation
 migrations/           SQL-миграции goose (только вперёд; Down обязателен)
@@ -60,7 +63,10 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 - Ошибки оборачивай с контекстом: `fmt.Errorf("create server: %w", err)`. Сравнение — `errors.Is/As`.
 - Первый аргумент функций с I/O — `ctx context.Context`. HTTP-клиенты и запросы — с контекстом.
 - Логи — `slog` со структурными полями, без `fmt.Println`. Не логируй токены, пароли, тела сообщений.
-- Ответы API — JSON, ошибки в едином формате (появится вместе с OpenAPI, задача 1.1).
+- API описывается в `api/openapi.yaml` до кода: правишь спецификацию → `make api` → реализуешь метод
+  `api.StrictServerInterface` в своём модуле. Не пиши роуты и JSON-декодирование вручную, не правь `*.gen.go`.
+- Ошибки — в едином формате `{"error":{"code","message"}}` (`httpx`, схема `Error`). Валидация входа описывается
+  в схеме; в домене остаются только правила, которые схема выразить не может.
 
 ## Тесты
 

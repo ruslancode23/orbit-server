@@ -1,0 +1,143 @@
+openapi: 3.0.3
+info:
+  title: Orbit API
+  version: 0.1.0
+  description: |
+    API of orbit-server. This file is the contract: the Go server is generated from it
+    (oapi-codegen strict server) and orbit-web generates its client from it.
+    Every request is validated against this schema before it reaches a handler.
+tags:
+  - name: system
+    description: Probes for orchestrators and load balancers.
+  - name: voice
+    description: Voice rooms on LiveKit.
+paths:
+  /healthz:
+    get:
+      operationId: getLiveness
+      tags: [system]
+      summary: Liveness probe — the process is running.
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Liveness" }
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [system]
+      summary: Readiness probe — the instance can serve traffic.
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: A dependency is down.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+  /api/v1/voice/token:
+    post:
+      operationId: createVoiceToken
+      tags: [voice]
+      summary: Issue a LiveKit token for one voice room (development only).
+      description: |
+        Exists only when the server runs with ORBIT_ENV=development: it has no authorization
+        yet and is replaced by session-based access together with accounts. Elsewhere it
+        returns 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VoiceTokenRequest" }
+      responses:
+        "201":
+          description: Token issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceToken" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+components:
+  responses:
+    Error:
+      description: Error in the common API format.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: "#/components/schemas/ErrorDetail" }
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable code, e.g. invalid_request, not_found, body_too_large, internal.
+          example: invalid_request
+        message:
+          type: string
+          description: Human-readable explanation, safe to show to the user.
+    Liveness:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    Readiness:
+      type: object
+      required: [status, database]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        database:
+          type: string
+          enum: [up, down]
+    VoiceTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [room, displayName]
+      properties:
+        room:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          description: Room name. Latin letters, digits, '-' and '_', starting with a letter or digit.
+          example: dev-room
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: Name shown to other participants.
+          example: Anna
+    VoiceToken:
+      type: object
+      required: [token, url, identity, expiresAt]
+      properties:
+        token:
+          type: string
+          description: LiveKit access token (JWT). Joins exactly one room.
+        url:
+          type: string
+          description: LiveKit URL the client connects to.
+          example: ws://localhost:7880
+        identity:
+          type: string
+          description: Participant identity, unique per token.
+          example: guest-5bac64c953e07d75
+        expiresAt:
+          type: string
+          format: date-time
+          description: The token cannot be used to join after this moment; an established session continues.

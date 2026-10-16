@@ -6,7 +6,7 @@ GOOSE   := go tool -modfile=tools/go.mod goose -dir migrations postgres
 -include .env
 export
 
-.PHONY: help up down logs run build test lint fmt migrate migrate-down migrate-new sqlc check
+.PHONY: help up down logs run build test lint fmt api api-check migrate migrate-down migrate-new sqlc check
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -45,7 +45,13 @@ migrate-down: ## Roll back the last migration
 migrate-new: ## Create a migration: make migrate-new name=create_users
 	$(GOOSE) "" create $(name) sql
 
+api: ## Generate the Go server from api/openapi.yaml
+	$(TOOL) oapi-codegen -config api/oapi-codegen.yaml api/openapi.yaml
+
+api-check: api ## Fail if generated API code is out of date
+	git diff --exit-code -- internal/api
+
 sqlc: ## Generate Go code from db/queries
 	$(TOOL) sqlc generate
 
-check: lint test ## Everything CI runs
+check: api-check lint test ## Everything CI runs

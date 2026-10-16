@@ -17,6 +17,8 @@ jobs:
             go.sum
             tools/go.sum
       - run: go build ./...
+      - name: Generated API is up to date
+        run: make api-check
       - run: make lint
       - run: make test
       - run: docker build -t orbit-server .

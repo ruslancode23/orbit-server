@@ -3,10 +3,9 @@ package health
 
 import (
 	"context"
-	"net/http"
 	"time"
 
-	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/api"
 )
 
 // Pinger is satisfied by *pgxpool.Pool.
@@ -22,19 +21,18 @@ func NewHandler(db Pinger) *Handler {
 	return &Handler{db: db}
 }
 
-// Live reports that the process is running.
-func (h *Handler) Live(w http.ResponseWriter, _ *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+// GetLiveness reports that the process is running.
+func (h *Handler) GetLiveness(context.Context, api.GetLivenessRequestObject) (api.GetLivenessResponseObject, error) {
+	return api.GetLiveness200JSONResponse{Status: api.LivenessStatusOk}, nil
 }
 
-// Ready reports whether the instance can serve traffic: the database must respond.
-func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+// GetReadiness reports whether the instance can serve traffic: the database must respond.
+func (h *Handler) GetReadiness(ctx context.Context, _ api.GetReadinessRequestObject) (api.GetReadinessResponseObject, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	if err := h.db.Ping(ctx); err != nil {
-		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "database": "down"})
-		return
+		return api.GetReadiness503JSONResponse{Status: api.ReadinessStatusUnavailable, Database: api.Down}, nil
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "up"})
+	return api.GetReadiness200JSONResponse{Status: api.ReadinessStatusOk, Database: api.Up}, nil
 }
