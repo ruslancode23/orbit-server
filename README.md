@@ -65,6 +65,14 @@ docs/adr/               архитектурные решения
 в cookie `orbit_session` (HttpOnly, Secure вне разработки). Время жизни сессии — `ORBIT_SESSION_TTL`
 (по умолчанию 720h). Полный список переменных — в `.env.example`.
 
+## Файлы
+
+Вложение загружается через сервер (`POST /api/v1/channels/{id}/attachments`, multipart, поле `file`):
+он проверяет размер и определяет тип по первым байтам, а не по имени. Скачивание — по подписанной
+ссылке прямо из хранилища (`GET /api/v1/attachments/{id}`), она живёт `ORBIT_ATTACHMENT_LINK_TTL`.
+Файл, чьё сообщение так и не пришло, удаляет фоновая уборка через `ORBIT_ORPHAN_ATTACHMENT_AGE`.
+Лимит размера — `ORBIT_MAX_UPLOAD_BYTES`.
+
 ## Живой поток событий
 
 `GET /api/v1/ws` — WebSocket, вне OpenAPI (спецификация описывает запросы и ответы, а не поток).

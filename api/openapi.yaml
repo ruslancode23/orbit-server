@@ -39,6 +39,12 @@ tags:
     description: |
       How far each person has read. The cursor is a `seq` per channel; it only moves
       forward, and it is the same on every device that account is signed in on.
+  - name: files
+    description: |
+      Files and images in a channel (FR-05). The upload goes through the server, which
+      checks the size and reads the first bytes to see what the file really is — the
+      name proves nothing. Downloads go straight from the object store by a short-lived
+      signed link, issued only to someone who may read the channel.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -850,6 +856,69 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: uploadAttachment
+      tags: [files]
+      summary: Upload a file for a message in this channel. Needs the right to write.
+      description: |
+        The file is stored on its own; it belongs to nobody until a message names it in
+        `attachmentIds`. A file whose message never arrives is swept away later.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: The file is stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attachment" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413":
+          description: The file is larger than this instance allows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: This kind of file is not accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/attachments/{attachmentId}:
+    parameters:
+      - name: attachmentId
+        in: path
+        required: true
+        description: Attachment identifier.
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getAttachmentLink
+      tags: [files]
+      summary: A short-lived link to download the file. Needs to read its channel.
+      responses:
+        "200":
+          description: The link and when it stops working.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttachmentLink" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -1209,6 +1278,9 @@ components:
         reactions:
           type: array
           items: { $ref: "#/components/schemas/Reaction" }
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/Attachment" }
         createdAt: { type: string, format: date-time }
         editedAt: { type: string, format: date-time }
         deletedAt:
@@ -1252,8 +1324,8 @@ components:
           description: The client's own id for this message; a resend repeats it.
         content:
           type: string
-          minLength: 1
           maxLength: 4000
+          description: May be empty when the message carries files.
         replyToId:
           type: string
           format: uuid
@@ -1262,6 +1334,11 @@ components:
           maxItems: 50
           items: { type: string, format: uuid }
           description: Accounts mentioned in the text; those outside the server are ignored.
+        attachmentIds:
+          type: array
+          maxItems: 10
+          items: { type: string, format: uuid }
+          description: Files uploaded beforehand, by this account, for this channel.
     MessageUpdateRequest:
       type: object
       additionalProperties: false
@@ -1354,6 +1431,34 @@ components:
           format: int64
           minimum: 0
           description: The `seq` read up to. A value below the current cursor changes nothing.
+    Attachment:
+      type: object
+      additionalProperties: false
+      required: [id, fileName, mimeType, sizeBytes, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        fileName: { type: string, maxLength: 255 }
+        mimeType:
+          type: string
+          description: What the file turned out to be, read from its first bytes.
+        sizeBytes: { type: integer, format: int64 }
+        width:
+          type: integer
+          description: For an image, its width in pixels.
+        height:
+          type: integer
+          description: For an image, its height in pixels.
+        createdAt: { type: string, format: date-time }
+    AttachmentLink:
+      type: object
+      additionalProperties: false
+      required: [url, expiresAt, attachment]
+      properties:
+        url:
+          type: string
+          description: Signed link straight to the object store.
+        expiresAt: { type: string, format: date-time }
+        attachment: { $ref: "#/components/schemas/Attachment" }
     VoiceTokenRequest:
       type: object
       additionalProperties: false

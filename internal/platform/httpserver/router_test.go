@@ -14,6 +14,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
@@ -40,8 +41,11 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		// Reached only with a session, and these tests send no cookie.
 		Workspaces: servers.NewHandler(servers.NewService(nil, nil), log),
 		Channels:   channels.NewHandler(channels.NewService(nil, nil), log),
-		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil, nil), log),
+		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil, nil, nil), log),
 		Reads:      reads.NewHandler(reads.NewService(nil, nil, nil, nil), log),
+		Files: files.NewHandler(
+			files.NewService(nil, nil, nil, nil, 1<<20, time.Minute), log),
+		MaxUploadBytes: 1 << 20,
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 	}

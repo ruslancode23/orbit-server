@@ -261,7 +261,7 @@ func newWorld(t *testing.T) world {
 		w.workspace: {w.anna: true, w.bob: true, w.admin: true},
 	}}
 	w.published = &recorder{}
-	w.svc = NewService(w.store, w.access, members, w.published)
+	w.svc = NewService(w.store, w.access, members, nil, w.published)
 	return w
 }
 

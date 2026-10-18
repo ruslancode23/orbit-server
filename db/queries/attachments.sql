@@ -27,3 +27,6 @@ LIMIT $2;
 
 -- name: DeleteAttachment :exec
 DELETE FROM attachments WHERE id = $1;
+
+-- name: DetachOrphanedAttachment :exec
+DELETE FROM attachments WHERE id = $1 AND message_id IS NULL;

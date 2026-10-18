@@ -10,13 +10,20 @@ import (
 // so tests do not depend on the developer's environment or .env.
 func setRequired(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "ORBIT_SESSION_TTL", "LIVEKIT_PUBLIC_URL"} {
+	for _, name := range []string{
+		"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "ORBIT_SESSION_TTL", "ORBIT_MAX_UPLOAD_BYTES",
+		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "LIVEKIT_PUBLIC_URL",
+	} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("ORBIT_DATABASE_URL", "postgres://orbit:orbit@localhost:5432/orbit")
 	t.Setenv("LIVEKIT_URL", "ws://localhost:7880")
 	t.Setenv("LIVEKIT_API_KEY", "devkey")
 	t.Setenv("LIVEKIT_API_SECRET", "secret")
+	t.Setenv("ORBIT_S3_ENDPOINT", "http://localhost:8333")
+	t.Setenv("ORBIT_S3_BUCKET", "orbit")
+	t.Setenv("ORBIT_S3_ACCESS_KEY", "orbit")
+	t.Setenv("ORBIT_S3_SECRET_KEY", "secret")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -41,7 +48,10 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadReportsAllMissingVariables(t *testing.T) {
-	for _, name := range []string{"ORBIT_DATABASE_URL", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"} {
+	for _, name := range []string{
+		"ORBIT_DATABASE_URL", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+		"ORBIT_S3_ENDPOINT", "ORBIT_S3_BUCKET", "ORBIT_S3_ACCESS_KEY", "ORBIT_S3_SECRET_KEY",
+	} {
 		t.Setenv(name, "")
 	}
 
@@ -49,7 +59,10 @@ func TestLoadReportsAllMissingVariables(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load() error = nil, want missing variables")
 	}
-	for _, name := range []string{"ORBIT_DATABASE_URL", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"} {
+	for _, name := range []string{
+		"ORBIT_DATABASE_URL", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+		"ORBIT_S3_ENDPOINT", "ORBIT_S3_BUCKET", "ORBIT_S3_ACCESS_KEY", "ORBIT_S3_SECRET_KEY",
+	} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("error %q does not mention %s", err, name)
 		}

@@ -94,6 +94,15 @@ func (q *Queries) DeleteAttachment(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const detachOrphanedAttachment = `-- name: DetachOrphanedAttachment :exec
+DELETE FROM attachments WHERE id = $1 AND message_id IS NULL
+`
+
+func (q *Queries) DetachOrphanedAttachment(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, detachOrphanedAttachment, id)
+	return err
+}
+
 const getAttachment = `-- name: GetAttachment :one
 SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at FROM attachments WHERE id = $1
 `

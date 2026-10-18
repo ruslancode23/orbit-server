@@ -55,9 +55,23 @@ type Message struct {
 	ReplyToID *uuid.UUID
 	Mentions  []uuid.UUID
 	Reactions []Reaction
+	// Attachments are the files this message carries.
+	Attachments []Attachment
+	CreatedAt   time.Time
+	EditedAt    *time.Time
+	DeletedAt   *time.Time
+}
+
+// Attachment is a file on a message, as the messages module passes it along;
+// internal/files owns what it means.
+type Attachment struct {
+	ID        uuid.UUID
+	FileName  string
+	MimeType  string
+	SizeBytes int64
+	Width     *int
+	Height    *int
 	CreatedAt time.Time
-	EditedAt  *time.Time
-	DeletedAt *time.Time
 }
 
 type Reaction struct {
@@ -75,6 +89,8 @@ type NewMessage struct {
 	Content         string
 	ReplyToID       *uuid.UUID
 	Mentions        []uuid.UUID
+	// AttachmentIDs are files uploaded beforehand that this message carries.
+	AttachmentIDs []uuid.UUID
 }
 
 // Page is history, newest first.
@@ -115,6 +131,13 @@ type Publisher interface {
 	Publish(event events.Event)
 }
 
+// Files binds uploaded files to the message that names them and loads the
+// files of a page of messages.
+type Files interface {
+	AttachAll(ctx context.Context, messageID, uploaderID uuid.UUID, ids []uuid.UUID) ([]Attachment, error)
+	ByMessages(ctx context.Context, messageIDs []uuid.UUID) (map[uuid.UUID][]Attachment, error)
+}
+
 // Members answers whether an account is on a server, so a mention of an
 // outsider is dropped instead of notifying someone who cannot read the channel.
 type Members interface {
@@ -125,12 +148,51 @@ type Service struct {
 	store    Store
 	channels ChannelAccess
 	members  Members
+	// files is optional: without it a message simply carries no attachments.
+	files Files
 	// publisher is optional; see Publisher.
 	publisher Publisher
 }
 
-func NewService(store Store, access ChannelAccess, members Members, publisher Publisher) *Service {
-	return &Service{store: store, channels: access, members: members, publisher: publisher}
+func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
+	return &Service{store: store, channels: access, members: members, files: files, publisher: publisher}
+}
+
+// SetFiles wires the files module in after construction: a message carries
+// files, and a file asks which channel its message is in, so one of the two
+// has to be told about the other once both exist.
+func (s *Service) SetFiles(f Files) { s.files = f }
+
+// withAttachments fills in the files of one message.
+func (s *Service) withAttachments(ctx context.Context, m Message) (Message, error) {
+	if s.files == nil {
+		return m, nil
+	}
+	byMessage, err := s.files.ByMessages(ctx, []uuid.UUID{m.ID})
+	if err != nil {
+		return Message{}, err
+	}
+	m.Attachments = byMessage[m.ID]
+	return m, nil
+}
+
+// withAttachmentsPage fills in the files of a whole page in one query.
+func (s *Service) withAttachmentsPage(ctx context.Context, list []Message) ([]Message, error) {
+	if s.files == nil || len(list) == 0 {
+		return list, nil
+	}
+	ids := make([]uuid.UUID, 0, len(list))
+	for _, m := range list {
+		ids = append(ids, m.ID)
+	}
+	byMessage, err := s.files.ByMessages(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		list[i].Attachments = byMessage[list[i].ID]
+	}
+	return list, nil
 }
 
 // Since returns what a reconnecting client missed in one channel, oldest first.
@@ -145,6 +207,16 @@ func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afte
 		limit = maxPageSize
 	}
 	return s.store.Since(ctx, channelID, afterSeq, limit, callerID)
+}
+
+// ChannelOf is which channel a message belongs to. internal/files asks before
+// it hands out a download link.
+func (s *Service) ChannelOf(ctx context.Context, messageID uuid.UUID) (uuid.UUID, error) {
+	message, err := s.store.Message(ctx, messageID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return message.ChannelID, nil
 }
 
 // SinceEvents returns what a reconnecting client missed in one channel as
@@ -187,7 +259,9 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	}
 
 	content, err := cleanContent(m.Content)
-	if err != nil {
+	// A message that carries files may have no text at all.
+	emptyWithFiles := errors.Is(err, ErrInvalidContent) && content == "" && len(m.AttachmentIDs) > 0
+	if err != nil && !emptyWithFiles {
 		return Message{}, false, err
 	}
 	if m.ClientMessageID == "" {
@@ -223,7 +297,17 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 		}
 	}
 
+	if !existed && len(m.AttachmentIDs) > 0 && s.files != nil {
+		if _, err := s.files.AttachAll(ctx, created.ID, callerID, m.AttachmentIDs); err != nil {
+			return Message{}, false, err
+		}
+	}
+
 	loaded, err := s.store.Load(ctx, created, callerID)
+	if err != nil {
+		return Message{}, false, err
+	}
+	loaded, err = s.withAttachments(ctx, loaded)
 	if err != nil {
 		return Message{}, false, err
 	}
@@ -247,6 +331,11 @@ func (s *Service) History(ctx context.Context, channelID, callerID uuid.UUID, be
 	}
 
 	list, err := s.store.List(ctx, channelID, before, limit, callerID)
+	if err != nil {
+		return Page{}, err
+	}
+
+	list, err = s.withAttachmentsPage(ctx, list)
 	if err != nil {
 		return Page{}, err
 	}
@@ -283,6 +372,10 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 	if err != nil {
 		return Message{}, err
 	}
+	loaded, err = s.withAttachments(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
 	s.publish(events.KindMessageUpdated, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
@@ -301,6 +394,10 @@ func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Me
 		return Message{}, err
 	}
 	loaded, err := s.store.Load(ctx, deleted, callerID)
+	if err != nil {
+		return Message{}, err
+	}
+	loaded, err = s.withAttachments(ctx, loaded)
 	if err != nil {
 		return Message{}, err
 	}
@@ -335,6 +432,10 @@ func (s *Service) React(ctx context.Context, messageID, callerID uuid.UUID, emoj
 	if err != nil {
 		return Message{}, err
 	}
+	loaded, err = s.withAttachments(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
 	s.publish(events.KindReactionChanged, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
@@ -355,6 +456,10 @@ func (s *Service) Unreact(ctx context.Context, messageID, callerID uuid.UUID, em
 		return Message{}, err
 	}
 	loaded, err := s.store.Load(ctx, message, callerID)
+	if err != nil {
+		return Message{}, err
+	}
+	loaded, err = s.withAttachments(ctx, loaded)
 	if err != nil {
 		return Message{}, err
 	}

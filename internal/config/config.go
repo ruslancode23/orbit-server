@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,21 @@ type Config struct {
 	CORSOrigins     []string
 	SessionTTL      time.Duration
 	LiveKit         LiveKit
+	Storage         Storage
+}
+
+// Storage is the object store for attachments (SeaweedFS locally, S3 elsewhere).
+type Storage struct {
+	Endpoint  string
+	Bucket    string
+	AccessKey string
+	SecretKey string
+	// MaxUploadBytes caps one attachment.
+	MaxUploadBytes int64
+	// LinkTTL is how long a download link stays valid.
+	LinkTTL time.Duration
+	// OrphanAge is how long a file without a message is kept before the sweep.
+	OrphanAge time.Duration
 }
 
 type LiveKit struct {
@@ -50,6 +66,22 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_SESSION_TTL: %w", err))
 	}
 
+	maxUpload, err := strconv.ParseInt(getenv("ORBIT_MAX_UPLOAD_BYTES", "26214400"), 10, 64)
+	if err != nil || maxUpload <= 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_MAX_UPLOAD_BYTES must be a positive number of bytes, got %q",
+			os.Getenv("ORBIT_MAX_UPLOAD_BYTES")))
+	}
+
+	linkTTL, err := time.ParseDuration(getenv("ORBIT_ATTACHMENT_LINK_TTL", "10m"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_ATTACHMENT_LINK_TTL: %w", err))
+	}
+
+	orphanAge, err := time.ParseDuration(getenv("ORBIT_ORPHAN_ATTACHMENT_AGE", "24h"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_ORPHAN_ATTACHMENT_AGE: %w", err))
+	}
+
 	cfg := Config{
 		Env:             getenv("ORBIT_ENV", "production"),
 		HTTPAddr:        getenv("ORBIT_HTTP_ADDR", ":8080"),
@@ -57,6 +89,15 @@ func Load() (Config, error) {
 		DatabaseURL:     required("ORBIT_DATABASE_URL"),
 		CORSOrigins:     splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
 		SessionTTL:      sessionTTL,
+		Storage: Storage{
+			Endpoint:       required("ORBIT_S3_ENDPOINT"),
+			Bucket:         required("ORBIT_S3_BUCKET"),
+			AccessKey:      required("ORBIT_S3_ACCESS_KEY"),
+			SecretKey:      required("ORBIT_S3_SECRET_KEY"),
+			MaxUploadBytes: maxUpload,
+			LinkTTL:        linkTTL,
+			OrphanAge:      orphanAge,
+		},
 		LiveKit: LiveKit{
 			URL:       required("LIVEKIT_URL"),
 			APIKey:    required("LIVEKIT_API_KEY"),

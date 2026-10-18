@@ -73,6 +73,7 @@ func (h *Handler) SendMessage(ctx context.Context, req api.SendMessageRequestObj
 		Content:         req.Body.Content,
 		ReplyToID:       req.Body.ReplyToId,
 		Mentions:        value(req.Body.Mentions),
+		AttachmentIDs:   value(req.Body.AttachmentIds),
 	})
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -178,16 +179,17 @@ func (h *Handler) RemoveReaction(ctx context.Context, req api.RemoveReactionRequ
 // live stream alike: the client parses one thing.
 func APIMessage(m Message) api.Message {
 	message := api.Message{
-		Id:        m.ID,
-		ChannelId: m.ChannelID,
-		Seq:       m.Seq,
-		Content:   m.Content,
-		ReplyToId: m.ReplyToID,
-		Mentions:  m.Mentions,
-		Reactions: make([]api.Reaction, 0, len(m.Reactions)),
-		CreatedAt: m.CreatedAt,
-		EditedAt:  m.EditedAt,
-		DeletedAt: m.DeletedAt,
+		Id:          m.ID,
+		ChannelId:   m.ChannelID,
+		Seq:         m.Seq,
+		Content:     m.Content,
+		ReplyToId:   m.ReplyToID,
+		Mentions:    m.Mentions,
+		Reactions:   make([]api.Reaction, 0, len(m.Reactions)),
+		Attachments: toAPIAttachments(m.Attachments),
+		CreatedAt:   m.CreatedAt,
+		EditedAt:    m.EditedAt,
+		DeletedAt:   m.DeletedAt,
 	}
 	if message.Mentions == nil {
 		message.Mentions = []openapi_types.UUID{}
@@ -211,6 +213,32 @@ func APIMessage(m Message) api.Message {
 		message.Author = &author
 	}
 	return message
+}
+
+func toAPIAttachments(list []Attachment) *[]api.Attachment {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]api.Attachment, 0, len(list))
+	for _, a := range list {
+		attachment := api.Attachment{
+			Id:        a.ID,
+			FileName:  a.FileName,
+			MimeType:  a.MimeType,
+			SizeBytes: a.SizeBytes,
+			CreatedAt: a.CreatedAt,
+		}
+		if a.Width != nil {
+			width := *a.Width
+			attachment.Width = &width
+		}
+		if a.Height != nil {
+			height := *a.Height
+			attachment.Height = &height
+		}
+		out = append(out, attachment)
+	}
+	return &out
 }
 
 func value[T any](p *T) T {

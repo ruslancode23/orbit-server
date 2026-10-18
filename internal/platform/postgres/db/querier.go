@@ -41,6 +41,7 @@ type Querier interface {
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
 	DeleteWorkspace(ctx context.Context, id pgtype.UUID) error
+	DetachOrphanedAttachment(ctx context.Context, id pgtype.UUID) error
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)

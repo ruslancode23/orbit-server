@@ -16,12 +16,14 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/config"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/gateway"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
+	"github.com/ruslancode23/orbit-server/internal/platform/objectstore"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 	"github.com/ruslancode23/orbit-server/internal/reads"
@@ -56,7 +58,17 @@ func run() error {
 	hub := events.NewHub()
 	workspaces := servers.NewService(servers.NewPostgresStore(pool), hub)
 	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
-	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, hub)
+	storage, err := objectstore.New(ctx, cfg.Storage.Endpoint, cfg.Storage.Bucket,
+		cfg.Storage.AccessKey, cfg.Storage.SecretKey)
+	if err != nil {
+		return fmt.Errorf("connect object store: %w", err)
+	}
+
+	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, nil, hub)
+	fileService := files.NewService(files.NewPostgresStore(queries), storage, channelService, messageService,
+		cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
+	// The two know each other: a message carries files, a file needs its channel.
+	messageService.SetFiles(files.NewForMessages(fileService))
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
@@ -67,8 +79,10 @@ func run() error {
 		CORSOrigins: cfg.CORSOrigins,
 		Health:      health.NewHandler(pool),
 		// Cookies go over TLS everywhere but local development.
-		Auth:    authHandler,
-		Invites: invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
+		Auth:           authHandler,
+		Invites:        invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
+		Files:          files.NewHandler(fileService, log),
+		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,
@@ -83,6 +97,9 @@ func run() error {
 		deps.Voice = voice.NewHandler(issuer, log)
 		log.Warn("dev voice token endpoint enabled: POST /api/v1/voice/token has no authorization")
 	}
+
+	// Files whose message never arrived are swept in the background.
+	go files.NewSweeper(fileService, cfg.Storage.OrphanAge, log).Run(ctx)
 
 	router, err := httpserver.NewRouter(deps)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -19,6 +20,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
@@ -54,6 +56,11 @@ type Deps struct {
 	Invites *invites.Handler
 	// Reads serves read cursors and unread counts.
 	Reads *reads.Handler
+	// Files serves attachments.
+	Files *files.Handler
+	// MaxUploadBytes is how large an attachment may be; the body limit for the
+	// upload route is set from it.
+	MaxUploadBytes int64
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
@@ -66,7 +73,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -109,7 +116,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -125,7 +132,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// does not reveal it through 400 responses.
 			apiRoutes.Use(notFound(voiceTokenPath))
 		}
-		apiRoutes.Use(limitBody(maxBodyBytes))
+		// JSON bodies stay tiny; only an upload may be large, and never larger
+		// than this instance allows.
+		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes))
 		apiRoutes.Use(nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
 			DoNotValidateServers: true,
 			ErrorHandlerWithOpts: validationError,
@@ -153,6 +162,7 @@ type server struct {
 	messages   *messages.Handler
 	invites    *invites.Handler
 	reads      *reads.Handler
+	files      *files.Handler
 	voice      *voice.Handler
 }
 
@@ -321,6 +331,14 @@ func (s *server) MarkChannelRead(ctx context.Context, req api.MarkChannelReadReq
 	return s.reads.MarkChannelRead(ctx, req)
 }
 
+func (s *server) UploadAttachment(ctx context.Context, req api.UploadAttachmentRequestObject) (api.UploadAttachmentResponseObject, error) {
+	return s.files.UploadAttachment(ctx, req)
+}
+
+func (s *server) GetAttachmentLink(ctx context.Context, req api.GetAttachmentLinkRequestObject) (api.GetAttachmentLinkResponseObject, error) {
+	return s.files.GetAttachmentLink(ctx, req)
+}
+
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {
 	switch opts.StatusCode {
 	case http.StatusNotFound:
@@ -349,9 +367,16 @@ func notFound(path string) func(http.Handler) http.Handler {
 	}
 }
 
-func limitBody(limit int64) func(http.Handler) http.Handler {
+// limitBody caps the request body. An upload of an attachment gets its own,
+// larger cap: everything else here is small JSON.
+func limitBody(normal, upload int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limit := normal
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments") {
+				limit = upload
+			}
+			// A declared size over the limit is refused before a byte is read.
 			if r.ContentLength > limit {
 				httpx.WriteError(w, http.StatusRequestEntityTooLarge, httpx.CodeBodyTooLarge,
 					fmt.Sprintf("request body must not exceed %d bytes", limit))
