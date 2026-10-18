@@ -42,6 +42,7 @@ type Querier interface {
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
+	GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
 	// Only a usable invite comes back: expiry, revocation and the use limit are checked here.
 	GetLiveInvite(ctx context.Context, code string) (Invite, error)
 	// Only a live session resolves to its user; expiry and revocation are checked here,

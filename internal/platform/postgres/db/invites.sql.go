@@ -48,6 +48,27 @@ func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) (Inv
 	return i, err
 }
 
+const getInvite = `-- name: GetInvite :one
+SELECT id, workspace_id, code, created_by, expires_at, max_uses, uses, revoked_at, created_at FROM invites WHERE id = $1
+`
+
+func (q *Queries) GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error) {
+	row := q.db.QueryRow(ctx, getInvite, id)
+	var i Invite
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Code,
+		&i.CreatedBy,
+		&i.ExpiresAt,
+		&i.MaxUses,
+		&i.Uses,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getLiveInvite = `-- name: GetLiveInvite :one
 SELECT id, workspace_id, code, created_by, expires_at, max_uses, uses, revoked_at, created_at FROM invites
 WHERE code = $1

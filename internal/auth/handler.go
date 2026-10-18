@@ -116,6 +116,37 @@ func (h *Handler) ChangePassword(ctx context.Context, req api.ChangePasswordRequ
 
 // The Secure flag follows h.secureCookies: local development runs on plain http,
 // where the browser would never send a Secure cookie.
+// SessionCookie is the Set-Cookie value for a new session. Other modules that
+// start a session — the guest entrance, for one — use it instead of spelling
+// the flags out again.
+func (h *Handler) SessionCookie(creds Credentials) string {
+	return h.sessionCookie(creds)
+}
+
+// ClaimGuestAccount turns the guest of this session into a full account. The
+// session stays alive: the person signed up, they did not sign out.
+func (h *Handler) ClaimGuestAccount(ctx context.Context, req api.ClaimGuestAccountRequestObject) (api.ClaimGuestAccountResponseObject, error) {
+	session, ok := SessionFrom(ctx)
+	if !ok {
+		return api.ClaimGuestAccount401JSONResponse(errorBody(httpx.CodeUnauthorized, "sign in first")), nil
+	}
+	if req.Body == nil {
+		return api.ClaimGuestAccount400JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeInvalidRequest, "request body is required")}, nil
+	}
+
+	user, err := h.svc.ClaimGuest(ctx, session.User.ID, req.Body.Nickname, email(req.Body.Email), req.Body.Password)
+	switch {
+	case errors.Is(err, ErrNotGuest):
+		return api.ClaimGuestAccount403JSONResponse(errorBody(httpx.CodeForbidden, "this account already has a password")), nil
+	case errors.Is(err, ErrTaken):
+		return api.ClaimGuestAccount409JSONResponse(errorBody(httpx.CodeConflict, "this nickname or email is already taken")), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "claim guest account", slog.Any("error", err))
+		return api.ClaimGuestAccount500JSONResponse(errorBody(httpx.CodeInternal, "could not finish the sign-up")), nil
+	}
+	return api.ClaimGuestAccount200JSONResponse(toAPIUser(user)), nil
+}
+
 func (h *Handler) sessionCookie(creds Credentials) string {
 	return (&http.Cookie{ //nolint:gosec // Secure is set from configuration, see above
 		Name:     SessionCookieName,

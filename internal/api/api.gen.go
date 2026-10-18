@@ -159,6 +159,52 @@ type ErrorDetail struct {
 	Message string `json:"message"`
 }
 
+// GuestJoin defines model for GuestJoin.
+type GuestJoin struct {
+	// Membership A server together with the caller's role in it.
+	Membership WorkspaceMembership `json:"membership"`
+	User       User                `json:"user"`
+}
+
+// GuestJoinRequest defines model for GuestJoinRequest.
+type GuestJoinRequest struct {
+	// Nickname Shown to the others in the room.
+	//
+	// Example: Аня
+	Nickname string `json:"nickname"`
+}
+
+// Invite defines model for Invite.
+type Invite struct {
+	// Code Goes at the end of the invite link.
+	Code      string    `json:"code"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// ExpiresAt Absent for a link without an end.
+	ExpiresAt *time.Time         `json:"expiresAt,omitempty"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// MaxUses Absent for a link without a limit.
+	MaxUses *int `json:"maxUses,omitempty"`
+	Uses    int  `json:"uses"`
+}
+
+// InviteCreateRequest defines model for InviteCreateRequest.
+type InviteCreateRequest struct {
+	// ExpiresInHours How long the link lives. Omit for a link without an end.
+	ExpiresInHours *int `json:"expiresInHours,omitempty"`
+
+	// MaxUses How many people may come through it. Omit for no limit.
+	MaxUses *int `json:"maxUses,omitempty"`
+}
+
+// InvitePreview defines model for InvitePreview.
+type InvitePreview struct {
+	MemberCount   int                `json:"memberCount"`
+	WorkspaceId   openapi_types.UUID `json:"workspaceId"`
+	WorkspaceName string             `json:"workspaceName"`
+}
+
 // Liveness defines model for Liveness.
 type Liveness struct {
 	Status LivenessStatus `json:"status"`
@@ -258,6 +304,9 @@ type RegisterRequest struct {
 	Email *openapi_types.Email `json:"email,omitempty"`
 
 	// Nickname Shown to other people. Compared without case, so "Anna" and "anna" collide.
+	// Latin and Cyrillic letters, digits, space, '.', '_' and '-'; the same rule as
+	// for a guest name, so signing up never rejects the name someone came in with.
+	//
 	//
 	// Example: Anna
 	Nickname string `json:"nickname"`
@@ -385,6 +434,9 @@ type WorkspaceUpdateRequest struct {
 // ChannelId defines model for ChannelId.
 type ChannelId = openapi_types.UUID
 
+// InviteCode defines model for InviteCode.
+type InviteCode = string
+
 // MessageId defines model for MessageId.
 type MessageId = openapi_types.UUID
 
@@ -403,6 +455,9 @@ type ListMessagesParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ClaimGuestAccountJSONRequestBody defines body for ClaimGuestAccount for application/json ContentType.
+type ClaimGuestAccountJSONRequestBody = RegisterRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -417,6 +472,9 @@ type UpdateChannelJSONRequestBody = ChannelUpdateRequest
 
 // SendMessageJSONRequestBody defines body for SendMessage for application/json ContentType.
 type SendMessageJSONRequestBody = MessageCreateRequest
+
+// JoinAsGuestJSONRequestBody defines body for JoinAsGuest for application/json ContentType.
+type JoinAsGuestJSONRequestBody = GuestJoinRequest
 
 // EditMessageJSONRequestBody defines body for EditMessage for application/json ContentType.
 type EditMessageJSONRequestBody = MessageUpdateRequest
@@ -439,11 +497,17 @@ type CreateChannelJSONRequestBody = ChannelCreateRequest
 // ReorderChannelsJSONRequestBody defines body for ReorderChannels for application/json ContentType.
 type ReorderChannelsJSONRequestBody = ChannelOrderRequest
 
+// CreateInviteJSONRequestBody defines body for CreateInvite for application/json ContentType.
+type CreateInviteJSONRequestBody = InviteCreateRequest
+
 // SetWorkspaceMemberRoleJSONRequestBody defines body for SetWorkspaceMemberRole for application/json ContentType.
 type SetWorkspaceMemberRoleJSONRequestBody = WorkspaceMemberRoleRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ClaimGuestAccount Turn this guest into a full account. Needs a guest session.
+	// (POST /api/v1/auth/claim)
+	ClaimGuestAccount(w http.ResponseWriter, r *http.Request)
 	// Login Start a session for an existing account.
 	// (POST /api/v1/auth/login)
 	Login(w http.ResponseWriter, r *http.Request)
@@ -474,6 +538,18 @@ type ServerInterface interface {
 	// SendMessage Send a message. Needs the right to write in the channel.
 	// (POST /api/v1/channels/{channelId}/messages)
 	SendMessage(w http.ResponseWriter, r *http.Request, channelId ChannelId)
+	// AcceptInvite Join the server behind the link. Needs a session.
+	// (POST /api/v1/invites/{code}/accept)
+	AcceptInvite(w http.ResponseWriter, r *http.Request, code InviteCode)
+	// JoinAsGuest Enter as a guest, by name alone. No account, no session needed.
+	// (POST /api/v1/invites/{code}/guest)
+	JoinAsGuest(w http.ResponseWriter, r *http.Request, code InviteCode)
+	// PreviewInvite What this link leads to. No session needed.
+	// (GET /api/v1/invites/{code}/preview)
+	PreviewInvite(w http.ResponseWriter, r *http.Request, code InviteCode)
+	// RevokeInvite Revoke an invite link. Admin or owner.
+	// (DELETE /api/v1/invites/{inviteId})
+	RevokeInvite(w http.ResponseWriter, r *http.Request, inviteId openapi_types.UUID)
 	// DeleteMessage Delete your own message.
 	// (DELETE /api/v1/messages/{messageId})
 	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId MessageId)
@@ -522,6 +598,12 @@ type ServerInterface interface {
 	// ReorderChannels Set the order of the channels. Admin or owner.
 	// (PUT /api/v1/workspaces/{workspaceId}/channels/order)
 	ReorderChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// ListInvites Invite links of a server. Admin or owner.
+	// (GET /api/v1/workspaces/{workspaceId}/invites)
+	ListInvites(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// CreateInvite Create an invite link. Admin or owner.
+	// (POST /api/v1/workspaces/{workspaceId}/invites)
+	CreateInvite(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
 	// ListWorkspaceMembers Members of a server and their roles. Needs membership.
 	// (GET /api/v1/workspaces/{workspaceId}/members)
 	ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
@@ -542,6 +624,12 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ClaimGuestAccount Turn this guest into a full account. Needs a guest session.
+// (POST /api/v1/auth/claim)
+func (_ Unimplemented) ClaimGuestAccount(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // Login Start a session for an existing account.
 // (POST /api/v1/auth/login)
@@ -600,6 +688,30 @@ func (_ Unimplemented) ListMessages(w http.ResponseWriter, r *http.Request, chan
 // SendMessage Send a message. Needs the right to write in the channel.
 // (POST /api/v1/channels/{channelId}/messages)
 func (_ Unimplemented) SendMessage(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AcceptInvite Join the server behind the link. Needs a session.
+// (POST /api/v1/invites/{code}/accept)
+func (_ Unimplemented) AcceptInvite(w http.ResponseWriter, r *http.Request, code InviteCode) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// JoinAsGuest Enter as a guest, by name alone. No account, no session needed.
+// (POST /api/v1/invites/{code}/guest)
+func (_ Unimplemented) JoinAsGuest(w http.ResponseWriter, r *http.Request, code InviteCode) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PreviewInvite What this link leads to. No session needed.
+// (GET /api/v1/invites/{code}/preview)
+func (_ Unimplemented) PreviewInvite(w http.ResponseWriter, r *http.Request, code InviteCode) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeInvite Revoke an invite link. Admin or owner.
+// (DELETE /api/v1/invites/{inviteId})
+func (_ Unimplemented) RevokeInvite(w http.ResponseWriter, r *http.Request, inviteId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -699,6 +811,18 @@ func (_ Unimplemented) ReorderChannels(w http.ResponseWriter, r *http.Request, w
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListInvites Invite links of a server. Admin or owner.
+// (GET /api/v1/workspaces/{workspaceId}/invites)
+func (_ Unimplemented) ListInvites(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateInvite Create an invite link. Admin or owner.
+// (POST /api/v1/workspaces/{workspaceId}/invites)
+func (_ Unimplemented) CreateInvite(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListWorkspaceMembers Members of a server and their roles. Needs membership.
 // (GET /api/v1/workspaces/{workspaceId}/members)
 func (_ Unimplemented) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
@@ -737,6 +861,20 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ClaimGuestAccount operation middleware
+func (siw *ServerInterfaceWrapper) ClaimGuestAccount(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ClaimGuestAccount(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // Login operation middleware
 func (siw *ServerInterfaceWrapper) Login(w http.ResponseWriter, r *http.Request) {
@@ -958,6 +1096,110 @@ func (siw *ServerInterfaceWrapper) SendMessage(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SendMessage(w, r, channelId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcceptInvite operation middleware
+func (siw *ServerInterfaceWrapper) AcceptInvite(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "code" -------------
+	var code InviteCode
+
+	err = runtime.BindStyledParameterWithOptions("simple", "code", chi.URLParam(r, "code"), &code, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcceptInvite(w, r, code)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// JoinAsGuest operation middleware
+func (siw *ServerInterfaceWrapper) JoinAsGuest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "code" -------------
+	var code InviteCode
+
+	err = runtime.BindStyledParameterWithOptions("simple", "code", chi.URLParam(r, "code"), &code, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.JoinAsGuest(w, r, code)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewInvite operation middleware
+func (siw *ServerInterfaceWrapper) PreviewInvite(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "code" -------------
+	var code InviteCode
+
+	err = runtime.BindStyledParameterWithOptions("simple", "code", chi.URLParam(r, "code"), &code, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewInvite(w, r, code)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeInvite operation middleware
+func (siw *ServerInterfaceWrapper) RevokeInvite(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "inviteId" -------------
+	var inviteId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "inviteId", chi.URLParam(r, "inviteId"), &inviteId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "inviteId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeInvite(w, r, inviteId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1383,6 +1625,58 @@ func (siw *ServerInterfaceWrapper) ReorderChannels(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListInvites operation middleware
+func (siw *ServerInterfaceWrapper) ListInvites(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListInvites(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateInvite operation middleware
+func (siw *ServerInterfaceWrapper) CreateInvite(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateInvite(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListWorkspaceMembers operation middleware
 func (siw *ServerInterfaceWrapper) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
 
@@ -1711,6 +2005,27 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Put(options.BaseURL+"/api/v1/messages/{messageId}/reactions/{emoji}", wrapper.AddReaction)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/workspaces/{workspaceId}/invites", wrapper.ListInvites)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/workspaces/{workspaceId}/invites", wrapper.CreateInvite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/invites/{inviteId}", wrapper.RevokeInvite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/invites/{code}/preview", wrapper.PreviewInvite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/invites/{code}/accept", wrapper.AcceptInvite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/invites/{code}/guest", wrapper.JoinAsGuest)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/auth/claim", wrapper.ClaimGuestAccount)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/v1/voice/token", wrapper.CreateVoiceToken)
 	})
 
@@ -1718,6 +2033,112 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 }
 
 type ErrorJSONResponse Error
+
+type ClaimGuestAccountRequestObject struct {
+	Body *ClaimGuestAccountJSONRequestBody
+}
+
+type ClaimGuestAccountResponseObject interface {
+	VisitClaimGuestAccountResponse(w http.ResponseWriter) error
+}
+
+type ClaimGuestAccount200JSONResponse User
+
+func (response ClaimGuestAccount200JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimGuestAccount400JSONResponse struct{ ErrorJSONResponse }
+
+func (response ClaimGuestAccount400JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimGuestAccount401JSONResponse Error
+
+func (response ClaimGuestAccount401JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimGuestAccount403JSONResponse Error
+
+func (response ClaimGuestAccount403JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimGuestAccount409JSONResponse Error
+
+func (response ClaimGuestAccount409JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimGuestAccount413JSONResponse Error
+
+func (response ClaimGuestAccount413JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimGuestAccount500JSONResponse Error
+
+func (response ClaimGuestAccount500JSONResponse) VisitClaimGuestAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
 
 type LoginRequestObject struct {
 	Body *LoginJSONRequestBody
@@ -2521,6 +2942,309 @@ func (response SendMessage413JSONResponse) VisitSendMessageResponse(w http.Respo
 type SendMessage500JSONResponse Error
 
 func (response SendMessage500JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInviteRequestObject struct {
+	Code InviteCode `json:"code"`
+}
+
+type AcceptInviteResponseObject interface {
+	VisitAcceptInviteResponse(w http.ResponseWriter) error
+}
+
+type AcceptInvite200JSONResponse WorkspaceMembership
+
+func (response AcceptInvite200JSONResponse) VisitAcceptInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvite401JSONResponse struct{ ErrorJSONResponse }
+
+func (response AcceptInvite401JSONResponse) VisitAcceptInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvite403JSONResponse Error
+
+func (response AcceptInvite403JSONResponse) VisitAcceptInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvite404JSONResponse Error
+
+func (response AcceptInvite404JSONResponse) VisitAcceptInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvite500JSONResponse Error
+
+func (response AcceptInvite500JSONResponse) VisitAcceptInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type JoinAsGuestRequestObject struct {
+	Code InviteCode `json:"code"`
+	Body *JoinAsGuestJSONRequestBody
+}
+
+type JoinAsGuestResponseObject interface {
+	VisitJoinAsGuestResponse(w http.ResponseWriter) error
+}
+
+type JoinAsGuest201ResponseHeaders struct {
+	SetCookie *string
+}
+
+type JoinAsGuest201JSONResponse struct {
+	Body    GuestJoin
+	Headers JoinAsGuest201ResponseHeaders
+}
+
+func (response JoinAsGuest201JSONResponse) VisitJoinAsGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.SetCookie != nil {
+		w.Header().Set("Set-Cookie", fmt.Sprint(*response.Headers.SetCookie))
+	}
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type JoinAsGuest400JSONResponse struct{ ErrorJSONResponse }
+
+func (response JoinAsGuest400JSONResponse) VisitJoinAsGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type JoinAsGuest404JSONResponse Error
+
+func (response JoinAsGuest404JSONResponse) VisitJoinAsGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type JoinAsGuest409JSONResponse Error
+
+func (response JoinAsGuest409JSONResponse) VisitJoinAsGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type JoinAsGuest413JSONResponse Error
+
+func (response JoinAsGuest413JSONResponse) VisitJoinAsGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type JoinAsGuest500JSONResponse Error
+
+func (response JoinAsGuest500JSONResponse) VisitJoinAsGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewInviteRequestObject struct {
+	Code InviteCode `json:"code"`
+}
+
+type PreviewInviteResponseObject interface {
+	VisitPreviewInviteResponse(w http.ResponseWriter) error
+}
+
+type PreviewInvite200JSONResponse InvitePreview
+
+func (response PreviewInvite200JSONResponse) VisitPreviewInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewInvite404JSONResponse struct{ ErrorJSONResponse }
+
+func (response PreviewInvite404JSONResponse) VisitPreviewInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewInvite500JSONResponse Error
+
+func (response PreviewInvite500JSONResponse) VisitPreviewInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeInviteRequestObject struct {
+	InviteId openapi_types.UUID `json:"inviteId"`
+}
+
+type RevokeInviteResponseObject interface {
+	VisitRevokeInviteResponse(w http.ResponseWriter) error
+}
+
+type RevokeInvite204Response struct {
+}
+
+func (response RevokeInvite204Response) VisitRevokeInviteResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokeInvite401JSONResponse struct{ ErrorJSONResponse }
+
+func (response RevokeInvite401JSONResponse) VisitRevokeInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeInvite403JSONResponse Error
+
+func (response RevokeInvite403JSONResponse) VisitRevokeInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeInvite404JSONResponse Error
+
+func (response RevokeInvite404JSONResponse) VisitRevokeInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeInvite500JSONResponse Error
+
+func (response RevokeInvite500JSONResponse) VisitRevokeInviteResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3874,6 +4598,191 @@ func (response ReorderChannels500JSONResponse) VisitReorderChannelsResponse(w ht
 	return err
 }
 
+type ListInvitesRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+}
+
+type ListInvitesResponseObject interface {
+	VisitListInvitesResponse(w http.ResponseWriter) error
+}
+
+type ListInvites200JSONResponse []Invite
+
+func (response ListInvites200JSONResponse) VisitListInvitesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListInvites401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListInvites401JSONResponse) VisitListInvitesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListInvites403JSONResponse Error
+
+func (response ListInvites403JSONResponse) VisitListInvitesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListInvites404JSONResponse Error
+
+func (response ListInvites404JSONResponse) VisitListInvitesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListInvites500JSONResponse Error
+
+func (response ListInvites500JSONResponse) VisitListInvitesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInviteRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	Body        *CreateInviteJSONRequestBody
+}
+
+type CreateInviteResponseObject interface {
+	VisitCreateInviteResponse(w http.ResponseWriter) error
+}
+
+type CreateInvite201JSONResponse Invite
+
+func (response CreateInvite201JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInvite400JSONResponse struct{ ErrorJSONResponse }
+
+func (response CreateInvite400JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInvite401JSONResponse Error
+
+func (response CreateInvite401JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInvite403JSONResponse Error
+
+func (response CreateInvite403JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInvite404JSONResponse Error
+
+func (response CreateInvite404JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInvite413JSONResponse Error
+
+func (response CreateInvite413JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateInvite500JSONResponse Error
+
+func (response CreateInvite500JSONResponse) VisitCreateInviteResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListWorkspaceMembersRequestObject struct {
 	WorkspaceId WorkspaceId `json:"workspaceId"`
 }
@@ -4177,6 +5086,9 @@ func (response GetReadiness503JSONResponse) VisitGetReadinessResponse(w http.Res
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ClaimGuestAccount Turn this guest into a full account. Needs a guest session.
+	// (POST /api/v1/auth/claim)
+	ClaimGuestAccount(ctx context.Context, request ClaimGuestAccountRequestObject) (ClaimGuestAccountResponseObject, error)
 	// Login Start a session for an existing account.
 	// (POST /api/v1/auth/login)
 	Login(ctx context.Context, request LoginRequestObject) (LoginResponseObject, error)
@@ -4207,6 +5119,18 @@ type StrictServerInterface interface {
 	// SendMessage Send a message. Needs the right to write in the channel.
 	// (POST /api/v1/channels/{channelId}/messages)
 	SendMessage(ctx context.Context, request SendMessageRequestObject) (SendMessageResponseObject, error)
+	// AcceptInvite Join the server behind the link. Needs a session.
+	// (POST /api/v1/invites/{code}/accept)
+	AcceptInvite(ctx context.Context, request AcceptInviteRequestObject) (AcceptInviteResponseObject, error)
+	// JoinAsGuest Enter as a guest, by name alone. No account, no session needed.
+	// (POST /api/v1/invites/{code}/guest)
+	JoinAsGuest(ctx context.Context, request JoinAsGuestRequestObject) (JoinAsGuestResponseObject, error)
+	// PreviewInvite What this link leads to. No session needed.
+	// (GET /api/v1/invites/{code}/preview)
+	PreviewInvite(ctx context.Context, request PreviewInviteRequestObject) (PreviewInviteResponseObject, error)
+	// RevokeInvite Revoke an invite link. Admin or owner.
+	// (DELETE /api/v1/invites/{inviteId})
+	RevokeInvite(ctx context.Context, request RevokeInviteRequestObject) (RevokeInviteResponseObject, error)
 	// DeleteMessage Delete your own message.
 	// (DELETE /api/v1/messages/{messageId})
 	DeleteMessage(ctx context.Context, request DeleteMessageRequestObject) (DeleteMessageResponseObject, error)
@@ -4255,6 +5179,12 @@ type StrictServerInterface interface {
 	// ReorderChannels Set the order of the channels. Admin or owner.
 	// (PUT /api/v1/workspaces/{workspaceId}/channels/order)
 	ReorderChannels(ctx context.Context, request ReorderChannelsRequestObject) (ReorderChannelsResponseObject, error)
+	// ListInvites Invite links of a server. Admin or owner.
+	// (GET /api/v1/workspaces/{workspaceId}/invites)
+	ListInvites(ctx context.Context, request ListInvitesRequestObject) (ListInvitesResponseObject, error)
+	// CreateInvite Create an invite link. Admin or owner.
+	// (POST /api/v1/workspaces/{workspaceId}/invites)
+	CreateInvite(ctx context.Context, request CreateInviteRequestObject) (CreateInviteResponseObject, error)
 	// ListWorkspaceMembers Members of a server and their roles. Needs membership.
 	// (GET /api/v1/workspaces/{workspaceId}/members)
 	ListWorkspaceMembers(ctx context.Context, request ListWorkspaceMembersRequestObject) (ListWorkspaceMembersResponseObject, error)
@@ -4309,6 +5239,37 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ClaimGuestAccount operation middleware
+func (sh *strictHandler) ClaimGuestAccount(w http.ResponseWriter, r *http.Request) {
+	var request ClaimGuestAccountRequestObject
+
+	var body ClaimGuestAccountJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ClaimGuestAccount(ctx, request.(ClaimGuestAccountRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ClaimGuestAccount")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ClaimGuestAccountResponseObject); ok {
+		if err := validResponse.VisitClaimGuestAccountResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // Login operation middleware
@@ -4590,6 +5551,117 @@ func (sh *strictHandler) SendMessage(w http.ResponseWriter, r *http.Request, cha
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SendMessageResponseObject); ok {
 		if err := validResponse.VisitSendMessageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AcceptInvite operation middleware
+func (sh *strictHandler) AcceptInvite(w http.ResponseWriter, r *http.Request, code InviteCode) {
+	var request AcceptInviteRequestObject
+
+	request.Code = code
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AcceptInvite(ctx, request.(AcceptInviteRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AcceptInvite")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AcceptInviteResponseObject); ok {
+		if err := validResponse.VisitAcceptInviteResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// JoinAsGuest operation middleware
+func (sh *strictHandler) JoinAsGuest(w http.ResponseWriter, r *http.Request, code InviteCode) {
+	var request JoinAsGuestRequestObject
+
+	request.Code = code
+
+	var body JoinAsGuestJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.JoinAsGuest(ctx, request.(JoinAsGuestRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "JoinAsGuest")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(JoinAsGuestResponseObject); ok {
+		if err := validResponse.VisitJoinAsGuestResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewInvite operation middleware
+func (sh *strictHandler) PreviewInvite(w http.ResponseWriter, r *http.Request, code InviteCode) {
+	var request PreviewInviteRequestObject
+
+	request.Code = code
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewInvite(ctx, request.(PreviewInviteRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewInvite")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewInviteResponseObject); ok {
+		if err := validResponse.VisitPreviewInviteResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeInvite operation middleware
+func (sh *strictHandler) RevokeInvite(w http.ResponseWriter, r *http.Request, inviteId openapi_types.UUID) {
+	var request RevokeInviteRequestObject
+
+	request.InviteId = inviteId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeInvite(ctx, request.(RevokeInviteRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeInvite")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeInviteResponseObject); ok {
+		if err := validResponse.VisitRevokeInviteResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -5063,6 +6135,68 @@ func (sh *strictHandler) ReorderChannels(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// ListInvites operation middleware
+func (sh *strictHandler) ListInvites(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request ListInvitesRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListInvites(ctx, request.(ListInvitesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListInvites")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListInvitesResponseObject); ok {
+		if err := validResponse.VisitListInvitesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateInvite operation middleware
+func (sh *strictHandler) CreateInvite(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request CreateInviteRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	var body CreateInviteJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateInvite(ctx, request.(CreateInviteRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateInvite")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateInviteResponseObject); ok {
+		if err := validResponse.VisitCreateInviteResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListWorkspaceMembers operation middleware
 func (sh *strictHandler) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
 	var request ListWorkspaceMembersRequestObject
@@ -5203,102 +6337,119 @@ func (sh *strictHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

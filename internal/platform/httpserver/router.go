@@ -20,6 +20,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/health"
+	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -48,6 +49,8 @@ type Deps struct {
 	Channels *channels.Handler
 	// Messages serves what people write in those channels.
 	Messages *messages.Handler
+	// Invites serves invite links and the guest entrance.
+	Invites *invites.Handler
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
@@ -60,8 +63,8 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil {
-		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions, Deps.Workspaces, Deps.Channels and Deps.Messages are required")
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil {
+		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions, Deps.Workspaces, Deps.Channels, Deps.Messages and Deps.Invites are required")
 	}
 
 	spec, err := api.GetSpec()
@@ -103,7 +106,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -145,6 +148,7 @@ type server struct {
 	workspaces *servers.Handler
 	channels   *channels.Handler
 	messages   *messages.Handler
+	invites    *invites.Handler
 	voice      *voice.Handler
 }
 
@@ -275,6 +279,34 @@ func (s *server) AddReaction(ctx context.Context, req api.AddReactionRequestObje
 
 func (s *server) RemoveReaction(ctx context.Context, req api.RemoveReactionRequestObject) (api.RemoveReactionResponseObject, error) {
 	return s.messages.RemoveReaction(ctx, req)
+}
+
+func (s *server) CreateInvite(ctx context.Context, req api.CreateInviteRequestObject) (api.CreateInviteResponseObject, error) {
+	return s.invites.CreateInvite(ctx, req)
+}
+
+func (s *server) ListInvites(ctx context.Context, req api.ListInvitesRequestObject) (api.ListInvitesResponseObject, error) {
+	return s.invites.ListInvites(ctx, req)
+}
+
+func (s *server) RevokeInvite(ctx context.Context, req api.RevokeInviteRequestObject) (api.RevokeInviteResponseObject, error) {
+	return s.invites.RevokeInvite(ctx, req)
+}
+
+func (s *server) PreviewInvite(ctx context.Context, req api.PreviewInviteRequestObject) (api.PreviewInviteResponseObject, error) {
+	return s.invites.PreviewInvite(ctx, req)
+}
+
+func (s *server) AcceptInvite(ctx context.Context, req api.AcceptInviteRequestObject) (api.AcceptInviteResponseObject, error) {
+	return s.invites.AcceptInvite(ctx, req)
+}
+
+func (s *server) JoinAsGuest(ctx context.Context, req api.JoinAsGuestRequestObject) (api.JoinAsGuestResponseObject, error) {
+	return s.invites.JoinAsGuest(ctx, req)
+}
+
+func (s *server) ClaimGuestAccount(ctx context.Context, req api.ClaimGuestAccountRequestObject) (api.ClaimGuestAccountResponseObject, error) {
+	return s.auth.ClaimGuestAccount(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

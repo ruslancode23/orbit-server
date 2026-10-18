@@ -124,6 +124,27 @@ func (s *PostgresStore) SetPassword(ctx context.Context, userID uuid.UUID, passw
 	return nil
 }
 
+func (s *PostgresStore) PromoteGuest(ctx context.Context, id uuid.UUID, nickname, email, passwordHash string) (User, error) {
+	row, err := s.q.PromoteGuest(ctx, db.PromoteGuestParams{
+		ID:           pgUUID(id),
+		Nickname:     nickname,
+		Email:        text(email),
+		PasswordHash: text(passwordHash),
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// The row is there but no longer a guest, or it is gone entirely.
+			return User{}, ErrNotGuest
+		case errors.As(err, &pgErr) && pgErr.Code == uniqueViolation:
+			return User{}, ErrTaken
+		}
+		return User{}, fmt.Errorf("promote guest: %w", err)
+	}
+	return toUser(row), nil
+}
+
 func toUser(row db.User) User {
 	return User{
 		ID:        uuid.UUID(row.ID.Bytes),

@@ -171,6 +171,21 @@ func (s *Service) Authorize(ctx context.Context, workspaceID, userID uuid.UUID) 
 	return s.store.Role(ctx, workspaceID, userID)
 }
 
+// Workspace reads a server without checking membership. For callers that have
+// their own reason to see it — an invite link, for one.
+func (s *Service) Workspace(ctx context.Context, workspaceID uuid.UUID) (Workspace, error) {
+	return s.store.Workspace(ctx, workspaceID)
+}
+
+// MemberCount is how many people are on a server.
+func (s *Service) MemberCount(ctx context.Context, workspaceID uuid.UUID) (int, error) {
+	members, err := s.store.ListMembers(ctx, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return len(members), nil
+}
+
 // IsMember reports whether the account is on the server. Other modules use it
 // to decide, for example, whether a mention reaches someone who can read it.
 func (s *Service) IsMember(ctx context.Context, workspaceID, userID uuid.UUID) (bool, error) {

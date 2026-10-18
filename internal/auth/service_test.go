@@ -115,6 +115,31 @@ func (s *fakeStore) RevokeUserSessions(_ context.Context, userID uuid.UUID) erro
 	return nil
 }
 
+func (s *fakeStore) PromoteGuest(_ context.Context, id uuid.UUID, nickname, email, passwordHash string) (User, error) {
+	for i := range s.users {
+		if s.users[i].ID != id {
+			continue
+		}
+		if !s.users[i].IsGuest {
+			return User{}, ErrNotGuest
+		}
+		for _, other := range s.users {
+			if other.ID == id {
+				continue
+			}
+			if strings.EqualFold(other.Nickname, nickname) || (email != "" && strings.EqualFold(other.Email, email)) {
+				return User{}, ErrTaken
+			}
+		}
+		s.users[i].Nickname = nickname
+		s.users[i].Email = email
+		s.users[i].PasswordHash = passwordHash
+		s.users[i].IsGuest = false
+		return s.users[i].User, nil
+	}
+	return User{}, ErrNoUser
+}
+
 func (s *fakeStore) SetPassword(_ context.Context, userID uuid.UUID, passwordHash string) error {
 	for i := range s.users {
 		if s.users[i].ID == userID {
@@ -354,5 +379,70 @@ func TestSessionTokensDiffer(t *testing.T) {
 	}
 	if len(first.Token) < 40 {
 		t.Errorf("token = %q, want at least 256 bits of entropy", first.Token)
+	}
+}
+
+// A guest that signs up keeps its account: same id, so its servers, messages
+// and read cursors stay where they are (FR-03).
+func TestClaimGuestKeepsTheSameAccount(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	guest, creds, err := svc.RegisterGuest(t.Context(), "Аня")
+	if err != nil {
+		t.Fatalf("RegisterGuest: %v", err)
+	}
+	if !guest.IsGuest || creds.Token == "" {
+		t.Fatalf("guest = %+v, creds = %+v; want a guest with a session", guest, creds)
+	}
+
+	claimed, err := svc.ClaimGuest(t.Context(), guest.ID, "Аня", "anya@example.com", testPassword)
+	if err != nil {
+		t.Fatalf("ClaimGuest: %v", err)
+	}
+
+	if claimed.ID != guest.ID {
+		t.Errorf("id = %v, want the guest's own %v", claimed.ID, guest.ID)
+	}
+	if claimed.IsGuest {
+		t.Error("the account is still marked as a guest")
+	}
+
+	// The session from the guest days keeps working: signing up is not signing out.
+	if _, err := svc.Authenticate(t.Context(), creds.Token); err != nil {
+		t.Errorf("the session died on sign-up: %v", err)
+	}
+	// And the new password works.
+	if _, _, err := svc.Login(t.Context(), "anya@example.com", testPassword); err != nil {
+		t.Errorf("Login after the claim: %v", err)
+	}
+}
+
+func TestGuestCannotSignInAndClaimIsOnlyForGuests(t *testing.T) {
+	svc, _ := newTestService(t)
+	guest, _, err := svc.RegisterGuest(t.Context(), "Аня")
+	if err != nil {
+		t.Fatalf("RegisterGuest: %v", err)
+	}
+
+	// A guest has no password, so nobody can sign in as one.
+	if _, _, err := svc.Login(t.Context(), "Аня", ""); !errors.Is(err, ErrCredentials) {
+		t.Errorf("Login as a guest: err = %v, want ErrCredentials", err)
+	}
+
+	if _, err := svc.ClaimGuest(t.Context(), guest.ID, "Аня", "", testPassword); err != nil {
+		t.Fatalf("ClaimGuest: %v", err)
+	}
+	// Claiming twice is refused: the account already has a password.
+	if _, err := svc.ClaimGuest(t.Context(), guest.ID, "Аня", "", "another password"); !errors.Is(err, ErrNotGuest) {
+		t.Errorf("err = %v, want ErrNotGuest", err)
+	}
+}
+
+func TestRegisterGuestRefusesATakenNickname(t *testing.T) {
+	svc, _ := newTestService(t)
+	registerTestUser(t, svc)
+
+	if _, _, err := svc.RegisterGuest(t.Context(), "anna"); !errors.Is(err, ErrTaken) {
+		t.Errorf("err = %v, want ErrTaken", err)
 	}
 }

@@ -25,3 +25,6 @@ UPDATE invites SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;
 
 -- name: ListWorkspaceInvites :many
 SELECT * FROM invites WHERE workspace_id = $1 ORDER BY created_at DESC;
+
+-- name: GetInvite :one
+SELECT * FROM invites WHERE id = $1;

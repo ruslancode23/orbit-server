@@ -23,6 +23,9 @@ var (
 	ErrNoSession = errors.New("auth: no live session")
 	// ErrNoUser means the account is gone.
 	ErrNoUser = errors.New("auth: no such user")
+	// ErrNotGuest means the account already has a password, so there is nothing
+	// to claim.
+	ErrNotGuest = errors.New("auth: not a guest account")
 )
 
 // User is an account as the rest of the server sees it, without the password hash.
@@ -70,6 +73,9 @@ type Store interface {
 	RevokeSession(ctx context.Context, id uuid.UUID) error
 	RevokeUserSessions(ctx context.Context, userID uuid.UUID) error
 	SetPassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
+	// PromoteGuest gives a guest a nickname, an email and a password, keeping its
+	// id. Returns ErrNotGuest when the account is not a guest any more.
+	PromoteGuest(ctx context.Context, id uuid.UUID, nickname, email, passwordHash string) (User, error)
 }
 
 // Service holds the rules; it knows nothing about HTTP.
@@ -110,6 +116,42 @@ func (s *Service) Register(ctx context.Context, nickname, email, password string
 		return User{}, Credentials{}, err
 	}
 	return user, creds, nil
+}
+
+// RegisterGuest creates an account without a password and starts its session.
+// A guest keeps its id when it signs up, so its messages and memberships stay.
+func (s *Service) RegisterGuest(ctx context.Context, nickname string) (User, Credentials, error) {
+	user, err := s.store.CreateUser(ctx, NewUser{
+		Nickname: strings.TrimSpace(nickname),
+		IsGuest:  true,
+	})
+	if err != nil {
+		return User{}, Credentials{}, err
+	}
+
+	creds, err := s.startSession(ctx, user.ID)
+	if err != nil {
+		return User{}, Credentials{}, err
+	}
+	return user, creds, nil
+}
+
+// ClaimGuest turns a guest into a full account in place: same id, same history.
+// The session stays, so the person is not thrown out at the moment they sign up.
+func (s *Service) ClaimGuest(ctx context.Context, userID uuid.UUID, nickname, email, password string) (User, error) {
+	stored, err := s.store.UserByID(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	if !stored.IsGuest {
+		return User{}, ErrNotGuest
+	}
+
+	hash, err := HashPassword(password)
+	if err != nil {
+		return User{}, fmt.Errorf("hash password: %w", err)
+	}
+	return s.store.PromoteGuest(ctx, userID, strings.TrimSpace(nickname), strings.TrimSpace(email), hash)
 }
 
 // Login verifies the password and starts a session. A wrong login and a wrong

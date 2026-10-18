@@ -30,6 +30,11 @@ tags:
       Messages in a channel. Sending carries the client's own id, so a resend after a
       network failure returns the message already stored instead of a second copy.
       History comes in pages ordered by `seq`, a number that only grows inside a channel.
+  - name: invites
+    description: |
+      Invite links and the guest entrance. From the link to the room in three steps:
+      open the link, give a name, join — a guest needs no account, and keeps its history
+      when it signs up later.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -632,6 +637,170 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/invites:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listInvites
+      tags: [invites]
+      summary: Invite links of a server. Admin or owner.
+      responses:
+        "200":
+          description: The links.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Invite" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createInvite
+      tags: [invites]
+      summary: Create an invite link. Admin or owner.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InviteCreateRequest" }
+      responses:
+        "201":
+          description: The link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invite" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/invites/{inviteId}:
+    parameters:
+      - name: inviteId
+        in: path
+        required: true
+        description: Invite identifier.
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: revokeInvite
+      tags: [invites]
+      summary: Revoke an invite link. Admin or owner.
+      responses:
+        "204":
+          description: The link no longer works.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/invites/{code}/preview:
+    parameters:
+      - $ref: "#/components/parameters/InviteCode"
+    get:
+      operationId: previewInvite
+      tags: [invites]
+      summary: What this link leads to. No session needed.
+      description: |
+        Shows the server behind a link to whoever holds it, so the page can say what
+        they are joining before they give a name. A dead link answers 404.
+      responses:
+        "200":
+          description: The server behind the link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvitePreview" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/invites/{code}/accept:
+    parameters:
+      - $ref: "#/components/parameters/InviteCode"
+    post:
+      operationId: acceptInvite
+      tags: [invites]
+      summary: Join the server behind the link. Needs a session.
+      responses:
+        "200":
+          description: The server and your role in it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: You are banned from this server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/invites/{code}/guest:
+    parameters:
+      - $ref: "#/components/parameters/InviteCode"
+    post:
+      operationId: joinAsGuest
+      tags: [invites]
+      summary: Enter as a guest, by name alone. No account, no session needed.
+      description: |
+        Creates a guest account, starts a session and joins the server in one step.
+        The guest keeps its id, so signing up later keeps its history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GuestJoinRequest" }
+      responses:
+        "201":
+          description: The guest is in; the session cookie is set.
+          headers:
+            Set-Cookie:
+              description: The session cookie, HttpOnly.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuestJoin" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: The nickname is taken.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/claim:
+    post:
+      operationId: claimGuestAccount
+      tags: [auth]
+      summary: Turn this guest into a full account. Needs a guest session.
+      description: |
+        Keeps the same account, so servers, messages and read cursors stay where they
+        are; it only adds a password, and an email when given.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "200":
+          description: The account, now a full one; the session continues.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: This session is not a guest.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The nickname or email is taken.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -670,6 +839,12 @@ components:
       required: true
       description: Channel identifier.
       schema: { type: string, format: uuid }
+    InviteCode:
+      name: code
+      in: path
+      required: true
+      description: The code from the invite link.
+      schema: { type: string, minLength: 8, maxLength: 64 }
     MessageId:
       name: messageId
       in: path
@@ -762,8 +937,11 @@ components:
       properties:
         nickname:
           type: string
-          pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$"
-          description: Shown to other people. Compared without case, so "Anna" and "anna" collide.
+          pattern: "^[A-Za-z0-9А-Яа-яЁё][A-Za-z0-9А-Яа-яЁё _.-]{0,31}$"
+          description: |
+            Shown to other people. Compared without case, so "Anna" and "anna" collide.
+            Latin and Cyrillic letters, digits, space, '.', '_' and '-'; the same rule as
+            for a guest name, so signing up never rejects the name someone came in with.
           example: Anna
         email:
           type: string
@@ -1044,6 +1222,63 @@ components:
           type: string
           minLength: 1
           maxLength: 4000
+    Invite:
+      type: object
+      additionalProperties: false
+      required: [id, code, uses, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        code:
+          type: string
+          description: Goes at the end of the invite link.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absent for a link without an end.
+        maxUses:
+          type: integer
+          description: Absent for a link without a limit.
+        uses: { type: integer }
+        createdAt: { type: string, format: date-time }
+    InviteCreateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expiresInHours:
+          type: integer
+          minimum: 1
+          maximum: 8760
+          description: How long the link lives. Omit for a link without an end.
+        maxUses:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: How many people may come through it. Omit for no limit.
+    InvitePreview:
+      type: object
+      additionalProperties: false
+      required: [workspaceId, workspaceName, memberCount]
+      properties:
+        workspaceId: { type: string, format: uuid }
+        workspaceName: { type: string }
+        memberCount: { type: integer }
+    GuestJoinRequest:
+      type: object
+      additionalProperties: false
+      required: [nickname]
+      properties:
+        nickname:
+          type: string
+          pattern: "^[A-Za-z0-9А-Яа-яЁё][A-Za-z0-9А-Яа-яЁё _.-]{0,31}$"
+          description: Shown to the others in the room.
+          example: Аня
+    GuestJoin:
+      type: object
+      additionalProperties: false
+      required: [user, membership]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        membership: { $ref: "#/components/schemas/WorkspaceMembership" }
     VoiceTokenRequest:
       type: object
       additionalProperties: false
