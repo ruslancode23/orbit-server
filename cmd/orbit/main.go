@@ -24,6 +24,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
@@ -66,8 +67,10 @@ func run() error {
 		CORSOrigins: cfg.CORSOrigins,
 		Health:      health.NewHandler(pool),
 		// Cookies go over TLS everywhere but local development.
-		Auth:       authHandler,
-		Invites:    invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
+		Auth:    authHandler,
+		Invites: invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
+		Reads: reads.NewHandler(
+			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,
 		Workspaces: servers.NewHandler(workspaces, log),
 		Gateway:    gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log),

@@ -17,6 +17,8 @@ type Querier interface {
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
+	// The counts of one channel, for the answer after the cursor moved.
+	CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error)
 	// A server always keeps exactly one owner; the count guards the last one.
 	CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	// Unread and mention counts for every channel of one workspace in a single query (task 2.8).

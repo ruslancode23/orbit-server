@@ -80,52 +80,50 @@ func TestRevokeEndsOnlyThatAccountsSubscriptions(t *testing.T) {
 	}
 }
 
-// One reader that stops reading must not hold up the others: it is dropped and
-// catches up by cursor when it reconnects.
-func TestSlowSubscriberIsDroppedAndTheRestKeepGoing(t *testing.T) {
+// A reader that stops reading is dropped once its queue overflows; the others
+// keep their stream, and the one that was dropped catches up by cursor later.
+func TestSlowSubscriberIsDropped(t *testing.T) {
 	hub := NewHub()
 	workspace := uuid.New()
 	slow := hub.Subscribe(uuid.New(), workspace)
-	fast := hub.Subscribe(uuid.New(), workspace)
-	defer fast.Close()
 
-	received := make(chan int64, queueSize*4)
-	go func() {
-		for {
-			select {
-			case event := <-fast.Events():
-				received <- event.Seq
-			case <-fast.Done():
-				return
-			}
-		}
-	}()
-
-	for seq := range int64(queueSize * 3) {
+	// One more than the queue holds: the last publish has nowhere to put it.
+	for seq := range int64(queueSize + 1) {
 		hub.Publish(Event{Kind: KindMessageCreated, WorkspaceID: workspace, Seq: seq + 1})
 	}
 
 	select {
 	case <-slow.Done():
 		if !slow.Dropped() {
-			t.Error("the slow subscription ended but is not marked as dropped")
+			t.Error("the subscription ended but is not marked as dropped")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("the slow subscription is still alive after overflowing its queue")
+		t.Fatal("the subscription survived overflowing its queue")
 	}
+	if hub.Subscribers(workspace) != 0 {
+		t.Errorf("subscribers = %d, want 0", hub.Subscribers(workspace))
+	}
+}
 
-	// The fast reader saw everything.
-	deadline := time.After(2 * time.Second)
-	var last int64
-	for last < int64(queueSize*3) {
-		select {
-		case seq := <-received:
-			if seq != last+1 {
-				t.Fatalf("got seq %d after %d: the stream has a gap", seq, last)
-			}
-			last = seq
-		case <-deadline:
-			t.Fatalf("the fast reader stopped at %d of %d", last, queueSize*3)
+// A reader that keeps up gets every event, in order, however many come — and
+// one stalled neighbour does not cost it anything.
+func TestReaderThatKeepsUpLosesNothing(t *testing.T) {
+	hub := NewHub()
+	workspace := uuid.New()
+	stalled := hub.Subscribe(uuid.New(), workspace)
+	defer stalled.Close()
+	fast := hub.Subscribe(uuid.New(), workspace)
+	defer fast.Close()
+
+	for seq := range int64(queueSize * 3) {
+		hub.Publish(Event{Kind: KindMessageCreated, WorkspaceID: workspace, Seq: seq + 1})
+
+		event, ok := receive(t, fast)
+		if !ok {
+			t.Fatalf("the reader that keeps up was dropped at seq %d", seq+1)
+		}
+		if event.Seq != seq+1 {
+			t.Fatalf("seq = %d, want %d: the stream has a gap", event.Seq, seq+1)
 		}
 	}
 }

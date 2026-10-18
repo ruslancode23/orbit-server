@@ -23,6 +23,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
@@ -51,6 +52,8 @@ type Deps struct {
 	Messages *messages.Handler
 	// Invites serves invite links and the guest entrance.
 	Invites *invites.Handler
+	// Reads serves read cursors and unread counts.
+	Reads *reads.Handler
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
@@ -63,8 +66,8 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil {
-		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions, Deps.Workspaces, Deps.Channels, Deps.Messages and Deps.Invites are required")
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil {
+		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
 	spec, err := api.GetSpec()
@@ -106,7 +109,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -149,6 +152,7 @@ type server struct {
 	channels   *channels.Handler
 	messages   *messages.Handler
 	invites    *invites.Handler
+	reads      *reads.Handler
 	voice      *voice.Handler
 }
 
@@ -307,6 +311,14 @@ func (s *server) JoinAsGuest(ctx context.Context, req api.JoinAsGuestRequestObje
 
 func (s *server) ClaimGuestAccount(ctx context.Context, req api.ClaimGuestAccountRequestObject) (api.ClaimGuestAccountResponseObject, error) {
 	return s.auth.ClaimGuestAccount(ctx, req)
+}
+
+func (s *server) ListUnread(ctx context.Context, req api.ListUnreadRequestObject) (api.ListUnreadResponseObject, error) {
+	return s.reads.ListUnread(ctx, req)
+}
+
+func (s *server) MarkChannelRead(ctx context.Context, req api.MarkChannelReadRequestObject) (api.MarkChannelReadResponseObject, error) {
+	return s.reads.MarkChannelRead(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

@@ -16,6 +16,8 @@ const (
 	KindChannelChanged  Kind = "channel.changed"
 	KindChannelDeleted  Kind = "channel.deleted"
 	KindMemberChanged   Kind = "member.changed"
+	// KindReadChanged is personal: it goes only to the account whose cursor moved.
+	KindReadChanged Kind = "read.changed"
 )
 
 // Event is one thing that happened on one server.

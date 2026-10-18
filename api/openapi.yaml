@@ -35,6 +35,10 @@ tags:
       Invite links and the guest entrance. From the link to the room in three steps:
       open the link, give a name, join — a guest needs no account, and keeps its history
       when it signs up later.
+  - name: unread
+    description: |
+      How far each person has read. The cursor is a `seq` per channel; it only moves
+      forward, and it is the same on every device that account is signed in on.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -801,6 +805,51 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/unread:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listUnread
+      tags: [unread]
+      summary: Unread counts for every channel of a server. Needs membership.
+      description: One request for the whole sidebar, not one per channel.
+      responses:
+        "200":
+          description: The counts, one entry per channel.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChannelUnread" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}/read:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    put:
+      operationId: markChannelRead
+      tags: [unread]
+      summary: Move the read cursor of this channel. Needs membership.
+      description: |
+        The cursor only moves forward, so a device that was offline cannot make
+        messages unread again. Other devices of the same account are told at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReadCursorRequest" }
+      responses:
+        "200":
+          description: Where the cursor now stands, with what is left unread.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelUnread" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -1279,6 +1328,32 @@ components:
       properties:
         user: { $ref: "#/components/schemas/User" }
         membership: { $ref: "#/components/schemas/WorkspaceMembership" }
+    ChannelUnread:
+      type: object
+      additionalProperties: false
+      required: [channelId, lastReadSeq, unread, mentions]
+      properties:
+        channelId: { type: string, format: uuid }
+        lastReadSeq:
+          type: integer
+          format: int64
+          description: The `seq` this account has read up to; 0 when it never opened the channel.
+        unread:
+          type: integer
+          description: Messages after the cursor, not counting this account's own.
+        mentions:
+          type: integer
+          description: How many of those mention this account.
+    ReadCursorRequest:
+      type: object
+      additionalProperties: false
+      required: [seq]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The `seq` read up to. A value below the current cursor changes nothing.
     VoiceTokenRequest:
       type: object
       additionalProperties: false

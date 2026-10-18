@@ -78,6 +78,27 @@ func (h *Hub) Publish(event Event) {
 	}
 }
 
+// PublishTo delivers an event to one account's connections on one server.
+// A read cursor is nobody else's business, so it never goes to the whole server.
+func (h *Hub) PublishTo(userID uuid.UUID, event Event) {
+	h.mu.RLock()
+	subs := make([]*Subscription, 0, 2)
+	for sub := range h.byWorkspace[event.WorkspaceID] {
+		if sub.userID == userID {
+			subs = append(subs, sub)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, sub := range subs {
+		select {
+		case sub.events <- event:
+		default:
+			sub.closeSlow()
+		}
+	}
+}
+
 // Revoke ends every subscription of one account on one server. A ban or a lost
 // role takes effect at once, without waiting for the client to reconnect.
 func (h *Hub) Revoke(workspaceID, userID uuid.UUID) {

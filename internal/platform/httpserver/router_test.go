@@ -18,6 +18,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
@@ -40,6 +41,7 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Workspaces: servers.NewHandler(servers.NewService(nil, nil), log),
 		Channels:   channels.NewHandler(channels.NewService(nil, nil), log),
 		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil, nil), log),
+		Reads:      reads.NewHandler(reads.NewService(nil, nil, nil, nil), log),
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 	}

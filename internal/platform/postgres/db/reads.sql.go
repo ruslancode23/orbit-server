@@ -11,8 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countChannelUnread = `-- name: CountChannelUnread :one
+SELECT coalesce(channel_reads.last_read_seq, 0)::bigint AS last_read_seq,
+       count(messages.seq) AS unread,
+       count(message_mentions.user_id) AS mentions
+FROM channels
+    LEFT JOIN channel_reads
+        ON channel_reads.channel_id = channels.id
+       AND channel_reads.user_id = $1::uuid
+    LEFT JOIN messages
+        ON messages.channel_id = channels.id
+       AND messages.deleted_at IS NULL
+       AND messages.author_id IS DISTINCT FROM $1::uuid
+       AND messages.seq > coalesce(channel_reads.last_read_seq, 0)
+    LEFT JOIN message_mentions
+        ON message_mentions.message_id = messages.id
+       AND message_mentions.user_id = $1::uuid
+WHERE channels.id = $2::uuid
+GROUP BY channels.id, channel_reads.last_read_seq
+`
+
+type CountChannelUnreadParams struct {
+	UserID    pgtype.UUID `json:"user_id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+}
+
+type CountChannelUnreadRow struct {
+	LastReadSeq int64 `json:"last_read_seq"`
+	Unread      int64 `json:"unread"`
+	Mentions    int64 `json:"mentions"`
+}
+
+// The counts of one channel, for the answer after the cursor moved.
+func (q *Queries) CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error) {
+	row := q.db.QueryRow(ctx, countChannelUnread, arg.UserID, arg.ChannelID)
+	var i CountChannelUnreadRow
+	err := row.Scan(&i.LastReadSeq, &i.Unread, &i.Mentions)
+	return i, err
+}
+
 const countWorkspaceUnread = `-- name: CountWorkspaceUnread :many
 SELECT channels.id AS channel_id,
+       coalesce(channel_reads.last_read_seq, 0)::bigint AS last_read_seq,
        count(messages.seq) AS unread,
        count(message_mentions.user_id) AS mentions
 FROM channels
@@ -28,7 +68,7 @@ FROM channels
         ON message_mentions.message_id = messages.id
        AND message_mentions.user_id = $1::uuid
 WHERE channels.workspace_id = $2::uuid
-GROUP BY channels.id
+GROUP BY channels.id, channel_reads.last_read_seq
 `
 
 type CountWorkspaceUnreadParams struct {
@@ -37,9 +77,10 @@ type CountWorkspaceUnreadParams struct {
 }
 
 type CountWorkspaceUnreadRow struct {
-	ChannelID pgtype.UUID `json:"channel_id"`
-	Unread    int64       `json:"unread"`
-	Mentions  int64       `json:"mentions"`
+	ChannelID   pgtype.UUID `json:"channel_id"`
+	LastReadSeq int64       `json:"last_read_seq"`
+	Unread      int64       `json:"unread"`
+	Mentions    int64       `json:"mentions"`
 }
 
 // Unread and mention counts for every channel of one workspace in a single query (task 2.8).
@@ -52,7 +93,12 @@ func (q *Queries) CountWorkspaceUnread(ctx context.Context, arg CountWorkspaceUn
 	items := []CountWorkspaceUnreadRow{}
 	for rows.Next() {
 		var i CountWorkspaceUnreadRow
-		if err := rows.Scan(&i.ChannelID, &i.Unread, &i.Mentions); err != nil {
+		if err := rows.Scan(
+			&i.ChannelID,
+			&i.LastReadSeq,
+			&i.Unread,
+			&i.Mentions,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
