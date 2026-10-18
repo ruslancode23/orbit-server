@@ -36,9 +36,9 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Auth:     auth.NewHandler(sessions, false, log),
 		Sessions: sessions,
 		// Reached only with a session, and these tests send no cookie.
-		Workspaces: servers.NewHandler(servers.NewService(nil), log),
+		Workspaces: servers.NewHandler(servers.NewService(nil, nil), log),
 		Channels:   channels.NewHandler(channels.NewService(nil, nil), log),
-		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil), log),
+		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil, nil), log),
 	}
 	if voiceEnabled {
 		d.Voice = voice.NewHandler(voice.NewTokenIssuer("devkey", "a-secret-that-is-long-enough-for-hs256", "ws://lk"), log)

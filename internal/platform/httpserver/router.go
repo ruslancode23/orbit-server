@@ -31,6 +31,10 @@ const maxBodyBytes = 1 << 10
 
 const voiceTokenPath = "/api/v1/voice/token" //nolint:gosec // a URL path, not a credential
 
+// wsPath is the live stream. It is not in api/openapi.yaml: the spec describes
+// HTTP requests and responses, and a WebSocket is neither.
+const wsPath = "/api/v1/ws"
+
 type Deps struct {
 	Logger      *slog.Logger
 	CORSOrigins []string
@@ -44,6 +48,9 @@ type Deps struct {
 	Channels *channels.Handler
 	// Messages serves what people write in those channels.
 	Messages *messages.Handler
+	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
+	// so it is mounted beside the generated routes, not through them.
+	Gateway http.Handler
 	// Voice is nil outside development: the token endpoint has no real authorization yet.
 	Voice *voice.Handler
 }
@@ -77,20 +84,24 @@ func NewRouter(d Deps) (http.Handler, error) {
 	// Before validation: a handler reads the session from the context, and the
 	// WebSocket upgrade will need it too.
 	r.Use(auth.Middleware(d.Sessions, d.Logger))
-	if d.Voice == nil {
-		// Hide the dev endpoint before validation, so a production instance
-		// does not reveal it through 400 responses.
-		r.Use(notFound(voiceTokenPath))
+	// Anything outside both groups answers in the API's error format, not chi's
+	// bare 404: a client parses one shape of error whatever it asked for.
+	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteError(w, http.StatusNotFound, httpx.CodeNotFound, "not found")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteError(w, http.StatusMethodNotAllowed, httpx.CodeMethodNotAllowed, "method not allowed")
+	})
+
+	// The WebSocket route shares the middleware above but takes neither the body
+	// limit nor the spec validator: an upgrade is not a request the spec describes.
+	// It is registered first so chi matches this exact path before the API routes.
+	if d.Gateway != nil {
+		r.Group(func(ws chi.Router) {
+			ws.Use(auth.RequireSession)
+			ws.Handle(wsPath, d.Gateway)
+		})
 	}
-	r.Use(limitBody(maxBodyBytes))
-	r.Use(nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
-		DoNotValidateServers: true,
-		ErrorHandlerWithOpts: validationError,
-		Options: openapi3filter.Options{
-			// Keep messages short: no schema dump in responses.
-			SchemaValidationOptions: []openapi3.SchemaValidationOption{openapi3.DisableSchemaErrorDetails()},
-		},
-	}))
 
 	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -101,12 +112,30 @@ func NewRouter(d Deps) (http.Handler, error) {
 			httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternal, "internal error")
 		},
 	})
-	return api.HandlerWithOptions(strict, api.ChiServerOptions{
-		BaseRouter: r,
-		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
-		},
-	}), nil
+	// Everything the spec describes goes through validation, with the body limit.
+	r.Group(func(apiRoutes chi.Router) {
+		if d.Voice == nil {
+			// Hide the dev endpoint before validation, so a production instance
+			// does not reveal it through 400 responses.
+			apiRoutes.Use(notFound(voiceTokenPath))
+		}
+		apiRoutes.Use(limitBody(maxBodyBytes))
+		apiRoutes.Use(nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
+			DoNotValidateServers: true,
+			ErrorHandlerWithOpts: validationError,
+			Options: openapi3filter.Options{
+				// Keep messages short: no schema dump in responses.
+				SchemaValidationOptions: []openapi3.SchemaValidationOption{openapi3.DisableSchemaErrorDetails()},
+			},
+		}))
+		api.HandlerWithOptions(strict, api.ChiServerOptions{
+			BaseRouter: apiRoutes,
+			ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+				httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
+			},
+		})
+	})
+	return r, nil
 }
 
 // server assembles the module handlers into the generated interface.

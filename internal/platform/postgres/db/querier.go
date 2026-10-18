@@ -60,6 +60,8 @@ type Querier interface {
 	// One page of history, newest first: the caller passes the seq it already has
 	// (NULL for the first page) and gets the next portion.
 	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)
+	// What a reconnecting client missed in one channel, oldest first (task 2.6).
+	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]ListChannelMessagesAfterRow, error)
 	ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.UUID) ([]Attachment, error)
 	ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]MessageMention, error)
 	// Reactions of a page of messages, with whether the caller is among them.

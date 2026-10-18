@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
 // Role is what someone may do on one server. Ordered: owner > admin > member.
@@ -118,12 +120,49 @@ type Store interface {
 	ListBans(ctx context.Context, workspaceID uuid.UUID) ([]Ban, error)
 }
 
-// Service holds the rules. It knows nothing about HTTP.
-type Service struct {
-	store Store
+// Watchers is the live stream this module keeps honest: it hears about
+// membership changes, and it ends the connections of someone who lost access.
+// Optional: with nil, the HTTP API behaves the same and nobody is told live.
+type Watchers interface {
+	Publish(event events.Event)
+	Revoke(workspaceID, userID uuid.UUID)
 }
 
-func NewService(store Store) *Service { return &Service{store: store} }
+// Service holds the rules. It knows nothing about HTTP.
+type Service struct {
+	store    Store
+	watchers Watchers
+}
+
+func NewService(store Store, watchers Watchers) *Service {
+	return &Service{store: store, watchers: watchers}
+}
+
+// announce tells the watchers that the membership of one account changed.
+func (s *Service) announce(workspaceID, userID uuid.UUID, role Role, present bool) {
+	if s.watchers == nil {
+		return
+	}
+	s.watchers.Publish(events.Event{
+		Kind:        events.KindMemberChanged,
+		WorkspaceID: workspaceID,
+		Payload: map[string]any{
+			"userId":  userID,
+			"role":    string(role),
+			"present": present,
+		},
+	})
+}
+
+// cutOff ends the live connections of an account that is no longer on the
+// server, so a ban or a kick applies to an open connection, not only to the
+// next request.
+func (s *Service) cutOff(workspaceID, userID uuid.UUID) {
+	if s.watchers == nil {
+		return
+	}
+	s.watchers.Revoke(workspaceID, userID)
+}
 
 // Authorize reports the caller's role on a server, or ErrNotMember. Other modules
 // (channels, messages, the event gateway) call it before they act, so the rule
@@ -225,7 +264,12 @@ func (s *Service) Join(ctx context.Context, workspaceID, userID uuid.UUID) (Memb
 	if banned {
 		return Member{}, ErrBanned
 	}
-	return s.store.AddMember(ctx, workspaceID, userID, RoleMember)
+	member, err := s.store.AddMember(ctx, workspaceID, userID, RoleMember)
+	if err != nil {
+		return Member{}, err
+	}
+	s.announce(workspaceID, userID, RoleMember, true)
+	return member, nil
 }
 
 // SetRole moves a member between roles. Only the owner may, and the server keeps
@@ -260,12 +304,14 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 	if err != nil {
 		return Member{}, err
 	}
+	s.announce(workspaceID, targetID, role, true)
 	// Handing over ownership: the previous owner stays as an admin, so the server
 	// never has two owners and the caller does not lock themselves out of the room.
 	if role == RoleOwner && callerID != targetID {
 		if _, err := s.store.SetRole(ctx, workspaceID, callerID, RoleAdmin); err != nil {
 			return Member{}, err
 		}
+		s.announce(workspaceID, callerID, RoleAdmin, true)
 	}
 	return member, nil
 }
@@ -292,13 +338,23 @@ func (s *Service) Remove(ctx context.Context, workspaceID, callerID, targetID uu
 				return ErrLastOwner
 			}
 		}
-		return s.store.RemoveMember(ctx, workspaceID, targetID)
+		return s.removeMember(ctx, workspaceID, targetID)
 	}
 
 	if err := canActOn(caller, target); err != nil {
 		return err
 	}
-	return s.store.RemoveMember(ctx, workspaceID, targetID)
+	return s.removeMember(ctx, workspaceID, targetID)
+}
+
+// removeMember drops the membership and ends the live connections of that account.
+func (s *Service) removeMember(ctx context.Context, workspaceID, userID uuid.UUID) error {
+	if err := s.store.RemoveMember(ctx, workspaceID, userID); err != nil {
+		return err
+	}
+	s.announce(workspaceID, userID, "", false)
+	s.cutOff(workspaceID, userID)
+	return nil
 }
 
 // Ban removes someone and keeps them out. Admin or owner, and never against an
@@ -323,7 +379,13 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 		return Ban{}, err
 	}
 
-	return s.store.Ban(ctx, workspaceID, targetID, callerID, strings.TrimSpace(reason))
+	ban, err := s.store.Ban(ctx, workspaceID, targetID, callerID, strings.TrimSpace(reason))
+	if err != nil {
+		return Ban{}, err
+	}
+	s.announce(workspaceID, targetID, "", false)
+	s.cutOff(workspaceID, targetID)
+	return ban, nil
 }
 
 func (s *Service) Unban(ctx context.Context, workspaceID, callerID, targetID uuid.UUID) error {

@@ -263,6 +263,65 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 	return items, nil
 }
 
+const listChannelMessagesAfter = `-- name: ListChannelMessagesAfter :many
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at
+FROM messages
+    LEFT JOIN users ON users.id = messages.author_id
+WHERE messages.channel_id = $1 AND messages.seq > $3
+ORDER BY messages.seq
+LIMIT $2
+`
+
+type ListChannelMessagesAfterParams struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	Limit     int32       `json:"limit"`
+	AfterSeq  int64       `json:"after_seq"`
+}
+
+type ListChannelMessagesAfterRow struct {
+	Message Message `json:"message"`
+	User    User    `json:"user"`
+}
+
+// What a reconnecting client missed in one channel, oldest first (task 2.6).
+func (q *Queries) ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]ListChannelMessagesAfterRow, error) {
+	rows, err := q.db.Query(ctx, listChannelMessagesAfter, arg.ChannelID, arg.Limit, arg.AfterSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChannelMessagesAfterRow{}
+	for rows.Next() {
+		var i ListChannelMessagesAfterRow
+		if err := rows.Scan(
+			&i.Message.Seq,
+			&i.Message.ID,
+			&i.Message.ChannelID,
+			&i.Message.AuthorID,
+			&i.Message.ClientMessageID,
+			&i.Message.Content,
+			&i.Message.ReplyToID,
+			&i.Message.CreatedAt,
+			&i.Message.EditedAt,
+			&i.Message.DeletedAt,
+			&i.User.ID,
+			&i.User.Nickname,
+			&i.User.Email,
+			&i.User.PasswordHash,
+			&i.User.IsGuest,
+			&i.User.CreatedAt,
+			&i.User.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMessageMentions = `-- name: ListMessageMentions :many
 SELECT message_id, user_id FROM message_mentions
 WHERE message_id = ANY($1::uuid[])

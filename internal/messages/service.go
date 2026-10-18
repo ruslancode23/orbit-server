@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
 var (
@@ -89,6 +90,8 @@ type Store interface {
 	Create(ctx context.Context, m NewMessage) (Message, bool, error)
 	Message(ctx context.Context, id uuid.UUID) (Message, error)
 	List(ctx context.Context, channelID uuid.UUID, before *int64, limit int, viewerID uuid.UUID) ([]Message, error)
+	// Since returns messages after a seq, oldest first: the catch-up after a reconnect.
+	Since(ctx context.Context, channelID uuid.UUID, afterSeq int64, limit int, viewerID uuid.UUID) ([]Message, error)
 	Edit(ctx context.Context, id, authorID uuid.UUID, content string) (Message, error)
 	Delete(ctx context.Context, id, authorID uuid.UUID) (Message, error)
 	AddMentions(ctx context.Context, messageID uuid.UUID, userIDs []uuid.UUID) error
@@ -106,6 +109,12 @@ type ChannelAccess interface {
 	Get(ctx context.Context, channelID, callerID uuid.UUID) (channels.View, error)
 }
 
+// Publisher announces what happened to the clients watching the server. A nil
+// publisher is allowed: the HTTP API works the same, nobody is just told live.
+type Publisher interface {
+	Publish(event events.Event)
+}
+
 // Members answers whether an account is on a server, so a mention of an
 // outsider is dropped instead of notifying someone who cannot read the channel.
 type Members interface {
@@ -116,10 +125,59 @@ type Service struct {
 	store    Store
 	channels ChannelAccess
 	members  Members
+	// publisher is optional; see Publisher.
+	publisher Publisher
 }
 
-func NewService(store Store, access ChannelAccess, members Members) *Service {
-	return &Service{store: store, channels: access, members: members}
+func NewService(store Store, access ChannelAccess, members Members, publisher Publisher) *Service {
+	return &Service{store: store, channels: access, members: members, publisher: publisher}
+}
+
+// Since returns what a reconnecting client missed in one channel, oldest first.
+func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afterSeq int64, limit int) ([]Message, error) {
+	if _, err := s.channels.Get(ctx, channelID, callerID); err != nil {
+		return nil, mapAccessError(err)
+	}
+	switch {
+	case limit <= 0:
+		limit = defaultPageSize
+	case limit > maxPageSize:
+		limit = maxPageSize
+	}
+	return s.store.Since(ctx, channelID, afterSeq, limit, callerID)
+}
+
+// SinceEvents returns what a reconnecting client missed in one channel as
+// events, oldest first, ready for the gateway to send.
+func (s *Service) SinceEvents(ctx context.Context, channelID, callerID uuid.UUID, afterSeq int64, limit int) ([]events.Event, error) {
+	list, err := s.Since(ctx, channelID, callerID, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]events.Event, 0, len(list))
+	for _, m := range list {
+		out = append(out, events.Event{
+			Kind:      events.KindMessageCreated,
+			ChannelID: m.ChannelID,
+			Seq:       m.Seq,
+			Payload:   APIMessage(m),
+		})
+	}
+	return out, nil
+}
+
+// publish tells the watchers of this channel's server what happened.
+func (s *Service) publish(kind events.Kind, workspaceID uuid.UUID, m Message) {
+	if s.publisher == nil {
+		return
+	}
+	s.publisher.Publish(events.Event{
+		Kind:        kind,
+		WorkspaceID: workspaceID,
+		ChannelID:   m.ChannelID,
+		Seq:         m.Seq,
+		Payload:     APIMessage(m),
+	})
 }
 
 func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (Message, bool, error) {
@@ -169,6 +227,10 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	if err != nil {
 		return Message{}, false, err
 	}
+	// A resend is not news: the watchers already saw this message.
+	if !existed {
+		s.publish(events.KindMessageCreated, channel.WorkspaceID, loaded)
+	}
 	return loaded, existed, nil
 }
 
@@ -199,7 +261,7 @@ func (s *Service) History(ctx context.Context, channelID, callerID uuid.UUID, be
 }
 
 func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, content string) (Message, error) {
-	message, err := s.readable(ctx, messageID, callerID)
+	message, channel, err := s.readable(ctx, messageID, callerID)
 	if err != nil {
 		return Message{}, err
 	}
@@ -217,11 +279,16 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 	if err != nil {
 		return Message{}, err
 	}
-	return s.store.Load(ctx, edited, callerID)
+	loaded, err := s.store.Load(ctx, edited, callerID)
+	if err != nil {
+		return Message{}, err
+	}
+	s.publish(events.KindMessageUpdated, channel.WorkspaceID, loaded)
+	return loaded, nil
 }
 
 func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Message, error) {
-	message, err := s.readable(ctx, messageID, callerID)
+	message, channel, err := s.readable(ctx, messageID, callerID)
 	if err != nil {
 		return Message{}, err
 	}
@@ -233,7 +300,12 @@ func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Me
 	if err != nil {
 		return Message{}, err
 	}
-	return s.store.Load(ctx, deleted, callerID)
+	loaded, err := s.store.Load(ctx, deleted, callerID)
+	if err != nil {
+		return Message{}, err
+	}
+	s.publish(events.KindMessageDeleted, channel.WorkspaceID, loaded)
+	return loaded, nil
 }
 
 // React adds the caller's reaction. Reacting is writing, so a read-only channel
@@ -243,7 +315,8 @@ func (s *Service) React(ctx context.Context, messageID, callerID uuid.UUID, emoj
 	if err != nil {
 		return Message{}, err
 	}
-	if _, err := s.channels.MayWrite(ctx, message.ChannelID, callerID); err != nil {
+	channel, err := s.channels.MayWrite(ctx, message.ChannelID, callerID)
+	if err != nil {
 		return Message{}, mapAccessError(err)
 	}
 
@@ -258,13 +331,18 @@ func (s *Service) React(ctx context.Context, messageID, callerID uuid.UUID, emoj
 	if err := s.store.AddReaction(ctx, messageID, callerID, emoji); err != nil {
 		return Message{}, err
 	}
-	return s.store.Load(ctx, message, callerID)
+	loaded, err := s.store.Load(ctx, message, callerID)
+	if err != nil {
+		return Message{}, err
+	}
+	s.publish(events.KindReactionChanged, channel.WorkspaceID, loaded)
+	return loaded, nil
 }
 
 // Unreact takes the caller's own reaction back; reading the channel is enough,
 // so someone who lost the right to write can still clean up after themselves.
 func (s *Service) Unreact(ctx context.Context, messageID, callerID uuid.UUID, emoji string) (Message, error) {
-	message, err := s.readable(ctx, messageID, callerID)
+	message, channel, err := s.readable(ctx, messageID, callerID)
 	if err != nil {
 		return Message{}, err
 	}
@@ -276,19 +354,25 @@ func (s *Service) Unreact(ctx context.Context, messageID, callerID uuid.UUID, em
 	if err := s.store.RemoveReaction(ctx, messageID, callerID, emoji); err != nil {
 		return Message{}, err
 	}
-	return s.store.Load(ctx, message, callerID)
-}
-
-// readable loads a message the caller is allowed to see.
-func (s *Service) readable(ctx context.Context, messageID, callerID uuid.UUID) (Message, error) {
-	message, err := s.store.Message(ctx, messageID)
+	loaded, err := s.store.Load(ctx, message, callerID)
 	if err != nil {
 		return Message{}, err
 	}
-	if _, err := s.channels.Get(ctx, message.ChannelID, callerID); err != nil {
-		return Message{}, mapAccessError(err)
+	s.publish(events.KindReactionChanged, channel.WorkspaceID, loaded)
+	return loaded, nil
+}
+
+// readable loads a message the caller is allowed to see, with its channel.
+func (s *Service) readable(ctx context.Context, messageID, callerID uuid.UUID) (Message, channels.Channel, error) {
+	message, err := s.store.Message(ctx, messageID)
+	if err != nil {
+		return Message{}, channels.Channel{}, err
 	}
-	return message, nil
+	view, err := s.channels.Get(ctx, message.ChannelID, callerID)
+	if err != nil {
+		return Message{}, channels.Channel{}, mapAccessError(err)
+	}
+	return message, view.Channel, nil
 }
 
 // knownMembers drops mentions of accounts outside the server: a notification to

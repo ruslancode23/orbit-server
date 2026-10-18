@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
 // fakeStore keeps messages in memory with the rules the database enforces:
@@ -70,6 +71,23 @@ func (s *fakeStore) List(_ context.Context, channelID uuid.UUID, before *int64, 
 		out = append(out, *m)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq > out[j].Seq })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	for i := range out {
+		out[i] = s.decorate(out[i], viewerID)
+	}
+	return out, nil
+}
+
+func (s *fakeStore) Since(_ context.Context, channelID uuid.UUID, afterSeq int64, limit int, viewerID uuid.UUID) ([]Message, error) {
+	var out []Message
+	for _, m := range s.messages {
+		if m.ChannelID == channelID && m.Seq > afterSeq {
+			out = append(out, *m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	if len(out) > limit {
 		out = out[:limit]
 	}
@@ -191,6 +209,19 @@ func (m *fakeMembers) IsMember(_ context.Context, workspaceID, userID uuid.UUID)
 	return m.members[workspaceID][userID], nil
 }
 
+// recorder keeps what the service published, so a test can read it back.
+type recorder struct{ published []events.Event }
+
+func (r *recorder) Publish(event events.Event) { r.published = append(r.published, event) }
+
+func (r *recorder) kinds() []events.Kind {
+	out := make([]events.Kind, 0, len(r.published))
+	for _, e := range r.published {
+		out = append(out, e.Kind)
+	}
+	return out
+}
+
 type world struct {
 	svc       *Service
 	store     *fakeStore
@@ -202,6 +233,7 @@ type world struct {
 	bob       uuid.UUID
 	admin     uuid.UUID
 	outsider  uuid.UUID
+	published *recorder
 }
 
 func newWorld(t *testing.T) world {
@@ -228,7 +260,8 @@ func newWorld(t *testing.T) world {
 	members := &fakeMembers{members: map[uuid.UUID]map[uuid.UUID]bool{
 		w.workspace: {w.anna: true, w.bob: true, w.admin: true},
 	}}
-	w.svc = NewService(w.store, w.access, members)
+	w.published = &recorder{}
+	w.svc = NewService(w.store, w.access, members, w.published)
 	return w
 }
 
@@ -597,5 +630,83 @@ func TestUnreactNeedsOnlyReadAccess(t *testing.T) {
 	}
 	if len(left.Reactions) != 0 {
 		t.Errorf("reactions = %+v, want none", left.Reactions)
+	}
+}
+
+// Everything that changes a message is announced to the watchers; a resend is not.
+func TestEventsArePublished(t *testing.T) {
+	w := newWorld(t)
+
+	message := send(t, w, w.anna, "c-1", "привет")
+	if _, _, err := w.svc.Send(t.Context(), w.anna, NewMessage{
+		ChannelID: w.channel, ClientMessageID: "c-1", Content: "привет",
+	}); err != nil {
+		t.Fatalf("resend: %v", err)
+	}
+	if _, err := w.svc.Edit(t.Context(), message.ID, w.anna, "привет всем"); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if _, err := w.svc.React(t.Context(), message.ID, w.bob, "👍"); err != nil {
+		t.Fatalf("React: %v", err)
+	}
+	if _, err := w.svc.Delete(t.Context(), message.ID, w.anna); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	want := []events.Kind{
+		events.KindMessageCreated,
+		events.KindMessageUpdated,
+		events.KindReactionChanged,
+		events.KindMessageDeleted,
+	}
+	got := w.published.kinds()
+	if len(got) != len(want) {
+		t.Fatalf("published %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	first := w.published.published[0]
+	if first.WorkspaceID != w.workspace || first.ChannelID != w.channel || first.Seq != message.Seq {
+		t.Errorf("event = %+v, want it addressed to the channel with the message seq", first)
+	}
+}
+
+// What a reconnecting client missed comes back oldest first, without what it has.
+func TestSinceEventsReturnsOnlyWhatIsMissing(t *testing.T) {
+	w := newWorld(t)
+	first := send(t, w, w.anna, "c-1", "первое")
+	second := send(t, w, w.anna, "c-2", "второе")
+	third := send(t, w, w.anna, "c-3", "третье")
+
+	missed, err := w.svc.SinceEvents(t.Context(), w.channel, w.bob, first.Seq, 100)
+	if err != nil {
+		t.Fatalf("SinceEvents: %v", err)
+	}
+	if len(missed) != 2 {
+		t.Fatalf("missed %d events, want 2", len(missed))
+	}
+	if missed[0].Seq != second.Seq || missed[1].Seq != third.Seq {
+		t.Errorf("seqs = %d, %d; want %d, %d", missed[0].Seq, missed[1].Seq, second.Seq, third.Seq)
+	}
+
+	none, err := w.svc.SinceEvents(t.Context(), w.channel, w.bob, third.Seq, 100)
+	if err != nil {
+		t.Fatalf("SinceEvents: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("missed %d events after the last seq, want 0", len(none))
+	}
+}
+
+func TestSinceEventsHidesChannelsTheCallerCannotRead(t *testing.T) {
+	w := newWorld(t)
+	send(t, w, w.anna, "c-1", "привет")
+
+	if _, err := w.svc.SinceEvents(t.Context(), w.channel, w.outsider, 0, 100); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }

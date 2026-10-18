@@ -53,7 +53,7 @@ func (h *Handler) ListMessages(ctx context.Context, req api.ListMessagesRequestO
 
 	out := api.MessagePage{Messages: make([]api.Message, 0, len(page.Messages)), NextBefore: page.NextBefore}
 	for _, m := range page.Messages {
-		out.Messages = append(out.Messages, toAPIMessage(m))
+		out.Messages = append(out.Messages, APIMessage(m))
 	}
 	return api.ListMessages200JSONResponse(out), nil
 }
@@ -88,9 +88,9 @@ func (h *Handler) SendMessage(ctx context.Context, req api.SendMessageRequestObj
 
 	// A resend of the same client id is not a new message: 200, not 201.
 	if existed {
-		return api.SendMessage200JSONResponse(toAPIMessage(message)), nil
+		return api.SendMessage200JSONResponse(APIMessage(message)), nil
 	}
-	return api.SendMessage201JSONResponse(toAPIMessage(message)), nil
+	return api.SendMessage201JSONResponse(APIMessage(message)), nil
 }
 
 func (h *Handler) EditMessage(ctx context.Context, req api.EditMessageRequestObject) (api.EditMessageResponseObject, error) {
@@ -114,7 +114,7 @@ func (h *Handler) EditMessage(ctx context.Context, req api.EditMessageRequestObj
 		h.log.ErrorContext(ctx, "edit message", slog.Any("error", err))
 		return api.EditMessage500JSONResponse(internal("could not edit the message")), nil
 	}
-	return api.EditMessage200JSONResponse(toAPIMessage(message)), nil
+	return api.EditMessage200JSONResponse(APIMessage(message)), nil
 }
 
 func (h *Handler) DeleteMessage(ctx context.Context, req api.DeleteMessageRequestObject) (api.DeleteMessageResponseObject, error) {
@@ -133,7 +133,7 @@ func (h *Handler) DeleteMessage(ctx context.Context, req api.DeleteMessageReques
 		h.log.ErrorContext(ctx, "delete message", slog.Any("error", err))
 		return api.DeleteMessage500JSONResponse(internal("could not delete the message")), nil
 	}
-	return api.DeleteMessage200JSONResponse(toAPIMessage(message)), nil
+	return api.DeleteMessage200JSONResponse(APIMessage(message)), nil
 }
 
 func (h *Handler) AddReaction(ctx context.Context, req api.AddReactionRequestObject) (api.AddReactionResponseObject, error) {
@@ -154,7 +154,7 @@ func (h *Handler) AddReaction(ctx context.Context, req api.AddReactionRequestObj
 		h.log.ErrorContext(ctx, "add reaction", slog.Any("error", err))
 		return api.AddReaction500JSONResponse(internal("could not add the reaction")), nil
 	}
-	return api.AddReaction200JSONResponse(toAPIMessage(message)), nil
+	return api.AddReaction200JSONResponse(APIMessage(message)), nil
 }
 
 func (h *Handler) RemoveReaction(ctx context.Context, req api.RemoveReactionRequestObject) (api.RemoveReactionResponseObject, error) {
@@ -171,10 +171,12 @@ func (h *Handler) RemoveReaction(ctx context.Context, req api.RemoveReactionRequ
 		h.log.ErrorContext(ctx, "remove reaction", slog.Any("error", err))
 		return api.RemoveReaction500JSONResponse(internal("could not remove the reaction")), nil
 	}
-	return api.RemoveReaction200JSONResponse(toAPIMessage(message)), nil
+	return api.RemoveReaction200JSONResponse(APIMessage(message)), nil
 }
 
-func toAPIMessage(m Message) api.Message {
+// APIMessage is the shape a message takes on the wire, for HTTP and for the
+// live stream alike: the client parses one thing.
+func APIMessage(m Message) api.Message {
 	message := api.Message{
 		Id:        m.ID,
 		ChannelId: m.ChannelID,

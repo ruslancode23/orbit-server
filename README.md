@@ -65,6 +65,23 @@ docs/adr/               архитектурные решения
 в cookie `orbit_session` (HttpOnly, Secure вне разработки). Время жизни сессии — `ORBIT_SESSION_TTL`
 (по умолчанию 720h). Полный список переменных — в `.env.example`.
 
+## Живой поток событий
+
+`GET /api/v1/ws` — WebSocket, вне OpenAPI (спецификация описывает запросы и ответы, а не поток).
+Сессия берётся из cookie `orbit_session`, без неё — 401. Кадры — JSON.
+
+От клиента: `{"type":"subscribe","workspaceId":"…","cursors":{"<channelId>":<seq>}}` (курсоры
+необязательны — это то, на чём клиент остановился), `{"type":"unsubscribe"}`, `{"type":"ping"}`.
+
+От сервера: `subscribed`, `unsubscribed`, `pong`, события `message.created`, `message.updated`,
+`message.deleted`, `message.reaction`, `member.changed` (поля `workspaceId`, `channelId`, `seq`,
+`payload`) и `error` с кодом. После `subscribe` сервер сначала досылает пропущенное по курсорам,
+потом включает живой поток и не повторяет то, что уже дослал.
+
+Коды ошибок потока: `not_found` — нет доступа к серверу; `forbidden` — доступ пропал уже во время
+подключения (бан или кик), поток закрыт; `behind` — клиент не успевал читать, нужно переподключиться
+и догнать по курсору; `invalid_request` — непонятный кадр.
+
 ## Локальная инфраструктура
 
 | Сервис | Адрес | Доступ |

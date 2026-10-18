@@ -178,7 +178,7 @@ type world struct {
 func newWorld(t *testing.T) world {
 	t.Helper()
 	store := newFakeStore()
-	svc := NewService(store)
+	svc := NewService(store, nil)
 	owner := uuid.New()
 
 	membership, err := svc.Create(t.Context(), "Команда Orbit", owner)
@@ -203,7 +203,7 @@ func newWorld(t *testing.T) world {
 
 func TestCreateMakesTheCallerOwner(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store)
+	svc := NewService(store, nil)
 	owner := uuid.New()
 
 	membership, err := svc.Create(t.Context(), "  Команда Orbit  ", owner)
@@ -223,7 +223,7 @@ func TestCreateMakesTheCallerOwner(t *testing.T) {
 }
 
 func TestCreateRejectsEmptyAndTooLongName(t *testing.T) {
-	svc := NewService(newFakeStore())
+	svc := NewService(newFakeStore(), nil)
 
 	for _, name := range []string{"", "   ", string(make([]rune, maxNameLength+1))} {
 		if _, err := svc.Create(t.Context(), name, uuid.New()); !errors.Is(err, ErrInvalidName) {

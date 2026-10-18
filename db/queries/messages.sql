@@ -64,3 +64,12 @@ FROM message_reactions
 WHERE message_id = ANY(sqlc.arg(message_ids)::uuid[])
 GROUP BY message_id, emoji
 ORDER BY message_id, emoji;
+
+-- What a reconnecting client missed in one channel, oldest first (task 2.6).
+-- name: ListChannelMessagesAfter :many
+SELECT sqlc.embed(messages), sqlc.embed(users)
+FROM messages
+    LEFT JOIN users ON users.id = messages.author_id
+WHERE messages.channel_id = $1 AND messages.seq > sqlc.arg(after_seq)
+ORDER BY messages.seq
+LIMIT $2;

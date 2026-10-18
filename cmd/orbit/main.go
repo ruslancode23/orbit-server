@@ -15,6 +15,8 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/config"
+	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/gateway"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
@@ -49,8 +51,10 @@ func run() error {
 	defer pool.Close()
 
 	queries := db.New(pool)
-	workspaces := servers.NewService(servers.NewPostgresStore(pool))
+	hub := events.NewHub()
+	workspaces := servers.NewService(servers.NewPostgresStore(pool), hub)
 	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
+	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, hub)
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
 	deps := httpserver.Deps{
@@ -61,9 +65,10 @@ func run() error {
 		Auth:       auth.NewHandler(sessions, !cfg.IsDevelopment(), log),
 		Sessions:   sessions,
 		Workspaces: servers.NewHandler(workspaces, log),
+		Gateway:    gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log),
 		Channels:   channels.NewHandler(channelService, log),
 		Messages: messages.NewHandler(
-			messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces), log),
+			messageService, log),
 	}
 	if cfg.IsDevelopment() {
 		issuer := voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL)

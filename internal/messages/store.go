@@ -80,6 +80,28 @@ func (s *PostgresStore) List(ctx context.Context, channelID uuid.UUID, before *i
 	return s.decorate(ctx, list, ids, viewerID)
 }
 
+// Since returns what came after a seq, oldest first: the catch-up a client asks
+// for when it reconnects.
+func (s *PostgresStore) Since(ctx context.Context, channelID uuid.UUID, afterSeq int64, limit int, viewerID uuid.UUID) ([]Message, error) {
+	rows, err := s.q.ListChannelMessagesAfter(ctx, db.ListChannelMessagesAfterParams{
+		ChannelID: pgUUID(channelID),
+		AfterSeq:  afterSeq,
+		Limit:     int32(limit), //nolint:gosec // capped by the service
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list messages after: %w", err)
+	}
+
+	list := make([]Message, 0, len(rows))
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		message := toMessage(row.Message, row.User)
+		list = append(list, message)
+		ids = append(ids, message.ID)
+	}
+	return s.decorate(ctx, list, ids, viewerID)
+}
+
 func (s *PostgresStore) Edit(ctx context.Context, id, authorID uuid.UUID, content string) (Message, error) {
 	row, err := s.q.EditMessage(ctx, db.EditMessageParams{
 		ID:       pgUUID(id),
