@@ -60,11 +60,6 @@ func (s *PostgresStore) Channel(ctx context.Context, id uuid.UUID) (Channel, err
 		}
 		return Channel{}, fmt.Errorf("get channel: %w", err)
 	}
-	// A direct or group conversation is a channel without a server (task 2.10);
-	// it is not reached through these endpoints.
-	if !row.WorkspaceID.Valid {
-		return Channel{}, ErrNotFound
-	}
 	return toChannel(row), nil
 }
 

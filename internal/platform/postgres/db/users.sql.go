@@ -122,6 +122,31 @@ func (q *Queries) GetUserByNickname(ctx context.Context, lower string) (User, er
 	return i, err
 }
 
+const listKnownUsers = `-- name: ListKnownUsers :many
+SELECT id FROM users WHERE id = ANY($1::uuid[])
+`
+
+// Which of these ids are real accounts (task 2.10 checks before it opens a chat).
+func (q *Queries) ListKnownUsers(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listKnownUsers, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const promoteGuest = `-- name: PromoteGuest :one
 UPDATE users
 SET nickname = $2, email = $3, password_hash = $4, is_guest = false, updated_at = now()

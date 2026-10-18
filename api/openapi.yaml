@@ -45,6 +45,11 @@ tags:
       checks the size and reads the first bytes to see what the file really is — the
       name proves nothing. Downloads go straight from the object store by a short-lived
       signed link, issued only to someone who may read the channel.
+  - name: conversations
+    description: |
+      Direct messages and small group chats. A conversation is a channel without a
+      server, so messages, files and read cursors work for it through the same
+      endpoints; only who may read it is decided differently — by being in it.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -919,6 +924,68 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      tags: [conversations]
+      summary: Your conversations, the liveliest first. Needs a session.
+      responses:
+        "200":
+          description: The conversations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Conversation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: startConversation
+      tags: [conversations]
+      summary: Open a conversation with one or more people. Needs a session.
+      description: |
+        With one other person this returns the dialogue you already have, if there is
+        one: a pair has a single conversation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConversationStartRequest" }
+      responses:
+        "200":
+          description: The dialogue this pair already had.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "201":
+          description: A new conversation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/conversations/{conversationId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        description: Conversation identifier; it is also the channel id for messages.
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getConversation
+      tags: [conversations]
+      summary: One conversation you are in.
+      responses:
+        "200":
+          description: The conversation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -1459,6 +1526,42 @@ components:
           description: Signed link straight to the object store.
         expiresAt: { type: string, format: date-time }
         attachment: { $ref: "#/components/schemas/Attachment" }
+    Conversation:
+      type: object
+      additionalProperties: false
+      required: [id, kind, members, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "Also the channel id — messages and files use the channel endpoints."
+        kind:
+          type: string
+          enum: [direct, group]
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/ConversationMember" }
+        createdAt: { type: string, format: date-time }
+    ConversationMember:
+      type: object
+      additionalProperties: false
+      required: [id, nickname, isGuest, joinedAt]
+      properties:
+        id: { type: string, format: uuid }
+        nickname: { type: string }
+        isGuest: { type: boolean }
+        joinedAt: { type: string, format: date-time }
+    ConversationStartRequest:
+      type: object
+      additionalProperties: false
+      required: [userIds]
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: string, format: uuid }
+          description: Whom to talk to, besides yourself.
     VoiceTokenRequest:
       type: object
       additionalProperties: false

@@ -11,12 +11,14 @@ import (
 )
 
 type Querier interface {
+	AddChannelMember(ctx context.Context, arg AddChannelMemberParams) error
 	AddMessageMention(ctx context.Context, arg AddMessageMentionParams) error
 	AddReaction(ctx context.Context, arg AddReactionParams) error
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
+	CountChannelMembers(ctx context.Context, channelID pgtype.UUID) (int64, error)
 	// The counts of one channel, for the answer after the cursor moved.
 	CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error)
 	// A server always keeps exactly one owner; the count guards the last one.
@@ -26,6 +28,9 @@ type Querier interface {
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (Attachment, error)
 	// A new channel goes to the end of the list: position is one past the current last.
 	CreateChannel(ctx context.Context, arg CreateChannelParams) (Channel, error)
+	// A conversation is a channel without a server: the same messages, attachments
+	// and read cursors work for it (ADR in migration 00003).
+	CreateConversation(ctx context.Context, arg CreateConversationParams) (Channel, error)
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (Invite, error)
 	// A resend with the same client id returns the message already stored
 	// instead of creating a second one (FR-04).
@@ -45,6 +50,7 @@ type Querier interface {
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
+	GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
 	// Only a usable invite comes back: expiry, revocation and the use limit are checked here.
 	GetLiveInvite(ctx context.Context, code string) (Invite, error)
@@ -60,18 +66,25 @@ type Querier interface {
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
+	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)
 	IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMemberBannedParams) (bool, error)
 	// One page of history, newest first: the caller passes the seq it already has
 	// (NULL for the first page) and gets the next portion.
 	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)
 	// What a reconnecting client missed in one channel, oldest first (task 2.6).
 	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]ListChannelMessagesAfterRow, error)
+	ListConversationMembers(ctx context.Context, channelID pgtype.UUID) ([]ListConversationMembersRow, error)
+	// Which of these ids are real accounts (task 2.10 checks before it opens a chat).
+	ListKnownUsers(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
 	ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.UUID) ([]Attachment, error)
 	ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]MessageMention, error)
 	// Reactions of a page of messages, with whether the caller is among them.
 	ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error)
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)
+	// The conversations of one account, most recently used first, so the list
+	// reads like a messenger's.
+	ListUserConversations(ctx context.Context, userID pgtype.UUID) ([]ListUserConversationsRow, error)
 	ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListUserWorkspacesRow, error)
 	ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error)
 	ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.UUID) ([]Channel, error)

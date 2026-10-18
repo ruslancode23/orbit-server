@@ -24,7 +24,7 @@ VALUES (
     ),
     $5
 )
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key
 `
 
 type CreateChannelParams struct {
@@ -55,6 +55,7 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsReadOnly,
+		&i.DirectKey,
 	)
 	return i, err
 }
@@ -69,7 +70,7 @@ func (q *Queries) DeleteChannel(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getChannel = `-- name: GetChannel :one
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only FROM channels WHERE id = $1
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE id = $1
 `
 
 func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error) {
@@ -85,12 +86,13 @@ func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsReadOnly,
+		&i.DirectKey,
 	)
 	return i, err
 }
 
 const listWorkspaceChannels = `-- name: ListWorkspaceChannels :many
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only FROM channels
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels
 WHERE workspace_id = $1
 ORDER BY position, created_at
 `
@@ -114,6 +116,7 @@ func (q *Queries) ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.IsReadOnly,
+			&i.DirectKey,
 		); err != nil {
 			return nil, err
 		}
@@ -153,7 +156,7 @@ SET name = coalesce($1, name),
     is_read_only = coalesce($4, is_read_only),
     updated_at = now()
 WHERE id = $5
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key
 `
 
 type UpdateChannelParams struct {
@@ -183,6 +186,7 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsReadOnly,
+		&i.DirectKey,
 	)
 	return i, err
 }

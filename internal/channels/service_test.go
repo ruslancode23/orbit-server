@@ -464,3 +464,71 @@ func TestRoleChangeAppliesImmediately(t *testing.T) {
 		t.Errorf("the demoted admin can still create channels: %v", err)
 	}
 }
+
+// fakeParticipants answers like internal/conversations.
+type fakeParticipants struct {
+	inside map[uuid.UUID]map[uuid.UUID]bool
+}
+
+func (p *fakeParticipants) IsParticipant(_ context.Context, channelID, userID uuid.UUID) (bool, error) {
+	return p.inside[channelID][userID], nil
+}
+
+// A conversation is a channel without a server: the same messages and files
+// work for it, and being in it is the whole access rule (task 2.10).
+func TestConversationAccessGoesThroughParticipants(t *testing.T) {
+	w := newWorld(t)
+	conversation := Channel{ID: uuid.New(), Name: "диалог"}
+	w.store.channels[conversation.ID] = conversation
+	w.svc.SetParticipants(&fakeParticipants{inside: map[uuid.UUID]map[uuid.UUID]bool{
+		conversation.ID: {w.member: true},
+	}})
+
+	view, err := w.svc.Get(t.Context(), conversation.ID, w.member)
+	if err != nil {
+		t.Fatalf("a participant cannot read the conversation: %v", err)
+	}
+	if !view.CanWrite {
+		t.Error("a participant cannot write in the conversation")
+	}
+	if _, err := w.svc.MayWrite(t.Context(), conversation.ID, w.member); err != nil {
+		t.Errorf("MayWrite: %v", err)
+	}
+
+	// Everyone else — including the owner of some server — sees nothing.
+	for name, caller := range map[string]uuid.UUID{"owner": w.owner, "outsider": w.outsider} {
+		if _, err := w.svc.Get(t.Context(), conversation.ID, caller); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: err = %v, want ErrNotFound", name, err)
+		}
+	}
+}
+
+// A conversation has no admin: nobody renames or deletes it.
+func TestConversationCannotBeRenamedOrDeleted(t *testing.T) {
+	w := newWorld(t)
+	conversation := Channel{ID: uuid.New(), Name: "диалог"}
+	w.store.channels[conversation.ID] = conversation
+	w.svc.SetParticipants(&fakeParticipants{inside: map[uuid.UUID]map[uuid.UUID]bool{
+		conversation.ID: {w.member: true},
+	}})
+
+	name := "переименовать"
+	if _, err := w.svc.Update(t.Context(), conversation.ID, w.member, Update{Name: &name}); !errors.Is(err, ErrForbidden) {
+		t.Errorf("Update: err = %v, want ErrForbidden", err)
+	}
+	if err := w.svc.Delete(t.Context(), conversation.ID, w.member); !errors.Is(err, ErrForbidden) {
+		t.Errorf("Delete: err = %v, want ErrForbidden", err)
+	}
+}
+
+// Without the conversations module wired in, a channel without a server is
+// simply unreachable — it never falls back to "no checks".
+func TestConversationIsClosedWithoutParticipants(t *testing.T) {
+	w := newWorld(t)
+	conversation := Channel{ID: uuid.New(), Name: "диалог"}
+	w.store.channels[conversation.ID] = conversation
+
+	if _, err := w.svc.Get(t.Context(), conversation.ID, w.member); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}

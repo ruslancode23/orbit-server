@@ -28,8 +28,8 @@ func (r Role) valid() bool {
 	return r == RoleOwner || r == RoleAdmin || r == RoleMember
 }
 
-// rank orders the roles so that "may act on" is one comparison.
-func (r Role) rank() int {
+// Rank orders the roles so that "may act on" is one comparison.
+func (r Role) Rank() int {
 	switch r {
 	case RoleOwner:
 		return 3
@@ -205,7 +205,7 @@ func (s *Service) RequireAtLeast(ctx context.Context, workspaceID, userID uuid.U
 	if err != nil {
 		return "", err
 	}
-	if role.rank() < least.rank() {
+	if role.Rank() < least.Rank() {
 		return role, ErrForbidden
 	}
 	return role, nil
@@ -420,7 +420,7 @@ func (s *Service) ListBans(ctx context.Context, workspaceID, callerID uuid.UUID)
 // canActOn allows moderation only downwards: an admin may act on members, the
 // owner on everyone below.
 func canActOn(caller, target Role) error {
-	if caller.rank() <= target.rank() {
+	if caller.Rank() <= target.Rank() {
 		return ErrForbidden
 	}
 	return nil

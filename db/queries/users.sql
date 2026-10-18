@@ -26,3 +26,7 @@ RETURNING *;
 -- name: GetUserByLogin :one
 SELECT * FROM users
 WHERE lower(nickname) = lower($1) OR lower(email) = lower($1);
+
+-- Which of these ids are real accounts (task 2.10 checks before it opens a chat).
+-- name: ListKnownUsers :many
+SELECT id FROM users WHERE id = ANY($1::uuid[]);

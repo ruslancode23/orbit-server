@@ -15,6 +15,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/config"
+	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/gateway"
@@ -64,6 +65,11 @@ func run() error {
 		return fmt.Errorf("connect object store: %w", err)
 	}
 
+	conversationService := conversations.NewService(conversations.NewPostgresStore(pool), cfg.MaxGroupMembers)
+	// A conversation is a channel without a server, so the channels module asks
+	// this one who may read it.
+	channelService.SetParticipants(conversationService)
+
 	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, nil, hub)
 	fileService := files.NewService(files.NewPostgresStore(queries), storage, channelService, messageService,
 		cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
@@ -82,6 +88,7 @@ func run() error {
 		Auth:           authHandler,
 		Invites:        invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
 		Files:          files.NewHandler(fileService, log),
+		Conversations:  conversations.NewHandler(conversationService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),

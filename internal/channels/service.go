@@ -81,6 +81,12 @@ type Store interface {
 	Reorder(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) error
 }
 
+// Participants answers who is in a conversation — a channel without a server
+// (task 2.10). Optional: without it, conversations are simply not reachable.
+type Participants interface {
+	IsParticipant(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
+}
+
 // Authorizer is the part of internal/servers this package needs: the caller's
 // role on a server, read for this request. Declared here, by the consumer.
 type Authorizer interface {
@@ -90,11 +96,17 @@ type Authorizer interface {
 type Service struct {
 	store Store
 	roles Authorizer
+	// participants resolves access to conversations; see Participants.
+	participants Participants
 }
 
 func NewService(store Store, roles Authorizer) *Service {
 	return &Service{store: store, roles: roles}
 }
+
+// SetParticipants wires conversations in after construction: the two modules
+// point at each other, so one of them is told about the other once both exist.
+func (s *Service) SetParticipants(p Participants) { s.participants = p }
 
 // View is a channel as one caller sees it: the channel plus whether they may write.
 type View struct {
@@ -230,11 +242,36 @@ func (s *Service) channelFor(ctx context.Context, channelID, callerID uuid.UUID,
 	if err != nil {
 		return Channel{}, "", err
 	}
+
+	// A conversation belongs to no server: being in it is the whole rule, and
+	// its participants are equals, so everyone there counts as a member.
+	if channel.WorkspaceID == uuid.Nil {
+		inside, err := s.isParticipant(ctx, channelID, callerID)
+		if err != nil {
+			return Channel{}, "", err
+		}
+		if !inside {
+			return Channel{}, "", ErrNotFound
+		}
+		if least.Rank() > servers.RoleMember.Rank() {
+			// Renaming or deleting a conversation is not a thing anyone may do.
+			return Channel{}, "", ErrForbidden
+		}
+		return channel, servers.RoleMember, nil
+	}
+
 	role, err := s.role(ctx, channel.WorkspaceID, callerID, least)
 	if err != nil {
 		return Channel{}, "", err
 	}
 	return channel, role, nil
+}
+
+func (s *Service) isParticipant(ctx context.Context, channelID, userID uuid.UUID) (bool, error) {
+	if s.participants == nil {
+		return false, nil
+	}
+	return s.participants.IsParticipant(ctx, channelID, userID)
 }
 
 // role maps the server's answers to this package's: an outsider must not be able

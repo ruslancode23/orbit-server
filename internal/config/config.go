@@ -17,6 +17,8 @@ type Config struct {
 	DatabaseURL     string
 	CORSOrigins     []string
 	SessionTTL      time.Duration
+	// MaxGroupMembers caps a group chat, counting its creator.
+	MaxGroupMembers int
 	LiveKit         LiveKit
 	Storage         Storage
 }
@@ -66,6 +68,12 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_SESSION_TTL: %w", err))
 	}
 
+	maxGroup, err := strconv.Atoi(getenv("ORBIT_MAX_GROUP_MEMBERS", "10"))
+	if err != nil || maxGroup < 2 {
+		errs = append(errs, fmt.Errorf("ORBIT_MAX_GROUP_MEMBERS must be at least 2, got %q",
+			os.Getenv("ORBIT_MAX_GROUP_MEMBERS")))
+	}
+
 	maxUpload, err := strconv.ParseInt(getenv("ORBIT_MAX_UPLOAD_BYTES", "26214400"), 10, 64)
 	if err != nil || maxUpload <= 0 {
 		errs = append(errs, fmt.Errorf("ORBIT_MAX_UPLOAD_BYTES must be a positive number of bytes, got %q",
@@ -89,6 +97,7 @@ func Load() (Config, error) {
 		DatabaseURL:     required("ORBIT_DATABASE_URL"),
 		CORSOrigins:     splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
 		SessionTTL:      sessionTTL,
+		MaxGroupMembers: maxGroup,
 		Storage: Storage{
 			Endpoint:       required("ORBIT_S3_ENDPOINT"),
 			Bucket:         required("ORBIT_S3_BUCKET"),

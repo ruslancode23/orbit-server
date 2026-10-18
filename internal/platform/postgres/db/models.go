@@ -128,6 +128,13 @@ type Channel struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	IsReadOnly  bool               `json:"is_read_only"`
+	DirectKey   pgtype.Text        `json:"direct_key"`
+}
+
+type ChannelMember struct {
+	ChannelID pgtype.UUID        `json:"channel_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	JoinedAt  pgtype.Timestamptz `json:"joined_at"`
 }
 
 type ChannelRead struct {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
@@ -46,6 +47,7 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Files: files.NewHandler(
 			files.NewService(nil, nil, nil, nil, 1<<20, time.Minute), log),
 		MaxUploadBytes: 1 << 20,
+		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10), log),
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 	}
