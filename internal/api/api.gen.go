@@ -176,10 +176,68 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+// Message defines model for Message.
+type Message struct {
+	// Author Absent when the account has been deleted; the message stays.
+	Author    *User              `json:"author,omitempty"`
+	ChannelId openapi_types.UUID `json:"channelId"`
+	Content   string             `json:"content"`
+	CreatedAt time.Time          `json:"createdAt"`
+
+	// DeletedAt Set for a deleted message; its content is then empty.
+	DeletedAt *time.Time         `json:"deletedAt,omitempty"`
+	EditedAt  *time.Time         `json:"editedAt,omitempty"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Mentions Accounts mentioned here, already parsed out of the text.
+	Mentions  []openapi_types.UUID `json:"mentions"`
+	Reactions []Reaction           `json:"reactions"`
+
+	// ReplyToId The message this one answers, if any.
+	ReplyToId *openapi_types.UUID `json:"replyToId,omitempty"`
+
+	// Seq Order inside the channel; also the cursor for the next page.
+	Seq int64 `json:"seq"`
+}
+
+// MessageCreateRequest defines model for MessageCreateRequest.
+type MessageCreateRequest struct {
+	// ClientMessageId The client's own id for this message; a resend repeats it.
+	ClientMessageId string `json:"clientMessageId"`
+	Content         string `json:"content"`
+
+	// Mentions Accounts mentioned in the text; those outside the server are ignored.
+	Mentions  *[]openapi_types.UUID `json:"mentions,omitempty"`
+	ReplyToId *openapi_types.UUID   `json:"replyToId,omitempty"`
+}
+
+// MessagePage defines model for MessagePage.
+type MessagePage struct {
+	// Messages Newest first.
+	Messages []Message `json:"messages"`
+
+	// NextBefore Pass as `before` for the next page; absent at the start of the history.
+	NextBefore *int64 `json:"nextBefore,omitempty"`
+}
+
+// MessageUpdateRequest defines model for MessageUpdateRequest.
+type MessageUpdateRequest struct {
+	Content string `json:"content"`
+}
+
 // PasswordChangeRequest defines model for PasswordChangeRequest.
 type PasswordChangeRequest struct {
 	CurrentPassword string `json:"currentPassword"`
 	NewPassword     string `json:"newPassword"`
+}
+
+// Reaction defines model for Reaction.
+type Reaction struct {
+	Count int    `json:"count"`
+	Emoji string `json:"emoji"`
+
+	// Reacted Whether the caller is among those who reacted.
+	Reacted bool `json:"reacted"`
 }
 
 // Readiness defines model for Readiness.
@@ -327,11 +385,23 @@ type WorkspaceUpdateRequest struct {
 // ChannelId defines model for ChannelId.
 type ChannelId = openapi_types.UUID
 
+// MessageId defines model for MessageId.
+type MessageId = openapi_types.UUID
+
 // UserId defines model for UserId.
 type UserId = openapi_types.UUID
 
 // WorkspaceId defines model for WorkspaceId.
 type WorkspaceId = openapi_types.UUID
+
+// ListMessagesParams defines parameters for ListMessages.
+type ListMessagesParams struct {
+	// Before Return messages older than this `seq`. Omit for the newest page.
+	Before *int64 `form:"before,omitempty" json:"before,omitempty"`
+
+	// Limit How many messages to return.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
 
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
@@ -344,6 +414,12 @@ type RegisterJSONRequestBody = RegisterRequest
 
 // UpdateChannelJSONRequestBody defines body for UpdateChannel for application/json ContentType.
 type UpdateChannelJSONRequestBody = ChannelUpdateRequest
+
+// SendMessageJSONRequestBody defines body for SendMessage for application/json ContentType.
+type SendMessageJSONRequestBody = MessageCreateRequest
+
+// EditMessageJSONRequestBody defines body for EditMessage for application/json ContentType.
+type EditMessageJSONRequestBody = MessageUpdateRequest
 
 // CreateVoiceTokenJSONRequestBody defines body for CreateVoiceToken for application/json ContentType.
 type CreateVoiceTokenJSONRequestBody = VoiceTokenRequest
@@ -392,6 +468,24 @@ type ServerInterface interface {
 	// UpdateChannel Rename a channel, change its topic or its write access. Admin or owner.
 	// (PATCH /api/v1/channels/{channelId})
 	UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
+	// ListMessages A page of history, newest first. Needs membership in the server.
+	// (GET /api/v1/channels/{channelId}/messages)
+	ListMessages(w http.ResponseWriter, r *http.Request, channelId ChannelId, params ListMessagesParams)
+	// SendMessage Send a message. Needs the right to write in the channel.
+	// (POST /api/v1/channels/{channelId}/messages)
+	SendMessage(w http.ResponseWriter, r *http.Request, channelId ChannelId)
+	// DeleteMessage Delete your own message.
+	// (DELETE /api/v1/messages/{messageId})
+	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId MessageId)
+	// EditMessage Edit your own message.
+	// (PATCH /api/v1/messages/{messageId})
+	EditMessage(w http.ResponseWriter, r *http.Request, messageId MessageId)
+	// RemoveReaction Take your reaction back.
+	// (DELETE /api/v1/messages/{messageId}/reactions/{emoji})
+	RemoveReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string)
+	// AddReaction React to a message. Needs the right to write in the channel.
+	// (PUT /api/v1/messages/{messageId}/reactions/{emoji})
+	AddReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string)
 	// CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 	// (POST /api/v1/voice/token)
 	CreateVoiceToken(w http.ResponseWriter, r *http.Request)
@@ -494,6 +588,42 @@ func (_ Unimplemented) GetChannel(w http.ResponseWriter, r *http.Request, channe
 // UpdateChannel Rename a channel, change its topic or its write access. Admin or owner.
 // (PATCH /api/v1/channels/{channelId})
 func (_ Unimplemented) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListMessages A page of history, newest first. Needs membership in the server.
+// (GET /api/v1/channels/{channelId}/messages)
+func (_ Unimplemented) ListMessages(w http.ResponseWriter, r *http.Request, channelId ChannelId, params ListMessagesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SendMessage Send a message. Needs the right to write in the channel.
+// (POST /api/v1/channels/{channelId}/messages)
+func (_ Unimplemented) SendMessage(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteMessage Delete your own message.
+// (DELETE /api/v1/messages/{messageId})
+func (_ Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId MessageId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// EditMessage Edit your own message.
+// (PATCH /api/v1/messages/{messageId})
+func (_ Unimplemented) EditMessage(w http.ResponseWriter, r *http.Request, messageId MessageId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RemoveReaction Take your reaction back.
+// (DELETE /api/v1/messages/{messageId}/reactions/{emoji})
+func (_ Unimplemented) RemoveReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AddReaction React to a message. Needs the right to write in the channel.
+// (PUT /api/v1/messages/{messageId}/reactions/{emoji})
+func (_ Unimplemented) AddReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -747,6 +877,209 @@ func (siw *ServerInterfaceWrapper) UpdateChannel(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateChannel(w, r, channelId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMessages operation middleware
+func (siw *ServerInterfaceWrapper) ListMessages(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "channelId" -------------
+	var channelId ChannelId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "channelId", chi.URLParam(r, "channelId"), &channelId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMessagesParams
+
+	// ------------- Optional query parameter "before" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "before", r.URL.Query(), &params.Before, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "before"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "before", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMessages(w, r, channelId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SendMessage operation middleware
+func (siw *ServerInterfaceWrapper) SendMessage(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "channelId" -------------
+	var channelId ChannelId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "channelId", chi.URLParam(r, "channelId"), &channelId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SendMessage(w, r, channelId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteMessage operation middleware
+func (siw *ServerInterfaceWrapper) DeleteMessage(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "messageId" -------------
+	var messageId MessageId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", chi.URLParam(r, "messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteMessage(w, r, messageId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EditMessage operation middleware
+func (siw *ServerInterfaceWrapper) EditMessage(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "messageId" -------------
+	var messageId MessageId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", chi.URLParam(r, "messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EditMessage(w, r, messageId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveReaction operation middleware
+func (siw *ServerInterfaceWrapper) RemoveReaction(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "messageId" -------------
+	var messageId MessageId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", chi.URLParam(r, "messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "emoji" -------------
+	var emoji string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "emoji", chi.URLParam(r, "emoji"), &emoji, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "emoji", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveReaction(w, r, messageId, emoji)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AddReaction operation middleware
+func (siw *ServerInterfaceWrapper) AddReaction(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "messageId" -------------
+	var messageId MessageId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", chi.URLParam(r, "messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "emoji" -------------
+	var emoji string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "emoji", chi.URLParam(r, "emoji"), &emoji, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "emoji", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddReaction(w, r, messageId, emoji)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1360,6 +1693,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Patch(options.BaseURL+"/api/v1/channels/{channelId}", wrapper.UpdateChannel)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/channels/{channelId}/messages", wrapper.ListMessages)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/channels/{channelId}/messages", wrapper.SendMessage)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/messages/{messageId}", wrapper.DeleteMessage)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/v1/messages/{messageId}", wrapper.EditMessage)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/messages/{messageId}/reactions/{emoji}", wrapper.RemoveReaction)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/v1/messages/{messageId}/reactions/{emoji}", wrapper.AddReaction)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/v1/voice/token", wrapper.CreateVoiceToken)
 	})
 
@@ -1970,6 +2321,549 @@ func (response UpdateChannel413JSONResponse) VisitUpdateChannelResponse(w http.R
 type UpdateChannel500JSONResponse Error
 
 func (response UpdateChannel500JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMessagesRequestObject struct {
+	ChannelId ChannelId `json:"channelId"`
+	Params    ListMessagesParams
+}
+
+type ListMessagesResponseObject interface {
+	VisitListMessagesResponse(w http.ResponseWriter) error
+}
+
+type ListMessages200JSONResponse MessagePage
+
+func (response ListMessages200JSONResponse) VisitListMessagesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMessages400JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListMessages400JSONResponse) VisitListMessagesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMessages401JSONResponse Error
+
+func (response ListMessages401JSONResponse) VisitListMessagesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMessages404JSONResponse Error
+
+func (response ListMessages404JSONResponse) VisitListMessagesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMessages500JSONResponse Error
+
+func (response ListMessages500JSONResponse) VisitListMessagesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessageRequestObject struct {
+	ChannelId ChannelId `json:"channelId"`
+	Body      *SendMessageJSONRequestBody
+}
+
+type SendMessageResponseObject interface {
+	VisitSendMessageResponse(w http.ResponseWriter) error
+}
+
+type SendMessage200JSONResponse Message
+
+func (response SendMessage200JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage201JSONResponse Message
+
+func (response SendMessage201JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage400JSONResponse struct{ ErrorJSONResponse }
+
+func (response SendMessage400JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage401JSONResponse Error
+
+func (response SendMessage401JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage403JSONResponse Error
+
+func (response SendMessage403JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage404JSONResponse Error
+
+func (response SendMessage404JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage413JSONResponse Error
+
+func (response SendMessage413JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendMessage500JSONResponse Error
+
+func (response SendMessage500JSONResponse) VisitSendMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMessageRequestObject struct {
+	MessageId MessageId `json:"messageId"`
+}
+
+type DeleteMessageResponseObject interface {
+	VisitDeleteMessageResponse(w http.ResponseWriter) error
+}
+
+type DeleteMessage200JSONResponse Message
+
+func (response DeleteMessage200JSONResponse) VisitDeleteMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMessage401JSONResponse struct{ ErrorJSONResponse }
+
+func (response DeleteMessage401JSONResponse) VisitDeleteMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMessage403JSONResponse Error
+
+func (response DeleteMessage403JSONResponse) VisitDeleteMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMessage404JSONResponse Error
+
+func (response DeleteMessage404JSONResponse) VisitDeleteMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMessage500JSONResponse Error
+
+func (response DeleteMessage500JSONResponse) VisitDeleteMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessageRequestObject struct {
+	MessageId MessageId `json:"messageId"`
+	Body      *EditMessageJSONRequestBody
+}
+
+type EditMessageResponseObject interface {
+	VisitEditMessageResponse(w http.ResponseWriter) error
+}
+
+type EditMessage200JSONResponse Message
+
+func (response EditMessage200JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessage400JSONResponse struct{ ErrorJSONResponse }
+
+func (response EditMessage400JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessage401JSONResponse Error
+
+func (response EditMessage401JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessage403JSONResponse Error
+
+func (response EditMessage403JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessage404JSONResponse Error
+
+func (response EditMessage404JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessage413JSONResponse Error
+
+func (response EditMessage413JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditMessage500JSONResponse Error
+
+func (response EditMessage500JSONResponse) VisitEditMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveReactionRequestObject struct {
+	MessageId MessageId `json:"messageId"`
+	Emoji     string    `json:"emoji"`
+}
+
+type RemoveReactionResponseObject interface {
+	VisitRemoveReactionResponse(w http.ResponseWriter) error
+}
+
+type RemoveReaction200JSONResponse Message
+
+func (response RemoveReaction200JSONResponse) VisitRemoveReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveReaction401JSONResponse struct{ ErrorJSONResponse }
+
+func (response RemoveReaction401JSONResponse) VisitRemoveReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveReaction404JSONResponse Error
+
+func (response RemoveReaction404JSONResponse) VisitRemoveReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveReaction500JSONResponse Error
+
+func (response RemoveReaction500JSONResponse) VisitRemoveReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddReactionRequestObject struct {
+	MessageId MessageId `json:"messageId"`
+	Emoji     string    `json:"emoji"`
+}
+
+type AddReactionResponseObject interface {
+	VisitAddReactionResponse(w http.ResponseWriter) error
+}
+
+type AddReaction200JSONResponse Message
+
+func (response AddReaction200JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddReaction400JSONResponse struct{ ErrorJSONResponse }
+
+func (response AddReaction400JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddReaction401JSONResponse Error
+
+func (response AddReaction401JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddReaction403JSONResponse Error
+
+func (response AddReaction403JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddReaction404JSONResponse Error
+
+func (response AddReaction404JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddReaction500JSONResponse Error
+
+func (response AddReaction500JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3307,6 +4201,24 @@ type StrictServerInterface interface {
 	// UpdateChannel Rename a channel, change its topic or its write access. Admin or owner.
 	// (PATCH /api/v1/channels/{channelId})
 	UpdateChannel(ctx context.Context, request UpdateChannelRequestObject) (UpdateChannelResponseObject, error)
+	// ListMessages A page of history, newest first. Needs membership in the server.
+	// (GET /api/v1/channels/{channelId}/messages)
+	ListMessages(ctx context.Context, request ListMessagesRequestObject) (ListMessagesResponseObject, error)
+	// SendMessage Send a message. Needs the right to write in the channel.
+	// (POST /api/v1/channels/{channelId}/messages)
+	SendMessage(ctx context.Context, request SendMessageRequestObject) (SendMessageResponseObject, error)
+	// DeleteMessage Delete your own message.
+	// (DELETE /api/v1/messages/{messageId})
+	DeleteMessage(ctx context.Context, request DeleteMessageRequestObject) (DeleteMessageResponseObject, error)
+	// EditMessage Edit your own message.
+	// (PATCH /api/v1/messages/{messageId})
+	EditMessage(ctx context.Context, request EditMessageRequestObject) (EditMessageResponseObject, error)
+	// RemoveReaction Take your reaction back.
+	// (DELETE /api/v1/messages/{messageId}/reactions/{emoji})
+	RemoveReaction(ctx context.Context, request RemoveReactionRequestObject) (RemoveReactionResponseObject, error)
+	// AddReaction React to a message. Needs the right to write in the channel.
+	// (PUT /api/v1/messages/{messageId}/reactions/{emoji})
+	AddReaction(ctx context.Context, request AddReactionRequestObject) (AddReactionResponseObject, error)
 	// CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 	// (POST /api/v1/voice/token)
 	CreateVoiceToken(ctx context.Context, request CreateVoiceTokenRequestObject) (CreateVoiceTokenResponseObject, error)
@@ -3618,6 +4530,179 @@ func (sh *strictHandler) UpdateChannel(w http.ResponseWriter, r *http.Request, c
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateChannelResponseObject); ok {
 		if err := validResponse.VisitUpdateChannelResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMessages operation middleware
+func (sh *strictHandler) ListMessages(w http.ResponseWriter, r *http.Request, channelId ChannelId, params ListMessagesParams) {
+	var request ListMessagesRequestObject
+
+	request.ChannelId = channelId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMessages(ctx, request.(ListMessagesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMessages")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMessagesResponseObject); ok {
+		if err := validResponse.VisitListMessagesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SendMessage operation middleware
+func (sh *strictHandler) SendMessage(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	var request SendMessageRequestObject
+
+	request.ChannelId = channelId
+
+	var body SendMessageJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SendMessage(ctx, request.(SendMessageRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SendMessage")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SendMessageResponseObject); ok {
+		if err := validResponse.VisitSendMessageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteMessage operation middleware
+func (sh *strictHandler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId MessageId) {
+	var request DeleteMessageRequestObject
+
+	request.MessageId = messageId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteMessage(ctx, request.(DeleteMessageRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteMessage")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteMessageResponseObject); ok {
+		if err := validResponse.VisitDeleteMessageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// EditMessage operation middleware
+func (sh *strictHandler) EditMessage(w http.ResponseWriter, r *http.Request, messageId MessageId) {
+	var request EditMessageRequestObject
+
+	request.MessageId = messageId
+
+	var body EditMessageJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.EditMessage(ctx, request.(EditMessageRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "EditMessage")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(EditMessageResponseObject); ok {
+		if err := validResponse.VisitEditMessageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RemoveReaction operation middleware
+func (sh *strictHandler) RemoveReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string) {
+	var request RemoveReactionRequestObject
+
+	request.MessageId = messageId
+	request.Emoji = emoji
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveReaction(ctx, request.(RemoveReactionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveReaction")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveReactionResponseObject); ok {
+		if err := validResponse.VisitRemoveReactionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AddReaction operation middleware
+func (sh *strictHandler) AddReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string) {
+	var request AddReactionRequestObject
+
+	request.MessageId = messageId
+	request.Emoji = emoji
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AddReaction(ctx, request.(AddReactionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AddReaction")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AddReactionResponseObject); ok {
+		if err := validResponse.VisitAddReactionResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -4118,84 +5203,102 @@ func (sh *strictHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"Lv8WAAD//w==",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

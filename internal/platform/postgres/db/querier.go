@@ -12,7 +12,7 @@ import (
 
 type Querier interface {
 	AddMessageMention(ctx context.Context, arg AddMessageMentionParams) error
-	AddReaction(ctx context.Context, arg AddReactionParams) (MessageReaction, error)
+	AddReaction(ctx context.Context, arg AddReactionParams) error
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
@@ -27,14 +27,17 @@ type Querier interface {
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (Invite, error)
 	// A resend with the same client id returns the message already stored
 	// instead of creating a second one (FR-04).
-	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
+	// xmax = 0 on a row this statement inserted; anything else means the resend
+	// found the message already stored.
+	CreateMessage(ctx context.Context, arg CreateMessageParams) (CreateMessageRow, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteAttachment(ctx context.Context, id pgtype.UUID) error
 	DeleteChannel(ctx context.Context, id pgtype.UUID) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
-	DeleteMessage(ctx context.Context, id pgtype.UUID) (Message, error)
+	// Soft delete: replies and read cursors keep pointing at the message.
+	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
 	DeleteWorkspace(ctx context.Context, id pgtype.UUID) error
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
@@ -44,7 +47,7 @@ type Querier interface {
 	// Only a live session resolves to its user; expiry and revocation are checked here,
 	// not by the caller.
 	GetLiveSessionUser(ctx context.Context, tokenHash []byte) (GetLiveSessionUserRow, error)
-	GetMessage(ctx context.Context, id pgtype.UUID) (Message, error)
+	GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
 	// Sign-in accepts either a nickname or an email, in any case.
@@ -54,11 +57,12 @@ type Querier interface {
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
 	IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMemberBannedParams) (bool, error)
-	// One page of history, newest first; the caller passes the seq it already has
-	// (0 for the first page) and gets the next portion.
-	ListChannelMessagesBefore(ctx context.Context, arg ListChannelMessagesBeforeParams) ([]Message, error)
+	// One page of history, newest first: the caller passes the seq it already has
+	// (NULL for the first page) and gets the next portion.
+	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)
 	ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.UUID) ([]Attachment, error)
-	ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
+	ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]MessageMention, error)
+	// Reactions of a page of messages, with whether the caller is among them.
 	ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error)
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)

@@ -27,11 +27,10 @@ func (q *Queries) AddMessageMention(ctx context.Context, arg AddMessageMentionPa
 	return err
 }
 
-const addReaction = `-- name: AddReaction :one
+const addReaction = `-- name: AddReaction :exec
 INSERT INTO message_reactions (message_id, user_id, emoji)
 VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING
-RETURNING message_id, user_id, emoji, created_at
 `
 
 type AddReactionParams struct {
@@ -40,16 +39,9 @@ type AddReactionParams struct {
 	Emoji     string      `json:"emoji"`
 }
 
-func (q *Queries) AddReaction(ctx context.Context, arg AddReactionParams) (MessageReaction, error) {
-	row := q.db.QueryRow(ctx, addReaction, arg.MessageID, arg.UserID, arg.Emoji)
-	var i MessageReaction
-	err := row.Scan(
-		&i.MessageID,
-		&i.UserID,
-		&i.Emoji,
-		&i.CreatedAt,
-	)
-	return i, err
+func (q *Queries) AddReaction(ctx context.Context, arg AddReactionParams) error {
+	_, err := q.db.Exec(ctx, addReaction, arg.MessageID, arg.UserID, arg.Emoji)
+	return err
 }
 
 const createMessage = `-- name: CreateMessage :one
@@ -57,7 +49,7 @@ INSERT INTO messages (channel_id, author_id, client_message_id, content, reply_t
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (channel_id, author_id, client_message_id) WHERE author_id IS NOT NULL
     DO UPDATE SET channel_id = excluded.channel_id
-RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at
+RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, (xmax = 0) AS inserted
 `
 
 type CreateMessageParams struct {
@@ -68,9 +60,25 @@ type CreateMessageParams struct {
 	ReplyToID       pgtype.UUID `json:"reply_to_id"`
 }
 
+type CreateMessageRow struct {
+	Seq             int64              `json:"seq"`
+	ID              pgtype.UUID        `json:"id"`
+	ChannelID       pgtype.UUID        `json:"channel_id"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	ClientMessageID string             `json:"client_message_id"`
+	Content         string             `json:"content"`
+	ReplyToID       pgtype.UUID        `json:"reply_to_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	EditedAt        pgtype.Timestamptz `json:"edited_at"`
+	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
+	Inserted        bool               `json:"inserted"`
+}
+
 // A resend with the same client id returns the message already stored
 // instead of creating a second one (FR-04).
-func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
+// xmax = 0 on a row this statement inserted; anything else means the resend
+// found the message already stored.
+func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (CreateMessageRow, error) {
 	row := q.db.QueryRow(ctx, createMessage,
 		arg.ChannelID,
 		arg.AuthorID,
@@ -78,7 +86,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		arg.Content,
 		arg.ReplyToID,
 	)
-	var i Message
+	var i CreateMessageRow
 	err := row.Scan(
 		&i.Seq,
 		&i.ID,
@@ -90,6 +98,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.CreatedAt,
 		&i.EditedAt,
 		&i.DeletedAt,
+		&i.Inserted,
 	)
 	return i, err
 }
@@ -97,12 +106,18 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 const deleteMessage = `-- name: DeleteMessage :one
 UPDATE messages
 SET deleted_at = now(), content = ''
-WHERE id = $1 AND deleted_at IS NULL
+WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at
 `
 
-func (q *Queries) DeleteMessage(ctx context.Context, id pgtype.UUID) (Message, error) {
-	row := q.db.QueryRow(ctx, deleteMessage, id)
+type DeleteMessageParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AuthorID pgtype.UUID `json:"author_id"`
+}
+
+// Soft delete: replies and read cursors keep pointing at the message.
+func (q *Queries) DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error) {
+	row := q.db.QueryRow(ctx, deleteMessage, arg.ID, arg.AuthorID)
 	var i Message
 	err := row.Scan(
 		&i.Seq,
@@ -151,63 +166,92 @@ func (q *Queries) EditMessage(ctx context.Context, arg EditMessageParams) (Messa
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at FROM messages WHERE id = $1
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at
+FROM messages
+    LEFT JOIN users ON users.id = messages.author_id
+WHERE messages.id = $1
 `
 
-func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (Message, error) {
+type GetMessageRow struct {
+	Message Message `json:"message"`
+	User    User    `json:"user"`
+}
+
+func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow, error) {
 	row := q.db.QueryRow(ctx, getMessage, id)
-	var i Message
+	var i GetMessageRow
 	err := row.Scan(
-		&i.Seq,
-		&i.ID,
-		&i.ChannelID,
-		&i.AuthorID,
-		&i.ClientMessageID,
-		&i.Content,
-		&i.ReplyToID,
-		&i.CreatedAt,
-		&i.EditedAt,
-		&i.DeletedAt,
+		&i.Message.Seq,
+		&i.Message.ID,
+		&i.Message.ChannelID,
+		&i.Message.AuthorID,
+		&i.Message.ClientMessageID,
+		&i.Message.Content,
+		&i.Message.ReplyToID,
+		&i.Message.CreatedAt,
+		&i.Message.EditedAt,
+		&i.Message.DeletedAt,
+		&i.User.ID,
+		&i.User.Nickname,
+		&i.User.Email,
+		&i.User.PasswordHash,
+		&i.User.IsGuest,
+		&i.User.CreatedAt,
+		&i.User.UpdatedAt,
 	)
 	return i, err
 }
 
-const listChannelMessagesBefore = `-- name: ListChannelMessagesBefore :many
-SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at FROM messages
-WHERE channel_id = $1
-  AND ($3::bigint IS NULL OR seq < $3::bigint)
-ORDER BY seq DESC
+const listChannelMessages = `-- name: ListChannelMessages :many
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at
+FROM messages
+    LEFT JOIN users ON users.id = messages.author_id
+WHERE messages.channel_id = $1
+  AND ($3::bigint IS NULL OR messages.seq < $3::bigint)
+ORDER BY messages.seq DESC
 LIMIT $2
 `
 
-type ListChannelMessagesBeforeParams struct {
+type ListChannelMessagesParams struct {
 	ChannelID pgtype.UUID `json:"channel_id"`
 	Limit     int32       `json:"limit"`
 	BeforeSeq pgtype.Int8 `json:"before_seq"`
 }
 
-// One page of history, newest first; the caller passes the seq it already has
-// (0 for the first page) and gets the next portion.
-func (q *Queries) ListChannelMessagesBefore(ctx context.Context, arg ListChannelMessagesBeforeParams) ([]Message, error) {
-	rows, err := q.db.Query(ctx, listChannelMessagesBefore, arg.ChannelID, arg.Limit, arg.BeforeSeq)
+type ListChannelMessagesRow struct {
+	Message Message `json:"message"`
+	User    User    `json:"user"`
+}
+
+// One page of history, newest first: the caller passes the seq it already has
+// (NULL for the first page) and gets the next portion.
+func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error) {
+	rows, err := q.db.Query(ctx, listChannelMessages, arg.ChannelID, arg.Limit, arg.BeforeSeq)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Message{}
+	items := []ListChannelMessagesRow{}
 	for rows.Next() {
-		var i Message
+		var i ListChannelMessagesRow
 		if err := rows.Scan(
-			&i.Seq,
-			&i.ID,
-			&i.ChannelID,
-			&i.AuthorID,
-			&i.ClientMessageID,
-			&i.Content,
-			&i.ReplyToID,
-			&i.CreatedAt,
-			&i.EditedAt,
-			&i.DeletedAt,
+			&i.Message.Seq,
+			&i.Message.ID,
+			&i.Message.ChannelID,
+			&i.Message.AuthorID,
+			&i.Message.ClientMessageID,
+			&i.Message.Content,
+			&i.Message.ReplyToID,
+			&i.Message.CreatedAt,
+			&i.Message.EditedAt,
+			&i.Message.DeletedAt,
+			&i.User.ID,
+			&i.User.Nickname,
+			&i.User.Email,
+			&i.User.PasswordHash,
+			&i.User.IsGuest,
+			&i.User.CreatedAt,
+			&i.User.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -220,22 +264,23 @@ func (q *Queries) ListChannelMessagesBefore(ctx context.Context, arg ListChannel
 }
 
 const listMessageMentions = `-- name: ListMessageMentions :many
-SELECT user_id FROM message_mentions WHERE message_id = ANY($1::uuid[])
+SELECT message_id, user_id FROM message_mentions
+WHERE message_id = ANY($1::uuid[])
 `
 
-func (q *Queries) ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error) {
+func (q *Queries) ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]MessageMention, error) {
 	rows, err := q.db.Query(ctx, listMessageMentions, dollar_1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []pgtype.UUID{}
+	items := []MessageMention{}
 	for rows.Next() {
-		var user_id pgtype.UUID
-		if err := rows.Scan(&user_id); err != nil {
+		var i MessageMention
+		if err := rows.Scan(&i.MessageID, &i.UserID); err != nil {
 			return nil, err
 		}
-		items = append(items, user_id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -264,6 +309,7 @@ type ListMessageReactionsRow struct {
 	Reacted   bool        `json:"reacted"`
 }
 
+// Reactions of a page of messages, with whether the caller is among them.
 func (q *Queries) ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error) {
 	rows, err := q.db.Query(ctx, listMessageReactions, arg.ViewerID, arg.MessageIds)
 	if err != nil {

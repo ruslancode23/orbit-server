@@ -25,6 +25,11 @@ tags:
       Text channels inside a server. Reading follows membership; writing is open to
       every member unless the channel is read-only, where only admins and the owner write.
       Channels are created, renamed, reordered and deleted by admins and the owner.
+  - name: messages
+    description: |
+      Messages in a channel. Sending carries the client's own id, so a resend after a
+      network failure returns the message already stored instead of a second copy.
+      History comes in pages ordered by `seq`, a number that only grows inside a channel.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -493,6 +498,140 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    get:
+      operationId: listMessages
+      tags: [messages]
+      summary: A page of history, newest first. Needs membership in the server.
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: Return messages older than this `seq`. Omit for the newest page.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: limit
+          in: query
+          required: false
+          description: How many messages to return.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessagePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: sendMessage
+      tags: [messages]
+      summary: Send a message. Needs the right to write in the channel.
+      description: |
+        `clientMessageId` makes the send idempotent: the same id in the same channel
+        from the same account returns the message already stored, with 200 instead of 201.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageCreateRequest" }
+      responses:
+        "200":
+          description: This message was already sent; the stored one comes back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "201":
+          description: Message sent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/messages/{messageId}:
+    parameters:
+      - $ref: "#/components/parameters/MessageId"
+    patch:
+      operationId: editMessage
+      tags: [messages]
+      summary: Edit your own message.
+      responses:
+        "200":
+          description: The edited message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageUpdateRequest" }
+    delete:
+      operationId: deleteMessage
+      tags: [messages]
+      summary: Delete your own message.
+      description: |
+        The message stays in the history as deleted, without its text: replies to it
+        and read cursors keep working.
+      responses:
+        "200":
+          description: The deleted message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/messages/{messageId}/reactions/{emoji}:
+    parameters:
+      - $ref: "#/components/parameters/MessageId"
+      - name: emoji
+        in: path
+        required: true
+        description: The reaction itself, for example 👍.
+        schema: { type: string, minLength: 1, maxLength: 32 }
+    put:
+      operationId: addReaction
+      tags: [messages]
+      summary: React to a message. Needs the right to write in the channel.
+      responses:
+        "200":
+          description: The message with its reactions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: removeReaction
+      tags: [messages]
+      summary: Take your reaction back.
+      responses:
+        "200":
+          description: The message with its reactions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -530,6 +669,12 @@ components:
       in: path
       required: true
       description: Channel identifier.
+      schema: { type: string, format: uuid }
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      description: Message identifier.
       schema: { type: string, format: uuid }
     UserId:
       name: userId
@@ -808,6 +953,97 @@ components:
           minItems: 1
           items: { type: string, format: uuid }
           description: Every channel of the server, once, in the order people will see.
+    Message:
+      type: object
+      additionalProperties: false
+      required: [id, channelId, seq, content, mentions, reactions, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        seq:
+          type: integer
+          format: int64
+          description: Order inside the channel; also the cursor for the next page.
+        author:
+          allOf:
+            - $ref: "#/components/schemas/User"
+          description: Absent when the account has been deleted; the message stays.
+        content:
+          type: string
+          maxLength: 4000
+        replyToId:
+          type: string
+          format: uuid
+          description: The message this one answers, if any.
+        mentions:
+          type: array
+          items: { type: string, format: uuid }
+          description: Accounts mentioned here, already parsed out of the text.
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/Reaction" }
+        createdAt: { type: string, format: date-time }
+        editedAt: { type: string, format: date-time }
+        deletedAt:
+          type: string
+          format: date-time
+          description: Set for a deleted message; its content is then empty.
+    Reaction:
+      type: object
+      additionalProperties: false
+      required: [emoji, count, reacted]
+      properties:
+        emoji:
+          type: string
+          maxLength: 32
+        count: { type: integer }
+        reacted:
+          type: boolean
+          description: Whether the caller is among those who reacted.
+    MessagePage:
+      type: object
+      additionalProperties: false
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+          description: Newest first.
+        nextBefore:
+          type: integer
+          format: int64
+          description: Pass as `before` for the next page; absent at the start of the history.
+    MessageCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [clientMessageId, content]
+      properties:
+        clientMessageId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The client's own id for this message; a resend repeats it.
+        content:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        replyToId:
+          type: string
+          format: uuid
+        mentions:
+          type: array
+          maxItems: 50
+          items: { type: string, format: uuid }
+          description: Accounts mentioned in the text; those outside the server are ignored.
+    MessageUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 4000
     VoiceTokenRequest:
       type: object
       additionalProperties: false

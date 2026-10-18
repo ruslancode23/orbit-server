@@ -16,6 +16,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/config"
 	"github.com/ruslancode23/orbit-server/internal/health"
+	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
@@ -49,6 +50,7 @@ func run() error {
 
 	queries := db.New(pool)
 	workspaces := servers.NewService(servers.NewPostgresStore(pool))
+	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
 	deps := httpserver.Deps{
@@ -59,7 +61,9 @@ func run() error {
 		Auth:       auth.NewHandler(sessions, !cfg.IsDevelopment(), log),
 		Sessions:   sessions,
 		Workspaces: servers.NewHandler(workspaces, log),
-		Channels:   channels.NewHandler(channels.NewService(channels.NewPostgresStore(pool), workspaces), log),
+		Channels:   channels.NewHandler(channelService, log),
+		Messages: messages.NewHandler(
+			messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces), log),
 	}
 	if cfg.IsDevelopment() {
 		issuer := voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL)

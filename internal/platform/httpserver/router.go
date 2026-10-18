@@ -20,6 +20,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/health"
+	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
@@ -41,6 +42,8 @@ type Deps struct {
 	Workspaces *servers.Handler
 	// Channels serves the text channels of a server.
 	Channels *channels.Handler
+	// Messages serves what people write in those channels.
+	Messages *messages.Handler
 	// Voice is nil outside development: the token endpoint has no real authorization yet.
 	Voice *voice.Handler
 }
@@ -50,8 +53,8 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil {
-		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions, Deps.Workspaces and Deps.Channels are required")
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil {
+		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions, Deps.Workspaces, Deps.Channels and Deps.Messages are required")
 	}
 
 	spec, err := api.GetSpec()
@@ -89,7 +92,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		},
 	}))
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -112,6 +115,7 @@ type server struct {
 	auth       *auth.Handler
 	workspaces *servers.Handler
 	channels   *channels.Handler
+	messages   *messages.Handler
 	voice      *voice.Handler
 }
 
@@ -218,6 +222,30 @@ func (s *server) DeleteChannel(ctx context.Context, req api.DeleteChannelRequest
 
 func (s *server) ReorderChannels(ctx context.Context, req api.ReorderChannelsRequestObject) (api.ReorderChannelsResponseObject, error) {
 	return s.channels.ReorderChannels(ctx, req)
+}
+
+func (s *server) ListMessages(ctx context.Context, req api.ListMessagesRequestObject) (api.ListMessagesResponseObject, error) {
+	return s.messages.ListMessages(ctx, req)
+}
+
+func (s *server) SendMessage(ctx context.Context, req api.SendMessageRequestObject) (api.SendMessageResponseObject, error) {
+	return s.messages.SendMessage(ctx, req)
+}
+
+func (s *server) EditMessage(ctx context.Context, req api.EditMessageRequestObject) (api.EditMessageResponseObject, error) {
+	return s.messages.EditMessage(ctx, req)
+}
+
+func (s *server) DeleteMessage(ctx context.Context, req api.DeleteMessageRequestObject) (api.DeleteMessageResponseObject, error) {
+	return s.messages.DeleteMessage(ctx, req)
+}
+
+func (s *server) AddReaction(ctx context.Context, req api.AddReactionRequestObject) (api.AddReactionResponseObject, error) {
+	return s.messages.AddReaction(ctx, req)
+}
+
+func (s *server) RemoveReaction(ctx context.Context, req api.RemoveReactionRequestObject) (api.RemoveReactionResponseObject, error) {
+	return s.messages.RemoveReaction(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

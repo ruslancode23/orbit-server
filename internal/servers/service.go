@@ -132,6 +132,19 @@ func (s *Service) Authorize(ctx context.Context, workspaceID, userID uuid.UUID) 
 	return s.store.Role(ctx, workspaceID, userID)
 }
 
+// IsMember reports whether the account is on the server. Other modules use it
+// to decide, for example, whether a mention reaches someone who can read it.
+func (s *Service) IsMember(ctx context.Context, workspaceID, userID uuid.UUID) (bool, error) {
+	_, err := s.store.Role(ctx, workspaceID, userID)
+	switch {
+	case errors.Is(err, ErrNotMember):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
+}
+
 // RequireAtLeast reports whether the caller's role on the server reaches `least`.
 func (s *Service) RequireAtLeast(ctx context.Context, workspaceID, userID uuid.UUID, least Role) (Role, error) {
 	role, err := s.store.Role(ctx, workspaceID, userID)
