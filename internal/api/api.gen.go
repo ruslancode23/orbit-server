@@ -96,6 +96,51 @@ func (e WorkspaceRole) Valid() bool {
 	}
 }
 
+// Channel defines model for Channel.
+type Channel struct {
+	// CanWrite Whether the caller may write in this channel right now.
+	CanWrite  bool               `json:"canWrite"`
+	CreatedAt time.Time          `json:"createdAt"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// IsReadOnly Only admins and the owner may write here.
+	IsReadOnly bool `json:"isReadOnly"`
+
+	// Name Example: общий
+	Name string `json:"name"`
+
+	// Position Place in the server's list, from 0.
+	Position int `json:"position"`
+
+	// Topic What the channel is for; absent when nobody set one.
+	Topic       *string            `json:"topic,omitempty"`
+	WorkspaceId openapi_types.UUID `json:"workspaceId"`
+}
+
+// ChannelCreateRequest defines model for ChannelCreateRequest.
+type ChannelCreateRequest struct {
+	IsReadOnly *bool `json:"isReadOnly,omitempty"`
+
+	// Name Example: общий
+	Name  string  `json:"name"`
+	Topic *string `json:"topic,omitempty"`
+}
+
+// ChannelOrderRequest defines model for ChannelOrderRequest.
+type ChannelOrderRequest struct {
+	// ChannelIds Every channel of the server, once, in the order people will see.
+	ChannelIds []openapi_types.UUID `json:"channelIds"`
+}
+
+// ChannelUpdateRequest Only the fields present are changed; an empty topic clears it.
+type ChannelUpdateRequest struct {
+	IsReadOnly *bool   `json:"isReadOnly,omitempty"`
+	Name       *string `json:"name,omitempty"`
+
+	// Topic An empty string removes the topic.
+	Topic *string `json:"topic,omitempty"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error ErrorDetail `json:"error"`
@@ -279,6 +324,9 @@ type WorkspaceUpdateRequest struct {
 	Name string `json:"name"`
 }
 
+// ChannelId defines model for ChannelId.
+type ChannelId = openapi_types.UUID
+
 // UserId defines model for UserId.
 type UserId = openapi_types.UUID
 
@@ -294,6 +342,9 @@ type ChangePasswordJSONRequestBody = PasswordChangeRequest
 // RegisterJSONRequestBody defines body for Register for application/json ContentType.
 type RegisterJSONRequestBody = RegisterRequest
 
+// UpdateChannelJSONRequestBody defines body for UpdateChannel for application/json ContentType.
+type UpdateChannelJSONRequestBody = ChannelUpdateRequest
+
 // CreateVoiceTokenJSONRequestBody defines body for CreateVoiceToken for application/json ContentType.
 type CreateVoiceTokenJSONRequestBody = VoiceTokenRequest
 
@@ -305,6 +356,12 @@ type UpdateWorkspaceJSONRequestBody = WorkspaceUpdateRequest
 
 // BanWorkspaceMemberJSONRequestBody defines body for BanWorkspaceMember for application/json ContentType.
 type BanWorkspaceMemberJSONRequestBody = WorkspaceBanRequest
+
+// CreateChannelJSONRequestBody defines body for CreateChannel for application/json ContentType.
+type CreateChannelJSONRequestBody = ChannelCreateRequest
+
+// ReorderChannelsJSONRequestBody defines body for ReorderChannels for application/json ContentType.
+type ReorderChannelsJSONRequestBody = ChannelOrderRequest
 
 // SetWorkspaceMemberRoleJSONRequestBody defines body for SetWorkspaceMemberRole for application/json ContentType.
 type SetWorkspaceMemberRoleJSONRequestBody = WorkspaceMemberRoleRequest
@@ -326,6 +383,15 @@ type ServerInterface interface {
 	// Register Create an account and start a session.
 	// (POST /api/v1/auth/register)
 	Register(w http.ResponseWriter, r *http.Request)
+	// DeleteChannel Delete a channel with its messages and attachments. Admin or owner.
+	// (DELETE /api/v1/channels/{channelId})
+	DeleteChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
+	// GetChannel One channel. Needs membership in its server.
+	// (GET /api/v1/channels/{channelId})
+	GetChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
+	// UpdateChannel Rename a channel, change its topic or its write access. Admin or owner.
+	// (PATCH /api/v1/channels/{channelId})
+	UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
 	// CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 	// (POST /api/v1/voice/token)
 	CreateVoiceToken(w http.ResponseWriter, r *http.Request)
@@ -353,6 +419,15 @@ type ServerInterface interface {
 	// BanWorkspaceMember Ban someone from a server. Admin or owner.
 	// (PUT /api/v1/workspaces/{workspaceId}/bans/{userId})
 	BanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId)
+	// ListChannels Channels of a server, in their order. Needs membership.
+	// (GET /api/v1/workspaces/{workspaceId}/channels)
+	ListChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// CreateChannel Create a channel. Admin or owner.
+	// (POST /api/v1/workspaces/{workspaceId}/channels)
+	CreateChannel(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
+	// ReorderChannels Set the order of the channels. Admin or owner.
+	// (PUT /api/v1/workspaces/{workspaceId}/channels/order)
+	ReorderChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
 	// ListWorkspaceMembers Members of a server and their roles. Needs membership.
 	// (GET /api/v1/workspaces/{workspaceId}/members)
 	ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId)
@@ -401,6 +476,24 @@ func (_ Unimplemented) ChangePassword(w http.ResponseWriter, r *http.Request) {
 // Register Create an account and start a session.
 // (POST /api/v1/auth/register)
 func (_ Unimplemented) Register(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteChannel Delete a channel with its messages and attachments. Admin or owner.
+// (DELETE /api/v1/channels/{channelId})
+func (_ Unimplemented) DeleteChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetChannel One channel. Needs membership in its server.
+// (GET /api/v1/channels/{channelId})
+func (_ Unimplemented) GetChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateChannel Rename a channel, change its topic or its write access. Admin or owner.
+// (PATCH /api/v1/channels/{channelId})
+func (_ Unimplemented) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -455,6 +548,24 @@ func (_ Unimplemented) UnbanWorkspaceMember(w http.ResponseWriter, r *http.Reque
 // BanWorkspaceMember Ban someone from a server. Admin or owner.
 // (PUT /api/v1/workspaces/{workspaceId}/bans/{userId})
 func (_ Unimplemented) BanWorkspaceMember(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId, userId UserId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListChannels Channels of a server, in their order. Needs membership.
+// (GET /api/v1/workspaces/{workspaceId}/channels)
+func (_ Unimplemented) ListChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateChannel Create a channel. Admin or owner.
+// (POST /api/v1/workspaces/{workspaceId}/channels)
+func (_ Unimplemented) CreateChannel(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ReorderChannels Set the order of the channels. Admin or owner.
+// (PUT /api/v1/workspaces/{workspaceId}/channels/order)
+func (_ Unimplemented) ReorderChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -558,6 +669,84 @@ func (siw *ServerInterfaceWrapper) Register(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.Register(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteChannel operation middleware
+func (siw *ServerInterfaceWrapper) DeleteChannel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "channelId" -------------
+	var channelId ChannelId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "channelId", chi.URLParam(r, "channelId"), &channelId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteChannel(w, r, channelId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetChannel operation middleware
+func (siw *ServerInterfaceWrapper) GetChannel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "channelId" -------------
+	var channelId ChannelId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "channelId", chi.URLParam(r, "channelId"), &channelId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetChannel(w, r, channelId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateChannel operation middleware
+func (siw *ServerInterfaceWrapper) UpdateChannel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "channelId" -------------
+	var channelId ChannelId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "channelId", chi.URLParam(r, "channelId"), &channelId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateChannel(w, r, channelId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -774,6 +963,84 @@ func (siw *ServerInterfaceWrapper) BanWorkspaceMember(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.BanWorkspaceMember(w, r, workspaceId, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListChannels operation middleware
+func (siw *ServerInterfaceWrapper) ListChannels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListChannels(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateChannel operation middleware
+func (siw *ServerInterfaceWrapper) CreateChannel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateChannel(w, r, workspaceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReorderChannels operation middleware
+func (siw *ServerInterfaceWrapper) ReorderChannels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "workspaceId" -------------
+	var workspaceId WorkspaceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workspaceId", chi.URLParam(r, "workspaceId"), &workspaceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workspaceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReorderChannels(w, r, workspaceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1073,6 +1340,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/api/v1/workspaces/{workspaceId}/bans/{userId}", wrapper.BanWorkspaceMember)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/workspaces/{workspaceId}/channels", wrapper.ListChannels)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/workspaces/{workspaceId}/channels", wrapper.CreateChannel)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/v1/workspaces/{workspaceId}/channels/order", wrapper.ReorderChannels)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/channels/{channelId}", wrapper.DeleteChannel)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/channels/{channelId}", wrapper.GetChannel)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/v1/channels/{channelId}", wrapper.UpdateChannel)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/v1/voice/token", wrapper.CreateVoiceToken)
@@ -1428,6 +1713,263 @@ func (response Register413JSONResponse) VisitRegisterResponse(w http.ResponseWri
 type Register500JSONResponse Error
 
 func (response Register500JSONResponse) VisitRegisterResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteChannelRequestObject struct {
+	ChannelId ChannelId `json:"channelId"`
+}
+
+type DeleteChannelResponseObject interface {
+	VisitDeleteChannelResponse(w http.ResponseWriter) error
+}
+
+type DeleteChannel204Response struct {
+}
+
+func (response DeleteChannel204Response) VisitDeleteChannelResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteChannel401JSONResponse struct{ ErrorJSONResponse }
+
+func (response DeleteChannel401JSONResponse) VisitDeleteChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteChannel403JSONResponse Error
+
+func (response DeleteChannel403JSONResponse) VisitDeleteChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteChannel404JSONResponse Error
+
+func (response DeleteChannel404JSONResponse) VisitDeleteChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteChannel500JSONResponse Error
+
+func (response DeleteChannel500JSONResponse) VisitDeleteChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetChannelRequestObject struct {
+	ChannelId ChannelId `json:"channelId"`
+}
+
+type GetChannelResponseObject interface {
+	VisitGetChannelResponse(w http.ResponseWriter) error
+}
+
+type GetChannel200JSONResponse Channel
+
+func (response GetChannel200JSONResponse) VisitGetChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetChannel401JSONResponse struct{ ErrorJSONResponse }
+
+func (response GetChannel401JSONResponse) VisitGetChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetChannel404JSONResponse Error
+
+func (response GetChannel404JSONResponse) VisitGetChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetChannel500JSONResponse Error
+
+func (response GetChannel500JSONResponse) VisitGetChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannelRequestObject struct {
+	ChannelId ChannelId `json:"channelId"`
+	Body      *UpdateChannelJSONRequestBody
+}
+
+type UpdateChannelResponseObject interface {
+	VisitUpdateChannelResponse(w http.ResponseWriter) error
+}
+
+type UpdateChannel200JSONResponse Channel
+
+func (response UpdateChannel200JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel400JSONResponse struct{ ErrorJSONResponse }
+
+func (response UpdateChannel400JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel401JSONResponse Error
+
+func (response UpdateChannel401JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel403JSONResponse Error
+
+func (response UpdateChannel403JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel404JSONResponse Error
+
+func (response UpdateChannel404JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel409JSONResponse Error
+
+func (response UpdateChannel409JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel413JSONResponse Error
+
+func (response UpdateChannel413JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateChannel500JSONResponse Error
+
+func (response UpdateChannel500JSONResponse) VisitUpdateChannelResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -2146,6 +2688,298 @@ func (response BanWorkspaceMember500JSONResponse) VisitBanWorkspaceMemberRespons
 	return err
 }
 
+type ListChannelsRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+}
+
+type ListChannelsResponseObject interface {
+	VisitListChannelsResponse(w http.ResponseWriter) error
+}
+
+type ListChannels200JSONResponse []Channel
+
+func (response ListChannels200JSONResponse) VisitListChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListChannels401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListChannels401JSONResponse) VisitListChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListChannels404JSONResponse Error
+
+func (response ListChannels404JSONResponse) VisitListChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListChannels500JSONResponse Error
+
+func (response ListChannels500JSONResponse) VisitListChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannelRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	Body        *CreateChannelJSONRequestBody
+}
+
+type CreateChannelResponseObject interface {
+	VisitCreateChannelResponse(w http.ResponseWriter) error
+}
+
+type CreateChannel201JSONResponse Channel
+
+func (response CreateChannel201JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel400JSONResponse struct{ ErrorJSONResponse }
+
+func (response CreateChannel400JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel401JSONResponse Error
+
+func (response CreateChannel401JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel403JSONResponse Error
+
+func (response CreateChannel403JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel404JSONResponse Error
+
+func (response CreateChannel404JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel409JSONResponse Error
+
+func (response CreateChannel409JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel413JSONResponse Error
+
+func (response CreateChannel413JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateChannel500JSONResponse Error
+
+func (response CreateChannel500JSONResponse) VisitCreateChannelResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannelsRequestObject struct {
+	WorkspaceId WorkspaceId `json:"workspaceId"`
+	Body        *ReorderChannelsJSONRequestBody
+}
+
+type ReorderChannelsResponseObject interface {
+	VisitReorderChannelsResponse(w http.ResponseWriter) error
+}
+
+type ReorderChannels200JSONResponse []Channel
+
+func (response ReorderChannels200JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannels400JSONResponse struct{ ErrorJSONResponse }
+
+func (response ReorderChannels400JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannels401JSONResponse Error
+
+func (response ReorderChannels401JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannels403JSONResponse Error
+
+func (response ReorderChannels403JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannels404JSONResponse Error
+
+func (response ReorderChannels404JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannels413JSONResponse Error
+
+func (response ReorderChannels413JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReorderChannels500JSONResponse Error
+
+func (response ReorderChannels500JSONResponse) VisitReorderChannelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListWorkspaceMembersRequestObject struct {
 	WorkspaceId WorkspaceId `json:"workspaceId"`
 }
@@ -2464,6 +3298,15 @@ type StrictServerInterface interface {
 	// Register Create an account and start a session.
 	// (POST /api/v1/auth/register)
 	Register(ctx context.Context, request RegisterRequestObject) (RegisterResponseObject, error)
+	// DeleteChannel Delete a channel with its messages and attachments. Admin or owner.
+	// (DELETE /api/v1/channels/{channelId})
+	DeleteChannel(ctx context.Context, request DeleteChannelRequestObject) (DeleteChannelResponseObject, error)
+	// GetChannel One channel. Needs membership in its server.
+	// (GET /api/v1/channels/{channelId})
+	GetChannel(ctx context.Context, request GetChannelRequestObject) (GetChannelResponseObject, error)
+	// UpdateChannel Rename a channel, change its topic or its write access. Admin or owner.
+	// (PATCH /api/v1/channels/{channelId})
+	UpdateChannel(ctx context.Context, request UpdateChannelRequestObject) (UpdateChannelResponseObject, error)
 	// CreateVoiceToken Issue a LiveKit token for one voice room (development only).
 	// (POST /api/v1/voice/token)
 	CreateVoiceToken(ctx context.Context, request CreateVoiceTokenRequestObject) (CreateVoiceTokenResponseObject, error)
@@ -2491,6 +3334,15 @@ type StrictServerInterface interface {
 	// BanWorkspaceMember Ban someone from a server. Admin or owner.
 	// (PUT /api/v1/workspaces/{workspaceId}/bans/{userId})
 	BanWorkspaceMember(ctx context.Context, request BanWorkspaceMemberRequestObject) (BanWorkspaceMemberResponseObject, error)
+	// ListChannels Channels of a server, in their order. Needs membership.
+	// (GET /api/v1/workspaces/{workspaceId}/channels)
+	ListChannels(ctx context.Context, request ListChannelsRequestObject) (ListChannelsResponseObject, error)
+	// CreateChannel Create a channel. Admin or owner.
+	// (POST /api/v1/workspaces/{workspaceId}/channels)
+	CreateChannel(ctx context.Context, request CreateChannelRequestObject) (CreateChannelResponseObject, error)
+	// ReorderChannels Set the order of the channels. Admin or owner.
+	// (PUT /api/v1/workspaces/{workspaceId}/channels/order)
+	ReorderChannels(ctx context.Context, request ReorderChannelsRequestObject) (ReorderChannelsResponseObject, error)
 	// ListWorkspaceMembers Members of a server and their roles. Needs membership.
 	// (GET /api/v1/workspaces/{workspaceId}/members)
 	ListWorkspaceMembers(ctx context.Context, request ListWorkspaceMembersRequestObject) (ListWorkspaceMembersResponseObject, error)
@@ -2681,6 +3533,91 @@ func (sh *strictHandler) Register(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RegisterResponseObject); ok {
 		if err := validResponse.VisitRegisterResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteChannel operation middleware
+func (sh *strictHandler) DeleteChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	var request DeleteChannelRequestObject
+
+	request.ChannelId = channelId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteChannel(ctx, request.(DeleteChannelRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteChannel")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteChannelResponseObject); ok {
+		if err := validResponse.VisitDeleteChannelResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetChannel operation middleware
+func (sh *strictHandler) GetChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	var request GetChannelRequestObject
+
+	request.ChannelId = channelId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetChannel(ctx, request.(GetChannelRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetChannel")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetChannelResponseObject); ok {
+		if err := validResponse.VisitGetChannelResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateChannel operation middleware
+func (sh *strictHandler) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	var request UpdateChannelRequestObject
+
+	request.ChannelId = channelId
+
+	var body UpdateChannelJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateChannel(ctx, request.(UpdateChannelRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateChannel")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateChannelResponseObject); ok {
+		if err := validResponse.VisitUpdateChannelResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -2949,6 +3886,98 @@ func (sh *strictHandler) BanWorkspaceMember(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// ListChannels operation middleware
+func (sh *strictHandler) ListChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request ListChannelsRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListChannels(ctx, request.(ListChannelsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListChannels")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListChannelsResponseObject); ok {
+		if err := validResponse.VisitListChannelsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateChannel operation middleware
+func (sh *strictHandler) CreateChannel(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request CreateChannelRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	var body CreateChannelJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateChannel(ctx, request.(CreateChannelRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateChannel")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateChannelResponseObject); ok {
+		if err := validResponse.VisitCreateChannelResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReorderChannels operation middleware
+func (sh *strictHandler) ReorderChannels(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
+	var request ReorderChannelsRequestObject
+
+	request.WorkspaceId = workspaceId
+
+	var body ReorderChannelsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReorderChannels(ctx, request.(ReorderChannelsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReorderChannels")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReorderChannelsResponseObject); ok {
+		if err := validResponse.VisitReorderChannelsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListWorkspaceMembers operation middleware
 func (sh *strictHandler) ListWorkspaceMembers(w http.ResponseWriter, r *http.Request, workspaceId WorkspaceId) {
 	var request ListWorkspaceMembersRequestObject
@@ -3089,70 +4118,84 @@ func (sh *strictHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"WZCxL99R4dBqv3p39X8BAAD//w==",
+	"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",
+	"Lv8WAAD//w==",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

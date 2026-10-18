@@ -18,6 +18,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
+	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -38,6 +39,8 @@ type Deps struct {
 	Sessions auth.Resolver
 	// Workspaces serves servers, members and roles.
 	Workspaces *servers.Handler
+	// Channels serves the text channels of a server.
+	Channels *channels.Handler
 	// Voice is nil outside development: the token endpoint has no real authorization yet.
 	Voice *voice.Handler
 }
@@ -47,8 +50,8 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil {
-		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions and Deps.Workspaces are required")
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil {
+		return nil, errors.New("httpserver: Deps.Auth, Deps.Sessions, Deps.Workspaces and Deps.Channels are required")
 	}
 
 	spec, err := api.GetSpec()
@@ -86,7 +89,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		},
 	}))
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -108,6 +111,7 @@ type server struct {
 	health     *health.Handler
 	auth       *auth.Handler
 	workspaces *servers.Handler
+	channels   *channels.Handler
 	voice      *voice.Handler
 }
 
@@ -190,6 +194,30 @@ func (s *server) UnbanWorkspaceMember(ctx context.Context, req api.UnbanWorkspac
 
 func (s *server) ListWorkspaceBans(ctx context.Context, req api.ListWorkspaceBansRequestObject) (api.ListWorkspaceBansResponseObject, error) {
 	return s.workspaces.ListWorkspaceBans(ctx, req)
+}
+
+func (s *server) ListChannels(ctx context.Context, req api.ListChannelsRequestObject) (api.ListChannelsResponseObject, error) {
+	return s.channels.ListChannels(ctx, req)
+}
+
+func (s *server) CreateChannel(ctx context.Context, req api.CreateChannelRequestObject) (api.CreateChannelResponseObject, error) {
+	return s.channels.CreateChannel(ctx, req)
+}
+
+func (s *server) GetChannel(ctx context.Context, req api.GetChannelRequestObject) (api.GetChannelResponseObject, error) {
+	return s.channels.GetChannel(ctx, req)
+}
+
+func (s *server) UpdateChannel(ctx context.Context, req api.UpdateChannelRequestObject) (api.UpdateChannelResponseObject, error) {
+	return s.channels.UpdateChannel(ctx, req)
+}
+
+func (s *server) DeleteChannel(ctx context.Context, req api.DeleteChannelRequestObject) (api.DeleteChannelResponseObject, error) {
+	return s.channels.DeleteChannel(ctx, req)
+}
+
+func (s *server) ReorderChannels(ctx context.Context, req api.ReorderChannelsRequestObject) (api.ReorderChannelsResponseObject, error) {
+	return s.channels.ReorderChannels(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

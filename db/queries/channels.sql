@@ -1,6 +1,17 @@
+-- A new channel goes to the end of the list: position is one past the current last.
 -- name: CreateChannel :one
-INSERT INTO channels (workspace_id, kind, name, topic, position)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO channels (workspace_id, kind, name, topic, position, is_read_only)
+VALUES (
+    sqlc.arg(workspace_id),
+    sqlc.arg(kind),
+    sqlc.arg(name),
+    sqlc.narg(topic),
+    coalesce(
+        (SELECT max(position) + 1 FROM channels WHERE workspace_id = sqlc.arg(workspace_id)),
+        0
+    ),
+    sqlc.arg(is_read_only)
+)
 RETURNING *;
 
 -- name: GetChannel :one
@@ -13,9 +24,18 @@ ORDER BY position, created_at;
 
 -- name: UpdateChannel :one
 UPDATE channels
-SET name = $2, topic = $3, position = $4, updated_at = now()
-WHERE id = $1
+SET name = coalesce(sqlc.narg(name), name),
+    topic = CASE WHEN sqlc.arg(clear_topic)::boolean THEN NULL ELSE coalesce(sqlc.narg(topic), topic) END,
+    is_read_only = coalesce(sqlc.narg(is_read_only), is_read_only),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- Reordering sends the whole list: position is the index of the channel in it.
+-- name: SetChannelPosition :execrows
+UPDATE channels
+SET position = sqlc.arg(position), updated_at = now()
+WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id);
 
 -- name: DeleteChannel :exec
 DELETE FROM channels WHERE id = $1;

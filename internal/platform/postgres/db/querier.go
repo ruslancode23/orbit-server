@@ -22,6 +22,7 @@ type Querier interface {
 	// Unread and mention counts for every channel of one workspace in a single query (task 2.8).
 	CountWorkspaceUnread(ctx context.Context, arg CountWorkspaceUnreadParams) ([]CountWorkspaceUnreadRow, error)
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (Attachment, error)
+	// A new channel goes to the end of the list: position is one past the current last.
 	CreateChannel(ctx context.Context, arg CreateChannelParams) (Channel, error)
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (Invite, error)
 	// A resend with the same client id returns the message already stored
@@ -76,6 +77,8 @@ type Querier interface {
 	RevokeInvite(ctx context.Context, id pgtype.UUID) (int64, error)
 	RevokeSession(ctx context.Context, id pgtype.UUID) error
 	RevokeUserSessions(ctx context.Context, userID pgtype.UUID) error
+	// Reordering sends the whole list: position is the index of the channel in it.
+	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
 	SetWorkspaceRole(ctx context.Context, arg SetWorkspaceRoleParams) (WorkspaceMember, error)
 	TouchSession(ctx context.Context, id pgtype.UUID) error

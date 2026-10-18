@@ -20,6 +20,11 @@ tags:
       Servers (a workspace) and their members. Every operation checks the caller's role
       on the server itself: a hidden button is not protection. A caller who is not a member
       gets 404, not 403, so the API does not reveal which servers exist.
+  - name: channels
+    description: |
+      Text channels inside a server. Reading follows membership; writing is open to
+      every member unless the channel is read-only, where only admins and the owner write.
+      Channels are created, renamed, reordered and deleted by admins and the owner.
   - name: voice
     description: Voice rooms on LiveKit.
 paths:
@@ -360,6 +365,134 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/channels:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listChannels
+      tags: [channels]
+      summary: Channels of a server, in their order. Needs membership.
+      responses:
+        "200":
+          description: The channels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Channel" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createChannel
+      tags: [channels]
+      summary: Create a channel. Admin or owner.
+      description: The channel goes to the end of the list.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelCreateRequest" }
+      responses:
+        "201":
+          description: Channel created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: A channel of this server already has that name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/channels/order:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    put:
+      operationId: reorderChannels
+      tags: [channels]
+      summary: Set the order of the channels. Admin or owner.
+      description: |
+        The body lists every channel of the server once, in the order people will see.
+        A list that misses a channel or names a foreign one is refused, so the order
+        never ends up half applied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelOrderRequest" }
+      responses:
+        "200":
+          description: The channels in their new order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    get:
+      operationId: getChannel
+      tags: [channels]
+      summary: One channel. Needs membership in its server.
+      responses:
+        "200":
+          description: The channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateChannel
+      tags: [channels]
+      summary: Rename a channel, change its topic or its write access. Admin or owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelUpdateRequest" }
+      responses:
+        "200":
+          description: The updated channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: A channel of this server already has that name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteChannel
+      tags: [channels]
+      summary: Delete a channel with its messages and attachments. Admin or owner.
+      responses:
+        "204":
+          description: Channel deleted.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/voice/token:
     post:
       operationId: createVoiceToken
@@ -391,6 +524,12 @@ components:
       in: path
       required: true
       description: Server identifier.
+      schema: { type: string, format: uuid }
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      description: Channel identifier.
       schema: { type: string, format: uuid }
     UserId:
       name: userId
@@ -601,6 +740,74 @@ components:
           type: string
           maxLength: 500
           description: Shown to admins in the ban list, not to the banned person.
+    Channel:
+      type: object
+      additionalProperties: false
+      required: [id, workspaceId, name, position, isReadOnly, canWrite, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: общий
+        topic:
+          type: string
+          maxLength: 500
+          description: What the channel is for; absent when nobody set one.
+        position:
+          type: integer
+          description: Place in the server's list, from 0.
+        isReadOnly:
+          type: boolean
+          description: Only admins and the owner may write here.
+        canWrite:
+          type: boolean
+          description: Whether the caller may write in this channel right now.
+        createdAt: { type: string, format: date-time }
+    ChannelCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: общий
+        topic:
+          type: string
+          maxLength: 500
+        isReadOnly:
+          type: boolean
+          default: false
+    ChannelUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: "Only the fields present are changed; an empty topic clears it."
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        topic:
+          type: string
+          maxLength: 500
+          description: An empty string removes the topic.
+        isReadOnly:
+          type: boolean
+    ChannelOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [channelIds]
+      properties:
+        channelIds:
+          type: array
+          minItems: 1
+          items: { type: string, format: uuid }
+          description: Every channel of the server, once, in the order people will see.
     VoiceTokenRequest:
       type: object
       additionalProperties: false

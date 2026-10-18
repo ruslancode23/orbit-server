@@ -127,6 +127,7 @@ type Channel struct {
 	Position    int32              `json:"position"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	IsReadOnly  bool               `json:"is_read_only"`
 }
 
 type ChannelRead struct {
