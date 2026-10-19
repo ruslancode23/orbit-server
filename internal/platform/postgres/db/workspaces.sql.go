@@ -81,17 +81,31 @@ func (q *Queries) CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.U
 }
 
 const createWorkspace = `-- name: CreateWorkspace :one
-INSERT INTO workspaces (name, description, owner_id) VALUES ($1, $2, $3) RETURNING id, name, owner_id, created_at, updated_at, description, icon_key
+INSERT INTO workspaces (
+    name, description, owner_id,
+    members_can_invite, members_can_create_channels, members_can_attach_files
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, name, owner_id, created_at, updated_at, description, icon_key, members_can_invite, members_can_create_channels, members_can_attach_files
 `
 
 type CreateWorkspaceParams struct {
-	Name        string      `json:"name"`
-	Description pgtype.Text `json:"description"`
-	OwnerID     pgtype.UUID `json:"owner_id"`
+	Name                     string      `json:"name"`
+	Description              pgtype.Text `json:"description"`
+	OwnerID                  pgtype.UUID `json:"owner_id"`
+	MembersCanInvite         bool        `json:"members_can_invite"`
+	MembersCanCreateChannels bool        `json:"members_can_create_channels"`
+	MembersCanAttachFiles    bool        `json:"members_can_attach_files"`
 }
 
 func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, createWorkspace, arg.Name, arg.Description, arg.OwnerID)
+	row := q.db.QueryRow(ctx, createWorkspace,
+		arg.Name,
+		arg.Description,
+		arg.OwnerID,
+		arg.MembersCanInvite,
+		arg.MembersCanCreateChannels,
+		arg.MembersCanAttachFiles,
+	)
 	var i Workspace
 	err := row.Scan(
 		&i.ID,
@@ -101,6 +115,9 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.UpdatedAt,
 		&i.Description,
 		&i.IconKey,
+		&i.MembersCanInvite,
+		&i.MembersCanCreateChannels,
+		&i.MembersCanAttachFiles,
 	)
 	return i, err
 }
@@ -115,7 +132,7 @@ func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
-SELECT id, name, owner_id, created_at, updated_at, description, icon_key FROM workspaces WHERE id = $1
+SELECT id, name, owner_id, created_at, updated_at, description, icon_key, members_can_invite, members_can_create_channels, members_can_attach_files FROM workspaces WHERE id = $1
 `
 
 func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error) {
@@ -129,6 +146,45 @@ func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, 
 		&i.UpdatedAt,
 		&i.Description,
 		&i.IconKey,
+		&i.MembersCanInvite,
+		&i.MembersCanCreateChannels,
+		&i.MembersCanAttachFiles,
+	)
+	return i, err
+}
+
+const getWorkspaceAccess = `-- name: GetWorkspaceAccess :one
+SELECT workspace_members.role,
+       workspaces.members_can_invite,
+       workspaces.members_can_create_channels,
+       workspaces.members_can_attach_files
+FROM workspace_members
+    JOIN workspaces ON workspaces.id = workspace_members.workspace_id
+WHERE workspace_members.workspace_id = $1 AND workspace_members.user_id = $2
+`
+
+type GetWorkspaceAccessParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+type GetWorkspaceAccessRow struct {
+	Role                     WorkspaceRole `json:"role"`
+	MembersCanInvite         bool          `json:"members_can_invite"`
+	MembersCanCreateChannels bool          `json:"members_can_create_channels"`
+	MembersCanAttachFiles    bool          `json:"members_can_attach_files"`
+}
+
+// The role and what the server lets members do, in one read, for actions a
+// server may open to members.
+func (q *Queries) GetWorkspaceAccess(ctx context.Context, arg GetWorkspaceAccessParams) (GetWorkspaceAccessRow, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceAccess, arg.WorkspaceID, arg.UserID)
+	var i GetWorkspaceAccessRow
+	err := row.Scan(
+		&i.Role,
+		&i.MembersCanInvite,
+		&i.MembersCanCreateChannels,
+		&i.MembersCanAttachFiles,
 	)
 	return i, err
 }
@@ -167,7 +223,7 @@ func (q *Queries) IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMe
 }
 
 const listUserWorkspaces = `-- name: ListUserWorkspaces :many
-SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, workspace_members.role
+SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, workspaces.members_can_invite, workspaces.members_can_create_channels, workspaces.members_can_attach_files, workspace_members.role
 FROM workspaces
     JOIN workspace_members ON workspace_members.workspace_id = workspaces.id
 WHERE workspace_members.user_id = $1
@@ -196,6 +252,9 @@ func (q *Queries) ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([
 			&i.Workspace.UpdatedAt,
 			&i.Workspace.Description,
 			&i.Workspace.IconKey,
+			&i.Workspace.MembersCanInvite,
+			&i.Workspace.MembersCanCreateChannels,
+			&i.Workspace.MembersCanAttachFiles,
 			&i.Role,
 		); err != nil {
 			return nil, err
@@ -386,18 +445,24 @@ func (q *Queries) UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMe
 
 const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspaces
-SET name        = coalesce($1, name),
-    description = CASE WHEN $2::bool THEN $3 ELSE description END,
-    updated_at  = now()
-WHERE id = $4
-RETURNING id, name, owner_id, created_at, updated_at, description, icon_key
+SET name                        = coalesce($1, name),
+    description                 = CASE WHEN $2::bool THEN $3 ELSE description END,
+    members_can_invite          = coalesce($4, members_can_invite),
+    members_can_create_channels = coalesce($5, members_can_create_channels),
+    members_can_attach_files    = coalesce($6, members_can_attach_files),
+    updated_at                  = now()
+WHERE id = $7
+RETURNING id, name, owner_id, created_at, updated_at, description, icon_key, members_can_invite, members_can_create_channels, members_can_attach_files
 `
 
 type UpdateWorkspaceParams struct {
-	Name           pgtype.Text `json:"name"`
-	SetDescription bool        `json:"set_description"`
-	Description    pgtype.Text `json:"description"`
-	ID             pgtype.UUID `json:"id"`
+	Name                     pgtype.Text `json:"name"`
+	SetDescription           bool        `json:"set_description"`
+	Description              pgtype.Text `json:"description"`
+	MembersCanInvite         pgtype.Bool `json:"members_can_invite"`
+	MembersCanCreateChannels pgtype.Bool `json:"members_can_create_channels"`
+	MembersCanAttachFiles    pgtype.Bool `json:"members_can_attach_files"`
+	ID                       pgtype.UUID `json:"id"`
 }
 
 // Only what the caller sent changes: a NULL name keeps the old one, and the
@@ -407,6 +472,9 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Name,
 		arg.SetDescription,
 		arg.Description,
+		arg.MembersCanInvite,
+		arg.MembersCanCreateChannels,
+		arg.MembersCanAttachFiles,
 		arg.ID,
 	)
 	var i Workspace
@@ -418,6 +486,9 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		&i.UpdatedAt,
 		&i.Description,
 		&i.IconKey,
+		&i.MembersCanInvite,
+		&i.MembersCanCreateChannels,
+		&i.MembersCanAttachFiles,
 	)
 	return i, err
 }

@@ -36,8 +36,11 @@ func (s *fakeStore) account(id uuid.UUID) Account {
 	return a
 }
 
-func (s *fakeStore) CreateWorkspace(_ context.Context, n NewWorkspace, ownerID uuid.UUID) (Workspace, error) {
-	w := Workspace{ID: uuid.New(), Name: n.Name, Description: n.Description, OwnerID: ownerID, CreatedAt: time.Now()}
+func (s *fakeStore) CreateWorkspace(_ context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error) {
+	w := Workspace{
+		ID: uuid.New(), Name: n.Name, Description: n.Description, MemberPermissions: permissions,
+		OwnerID: ownerID, CreatedAt: time.Now(),
+	}
 	s.workspaces[w.ID] = w
 	s.members[w.ID] = map[uuid.UUID]Member{
 		ownerID: {User: s.account(ownerID), Role: RoleOwner, JoinedAt: time.Now()},
@@ -65,6 +68,7 @@ func (s *fakeStore) UpdateWorkspace(_ context.Context, id uuid.UUID, u Workspace
 	if u.Description != nil {
 		w.Description = *u.Description
 	}
+	w.MemberPermissions = u.Permissions.apply(w.MemberPermissions)
 	s.workspaces[id] = w
 	return w, nil
 }
@@ -103,6 +107,14 @@ func (s *fakeStore) Role(_ context.Context, workspaceID, userID uuid.UUID) (Role
 		return "", ErrNotMember
 	}
 	return member.Role, nil
+}
+
+func (s *fakeStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error) {
+	role, err := s.Role(ctx, workspaceID, userID)
+	if err != nil {
+		return "", Permissions{}, err
+	}
+	return role, s.workspaces[workspaceID].MemberPermissions, nil
 }
 
 func (s *fakeStore) SetRole(_ context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {

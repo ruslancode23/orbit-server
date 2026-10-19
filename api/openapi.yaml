@@ -20,11 +20,14 @@ tags:
       Servers (a workspace) and their members. Every operation checks the caller's role
       on the server itself: a hidden button is not protection. A caller who is not a member
       gets 404, not 403, so the API does not reveal which servers exist.
+      A server decides what its members may do (`memberPermissions`): invite people,
+      create channels, attach files. The owner and admins may always do all of it.
   - name: channels
     description: |
       Text channels inside a server. Reading follows membership; writing is open to
       every member unless the channel is read-only, where only admins and the owner write.
-      Channels are created, renamed, reordered and deleted by admins and the owner.
+      Channels are renamed, reordered and deleted by admins and the owner. They create
+      channels too, and so do members when the server allows it (`canCreateChannels`).
   - name: messages
     description: |
       Messages in a channel. Sending carries the client's own id, so a resend after a
@@ -242,10 +245,11 @@ paths:
     patch:
       operationId: updateWorkspace
       tags: [workspaces]
-      summary: Change the name or the description of a server. Admin or owner.
+      summary: Change the name, the description or the member permissions of a server. Admin or owner.
       description: |
         Only the fields sent change. An empty `description` clears it. Every member
-        watching the server gets a `workspace.updated` event.
+        watching the server gets a `workspace.updated` event. New permissions apply to
+        the next action of everyone, already connected clients included.
       requestBody:
         required: true
         content:
@@ -474,8 +478,11 @@ paths:
     post:
       operationId: createChannel
       tags: [channels]
-      summary: Create a channel. Admin or owner.
-      description: The channel goes to the end of the list.
+      summary: Create a channel. Admin or owner, or a member when the server allows it.
+      description: |
+        The channel goes to the end of the list. A member allowed by
+        `memberPermissions.canCreateChannels` may create only a channel everyone writes
+        in: a read-only one is for admins to make.
       requestBody:
         required: true
         content:
@@ -616,6 +623,8 @@ paths:
       description: |
         `clientMessageId` makes the send idempotent: the same id in the same channel
         from the same account returns the message already stored, with 200 instead of 201.
+        A message with `attachmentIds` in a server channel needs the right to attach
+        files: a member gets 403 when `memberPermissions.canAttachFiles` is off.
       requestBody:
         required: true
         content:
@@ -737,7 +746,10 @@ paths:
     post:
       operationId: createInvite
       tags: [invites]
-      summary: Create an invite link. Admin or owner.
+      summary: Create an invite link. Admin or owner, or a member when the server allows it.
+      description: |
+        A member may create a link when `memberPermissions.canInvite` is on. Listing and
+        revoking links stay with admins and the owner.
       requestBody:
         required: false
         content:
@@ -930,10 +942,12 @@ paths:
     post:
       operationId: uploadAttachment
       tags: [files]
-      summary: Upload a file for a message in this channel. Needs the right to write.
+      summary: Upload a file for a message in this channel. Needs the right to write and to attach files.
       description: |
         The file is stored on its own; it belongs to nobody until a message names it in
         `attachmentIds`. A file whose message never arrives is swept away later.
+        In a server channel a member needs `memberPermissions.canAttachFiles`; in a
+        conversation everyone in it may attach.
       requestBody:
         required: true
         content:
@@ -1238,7 +1252,7 @@ components:
     Workspace:
       type: object
       additionalProperties: false
-      required: [id, name, description, iconUrl, ownerId, createdAt]
+      required: [id, name, description, iconUrl, memberPermissions, ownerId, createdAt]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -1257,8 +1271,35 @@ components:
           description: |
             A signed link to the icon, valid for a short while; null without an icon.
             Read the server again for a fresh one, do not store it.
+        memberPermissions: { $ref: "#/components/schemas/WorkspacePermissions" }
         ownerId: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
+    WorkspacePermissions:
+      type: object
+      additionalProperties: false
+      required: [canInvite, canCreateChannels, canAttachFiles]
+      description: |
+        What the member role may do on this server. The owner and admins may always do
+        all of it. A new server starts with canInvite false, canCreateChannels false and
+        canAttachFiles true.
+      properties:
+        canInvite:
+          type: boolean
+          description: Members may create invite links.
+        canCreateChannels:
+          type: boolean
+          description: Members may create channels (not read-only ones).
+        canAttachFiles:
+          type: boolean
+          description: Members may upload files and send messages with them.
+    WorkspacePermissionsUpdate:
+      type: object
+      additionalProperties: false
+      description: Only the flags sent change; the rest keep their value.
+      properties:
+        canInvite: { type: boolean }
+        canCreateChannels: { type: boolean }
+        canAttachFiles: { type: boolean }
     WorkspaceMembership:
       type: object
       additionalProperties: false
@@ -1304,6 +1345,8 @@ components:
           type: string
           maxLength: 500
           description: Optional; empty means none.
+        memberPermissions:
+          $ref: "#/components/schemas/WorkspacePermissionsUpdate"
     WorkspaceUpdateRequest:
       type: object
       additionalProperties: false
@@ -1318,6 +1361,8 @@ components:
           type: string
           maxLength: 500
           description: The new description; an empty string clears it.
+        memberPermissions:
+          $ref: "#/components/schemas/WorkspacePermissionsUpdate"
     WorkspaceMemberRoleRequest:
       type: object
       additionalProperties: false

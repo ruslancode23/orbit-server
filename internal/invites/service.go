@@ -77,6 +77,8 @@ type Store interface {
 // Members is what this package needs from internal/servers.
 type Members interface {
 	RequireAtLeast(ctx context.Context, workspaceID, userID uuid.UUID, least servers.Role) (servers.Role, error)
+	// RequirePermission is the role when the server lets it take this action.
+	RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error)
 	Join(ctx context.Context, workspaceID, userID uuid.UUID) (servers.Member, error)
 	Workspace(ctx context.Context, workspaceID uuid.UUID) (servers.Workspace, error)
 	MemberCount(ctx context.Context, workspaceID uuid.UUID) (int, error)
@@ -100,8 +102,11 @@ func NewService(store Store, members Members, guests Guests) *Service {
 	return &Service{store: store, members: members, guests: guests}
 }
 
+// Create issues a link. Admins and the owner may, and members too when the
+// server lets them invite; listing and revoking links stay with admins.
 func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, n New) (Invite, error) {
-	if err := s.requireAdmin(ctx, workspaceID, callerID); err != nil {
+	_, err := s.members.RequirePermission(ctx, workspaceID, callerID, servers.PermissionInvite)
+	if err := mapRoleError(err); err != nil {
 		return Invite{}, err
 	}
 
@@ -233,6 +238,10 @@ func (s *Service) join(ctx context.Context, invite Invite, userID uuid.UUID) (se
 
 func (s *Service) requireAdmin(ctx context.Context, workspaceID, callerID uuid.UUID) error {
 	_, err := s.members.RequireAtLeast(ctx, workspaceID, callerID, servers.RoleAdmin)
+	return mapRoleError(err)
+}
+
+func mapRoleError(err error) error {
 	switch {
 	case errors.Is(err, servers.ErrNotMember):
 		return ErrNotFound

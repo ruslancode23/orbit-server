@@ -74,7 +74,7 @@ func run() error {
 
 	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, nil, hub)
 	fileService := files.NewService(files.NewPostgresStore(queries), storage, channelService, messageService,
-		cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
+		workspaces, cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
 	// The two know each other: a message carries files, a file needs its channel.
 	messageService.SetFiles(files.NewForMessages(fileService))
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)

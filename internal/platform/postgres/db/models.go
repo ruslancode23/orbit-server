@@ -202,13 +202,16 @@ type User struct {
 }
 
 type Workspace struct {
-	ID          pgtype.UUID        `json:"id"`
-	Name        string             `json:"name"`
-	OwnerID     pgtype.UUID        `json:"owner_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	Description pgtype.Text        `json:"description"`
-	IconKey     pgtype.Text        `json:"icon_key"`
+	ID                       pgtype.UUID        `json:"id"`
+	Name                     string             `json:"name"`
+	OwnerID                  pgtype.UUID        `json:"owner_id"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	Description              pgtype.Text        `json:"description"`
+	IconKey                  pgtype.Text        `json:"icon_key"`
+	MembersCanInvite         bool               `json:"members_can_invite"`
+	MembersCanCreateChannels bool               `json:"members_can_create_channels"`
+	MembersCanAttachFiles    bool               `json:"members_can_attach_files"`
 }
 
 type WorkspaceMember struct {

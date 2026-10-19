@@ -246,3 +246,54 @@ func TestHandlerUploadIcon(t *testing.T) {
 		}
 	})
 }
+
+func TestHandlerPermissionsRoundTrip(t *testing.T) {
+	h, w := newTestHandler(t)
+
+	created, err := h.CreateWorkspace(sessionFor(context.Background(), w.outsider), api.CreateWorkspaceRequestObject{
+		Body: &api.CreateWorkspaceJSONRequestBody{
+			Name:              "Открытая",
+			MemberPermissions: &api.WorkspacePermissionsUpdate{CanInvite: on()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	membership, ok := created.(api.CreateWorkspace201JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 201", created)
+	}
+	want := api.WorkspacePermissions{CanInvite: true, CanCreateChannels: false, CanAttachFiles: true}
+	if membership.Workspace.MemberPermissions != want {
+		t.Errorf("created permissions = %+v, want %+v", membership.Workspace.MemberPermissions, want)
+	}
+	if membership.Workspace.Description != nil || membership.Workspace.IconUrl != nil {
+		t.Errorf("description = %v, iconUrl = %v, want both null", membership.Workspace.Description, membership.Workspace.IconUrl)
+	}
+
+	resp, err := h.UpdateWorkspace(sessionFor(context.Background(), w.member), api.UpdateWorkspaceRequestObject{
+		WorkspaceId: w.workspace,
+		Body:        &api.UpdateWorkspaceJSONRequestBody{MemberPermissions: &api.WorkspacePermissionsUpdate{CanInvite: on()}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkspace: %v", err)
+	}
+	if _, ok := resp.(api.UpdateWorkspace403JSONResponse); !ok {
+		t.Errorf("member: response = %T, want 403", resp)
+	}
+
+	resp, err = h.UpdateWorkspace(sessionFor(context.Background(), w.admin), api.UpdateWorkspaceRequestObject{
+		WorkspaceId: w.workspace,
+		Body:        &api.UpdateWorkspaceJSONRequestBody{MemberPermissions: &api.WorkspacePermissionsUpdate{CanAttachFiles: off()}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkspace: %v", err)
+	}
+	updated, ok := resp.(api.UpdateWorkspace200JSONResponse)
+	if !ok {
+		t.Fatalf("admin: response = %T, want 200", resp)
+	}
+	if updated.Workspace.MemberPermissions != (api.WorkspacePermissions{}) {
+		t.Errorf("updated permissions = %+v, want everything off", updated.Workspace.MemberPermissions)
+	}
+}

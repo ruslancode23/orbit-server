@@ -75,12 +75,13 @@ func (f *fakeWatchers) Revoke(_, userID uuid.UUID) {
 	f.revoked = append(f.revoked, userID)
 }
 
-func (f *fakeWatchers) of(kind events.Kind) []events.Event {
+// updates are the workspace.updated events, the ones these tests look at.
+func (f *fakeWatchers) updates() []events.Event {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []events.Event
 	for _, e := range f.published {
-		if e.Kind == kind {
+		if e.Kind == events.KindWorkspaceUpdated {
 			out = append(out, e)
 		}
 	}
@@ -158,7 +159,7 @@ func TestUpdateChangesOnlyWhatWasSent(t *testing.T) {
 	}
 
 	// Both changes reached the watchers, in the API shape.
-	published := watchers.of(events.KindWorkspaceUpdated)
+	published := watchers.updates()
 	if len(published) != 2 {
 		t.Fatalf("workspace.updated events = %d, want 2", len(published))
 	}
@@ -286,7 +287,7 @@ func TestIconLifecycle(t *testing.T) {
 		t.Errorf("RemoveIcon twice: %v", err)
 	}
 
-	if got := len(watchers.of(events.KindWorkspaceUpdated)); got != 3 {
+	if got := len(watchers.updates()); got != 3 {
 		t.Errorf("workspace.updated events = %d, want 3 (two uploads, one removal)", got)
 	}
 }
@@ -326,7 +327,7 @@ func TestProfileIsPerServer(t *testing.T) {
 	if seen.Workspace.IconURL != "" {
 		t.Errorf("the other server shows an icon: %q", seen.Workspace.IconURL)
 	}
-	for _, event := range watchers.of(events.KindWorkspaceUpdated) {
+	for _, event := range watchers.updates() {
 		if event.WorkspaceID != w.workspace {
 			t.Errorf("event went to server %v, want only %v", event.WorkspaceID, w.workspace)
 		}

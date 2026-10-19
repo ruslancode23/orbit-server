@@ -45,7 +45,7 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil, nil, nil), log),
 		Reads:      reads.NewHandler(reads.NewService(nil, nil, nil, nil), log),
 		Files: files.NewHandler(
-			files.NewService(nil, nil, nil, nil, 1<<20, time.Minute), log),
+			files.NewService(nil, nil, nil, nil, nil, 1<<20, time.Minute), log),
 		MaxUploadBytes: 1 << 20,
 		MaxIconBytes:   1 << 16,
 		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10), log),

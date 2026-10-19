@@ -6,6 +6,7 @@ package messages
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -21,6 +22,8 @@ var (
 	ErrNotFound = errors.New("messages: not found")
 	// ErrForbidden means the caller may read the channel but not do this.
 	ErrForbidden = errors.New("messages: not allowed")
+	// ErrAttachNotAllowed means the server does not let members attach files.
+	ErrAttachNotAllowed = fmt.Errorf("%w: this server does not let members attach files", ErrForbidden)
 	// ErrInvalidContent means the text is empty or too long.
 	ErrInvalidContent = errors.New("messages: text must be 1 to 4000 characters")
 	// ErrInvalidReply means the message replied to is in another channel or gone.
@@ -134,6 +137,9 @@ type Publisher interface {
 // Files binds uploaded files to the message that names them and loads the
 // files of a page of messages.
 type Files interface {
+	// MayAttach returns ErrAttachNotAllowed when the caller may not attach files
+	// in this channel, which it may already write in.
+	MayAttach(ctx context.Context, channel channels.Channel, callerID uuid.UUID) error
 	AttachAll(ctx context.Context, messageID, uploaderID uuid.UUID, ids []uuid.UUID) ([]Attachment, error)
 	ByMessages(ctx context.Context, messageIDs []uuid.UUID) (map[uuid.UUID][]Attachment, error)
 }
@@ -266,6 +272,14 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	}
 	if m.ClientMessageID == "" {
 		return Message{}, false, ErrInvalidContent
+	}
+
+	// Files need their own right: checked before anything is stored, so a
+	// refused message is not left half sent without them.
+	if len(m.AttachmentIDs) > 0 && s.files != nil {
+		if err := s.files.MayAttach(ctx, channel, callerID); err != nil {
+			return Message{}, false, mapAccessError(err)
+		}
 	}
 
 	if m.ReplyToID != nil {

@@ -78,6 +78,8 @@ func (h *Handler) SendMessage(ctx context.Context, req api.SendMessageRequestObj
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return api.SendMessage404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrAttachNotAllowed):
+		return api.SendMessage403JSONResponse(api.Error(forbidden("this server does not let members attach files"))), nil
 	case errors.Is(err, ErrForbidden):
 		return api.SendMessage403JSONResponse(api.Error(forbidden("this channel is read-only"))), nil
 	case errors.Is(err, ErrInvalidContent), errors.Is(err, ErrInvalidReply):

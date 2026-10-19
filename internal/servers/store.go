@@ -32,7 +32,7 @@ var _ Store = (*PostgresStore)(nil)
 
 // CreateWorkspace writes the server and its owner membership together: a server
 // without an owner would be unmanageable.
-func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, ownerID uuid.UUID) (Workspace, error) {
+func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Workspace{}, fmt.Errorf("begin: %w", err)
@@ -41,9 +41,12 @@ func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, own
 
 	q := s.q.WithTx(tx)
 	row, err := q.CreateWorkspace(ctx, db.CreateWorkspaceParams{
-		Name:        n.Name,
-		Description: text(n.Description),
-		OwnerID:     pgUUID(ownerID),
+		Name:                     n.Name,
+		Description:              text(n.Description),
+		OwnerID:                  pgUUID(ownerID),
+		MembersCanInvite:         permissions.Invite,
+		MembersCanCreateChannels: permissions.CreateChannels,
+		MembersCanAttachFiles:    permissions.AttachFiles,
 	})
 	if err != nil {
 		return Workspace{}, fmt.Errorf("create workspace: %w", err)
@@ -81,6 +84,9 @@ func (s *PostgresStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u Wor
 		params.SetDescription = true
 		params.Description = text(*u.Description)
 	}
+	params.MembersCanInvite = pgBool(u.Permissions.Invite)
+	params.MembersCanCreateChannels = pgBool(u.Permissions.CreateChannels)
+	params.MembersCanAttachFiles = pgBool(u.Permissions.AttachFiles)
 	row, err := s.q.UpdateWorkspace(ctx, params)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -133,6 +139,24 @@ func (s *PostgresStore) Role(ctx context.Context, workspaceID, userID uuid.UUID)
 		return "", fmt.Errorf("get workspace role: %w", err)
 	}
 	return Role(role), nil
+}
+
+func (s *PostgresStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error) {
+	row, err := s.q.GetWorkspaceAccess(ctx, db.GetWorkspaceAccessParams{
+		WorkspaceID: pgUUID(workspaceID),
+		UserID:      pgUUID(userID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", Permissions{}, ErrNotMember
+		}
+		return "", Permissions{}, fmt.Errorf("get workspace access: %w", err)
+	}
+	return Role(row.Role), Permissions{
+		Invite:         row.MembersCanInvite,
+		CreateChannels: row.MembersCanCreateChannels,
+		AttachFiles:    row.MembersCanAttachFiles,
+	}, nil
 }
 
 func (s *PostgresStore) SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
@@ -299,8 +323,13 @@ func toWorkspace(row db.Workspace) Workspace {
 		Name:        row.Name,
 		Description: row.Description.String,
 		IconKey:     row.IconKey.String,
-		OwnerID:     uuid.UUID(row.OwnerID.Bytes),
-		CreatedAt:   row.CreatedAt.Time,
+		MemberPermissions: Permissions{
+			Invite:         row.MembersCanInvite,
+			CreateChannels: row.MembersCanCreateChannels,
+			AttachFiles:    row.MembersCanAttachFiles,
+		},
+		OwnerID:   uuid.UUID(row.OwnerID.Bytes),
+		CreatedAt: row.CreatedAt.Time,
 	}
 }
 
@@ -316,6 +345,13 @@ func toAccount(row db.User) Account {
 
 func pgUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+func pgBool(v *bool) pgtype.Bool {
+	if v == nil {
+		return pgtype.Bool{}
+	}
+	return pgtype.Bool{Bool: *v, Valid: true}
 }
 
 func text(s string) pgtype.Text {

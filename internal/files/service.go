@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
 var (
@@ -24,6 +25,8 @@ var (
 	ErrNotFound = errors.New("files: not found")
 	// ErrForbidden means the caller may read the channel but not write to it.
 	ErrForbidden = errors.New("files: not allowed")
+	// ErrAttachNotAllowed means the server does not let members attach files.
+	ErrAttachNotAllowed = fmt.Errorf("%w: this server does not let members attach files", ErrForbidden)
 	// ErrTooLarge means the file is over this instance's limit.
 	ErrTooLarge = errors.New("files: the file is too large")
 	// ErrEmpty means there were no bytes to store.
@@ -84,6 +87,12 @@ type ChannelAccess interface {
 	Get(ctx context.Context, channelID, callerID uuid.UUID) (channels.View, error)
 }
 
+// Permissions is the part of internal/servers that says whether a server lets
+// this account attach files.
+type Permissions interface {
+	RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error)
+}
+
 // Messages tells which channel a message belongs to, so a download link is
 // issued only to someone who may read that channel.
 type Messages interface {
@@ -91,19 +100,41 @@ type Messages interface {
 }
 
 type Service struct {
-	store    Store
-	storage  Storage
-	channels ChannelAccess
-	messages Messages
-	maxBytes int64
-	linkTTL  time.Duration
+	store       Store
+	storage     Storage
+	channels    ChannelAccess
+	messages    Messages
+	permissions Permissions
+	maxBytes    int64
+	linkTTL     time.Duration
 }
 
-func NewService(store Store, storage Storage, access ChannelAccess, msgs Messages, maxBytes int64, linkTTL time.Duration) *Service {
+func NewService(store Store, storage Storage, access ChannelAccess, msgs Messages, perms Permissions, maxBytes int64, linkTTL time.Duration) *Service {
 	return &Service{
-		store: store, storage: storage, channels: access, messages: msgs,
+		store: store, storage: storage, channels: access, messages: msgs, permissions: perms,
 		maxBytes: maxBytes, linkTTL: linkTTL,
 	}
+}
+
+// MayAttach answers whether the account may attach files in this channel: in a
+// server channel the server decides for members; in a conversation everyone in
+// it may. The caller has already checked that the channel may be written in.
+func (s *Service) MayAttach(ctx context.Context, channel channels.Channel, callerID uuid.UUID) error {
+	if channel.WorkspaceID == uuid.Nil {
+		return nil
+	}
+	if s.permissions == nil {
+		// Unwired means unknown, and unknown is no.
+		return ErrAttachNotAllowed
+	}
+	_, err := s.permissions.RequirePermission(ctx, channel.WorkspaceID, callerID, servers.PermissionAttachFiles)
+	switch {
+	case errors.Is(err, servers.ErrNotMember):
+		return ErrNotFound
+	case errors.Is(err, servers.ErrForbidden):
+		return ErrAttachNotAllowed
+	}
+	return err
 }
 
 // MaxBytes is this instance's upload limit, so the API can say it plainly.
@@ -115,6 +146,9 @@ func (s *Service) Upload(ctx context.Context, channelID, uploaderID uuid.UUID, f
 	channel, err := s.channels.MayWrite(ctx, channelID, uploaderID)
 	if err != nil {
 		return Attachment{}, mapAccessError(err)
+	}
+	if err := s.MayAttach(ctx, channel, uploaderID); err != nil {
+		return Attachment{}, err
 	}
 
 	// Read the head first: it decides the type, and the name has no say in it.

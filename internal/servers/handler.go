@@ -62,7 +62,11 @@ func (h *Handler) CreateWorkspace(ctx context.Context, req api.CreateWorkspaceRe
 		return api.CreateWorkspace400JSONResponse{ErrorJSONResponse: badRequest("request body is required")}, nil
 	}
 
-	membership, err := h.svc.Create(ctx, NewWorkspace{Name: req.Body.Name, Description: value(req.Body.Description)}, userID)
+	membership, err := h.svc.Create(ctx, NewWorkspace{
+		Name:        req.Body.Name,
+		Description: value(req.Body.Description),
+		Permissions: permissionsUpdate(req.Body.MemberPermissions),
+	}, userID)
 	switch {
 	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDescription):
 		return api.CreateWorkspace400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
@@ -102,6 +106,7 @@ func (h *Handler) UpdateWorkspace(ctx context.Context, req api.UpdateWorkspaceRe
 	membership, err := h.svc.Update(ctx, req.WorkspaceId, userID, WorkspaceUpdate{
 		Name:        req.Body.Name,
 		Description: req.Body.Description,
+		Permissions: permissionsUpdate(req.Body.MemberPermissions),
 	})
 	switch {
 	case errors.Is(err, ErrNotMember):
@@ -144,7 +149,7 @@ func (h *Handler) UploadWorkspaceIcon(ctx context.Context, req api.UploadWorkspa
 		return api.UploadWorkspaceIcon413JSONResponse(errorBody(httpx.CodeBodyTooLarge,
 			fmt.Sprintf("the icon is larger than this server allows (%d bytes)", h.svc.MaxIconBytes()))), nil
 	case errors.Is(err, ErrIconType):
-		return api.UploadWorkspaceIcon415JSONResponse(errorBody(httpx.CodeInvalidRequest, err.Error())), nil
+		return api.UploadWorkspaceIcon415JSONResponse(errorBody(httpx.CodeInvalidRequest, "the icon must be a PNG, JPEG or WebP image")), nil
 	case errors.Is(err, ErrIconEmpty):
 		return api.UploadWorkspaceIcon400JSONResponse{ErrorJSONResponse: badRequest("the image is empty")}, nil
 	case err != nil:
@@ -343,8 +348,24 @@ func APIWorkspace(w Workspace) api.Workspace {
 		Name:        w.Name,
 		Description: optional(w.Description),
 		IconUrl:     optional(w.IconURL),
-		OwnerId:     w.OwnerID,
-		CreatedAt:   w.CreatedAt,
+		MemberPermissions: api.WorkspacePermissions{
+			CanInvite:         w.MemberPermissions.Invite,
+			CanCreateChannels: w.MemberPermissions.CreateChannels,
+			CanAttachFiles:    w.MemberPermissions.AttachFiles,
+		},
+		OwnerId:   w.OwnerID,
+		CreatedAt: w.CreatedAt,
+	}
+}
+
+func permissionsUpdate(u *api.WorkspacePermissionsUpdate) PermissionsUpdate {
+	if u == nil {
+		return PermissionsUpdate{}
+	}
+	return PermissionsUpdate{
+		Invite:         u.CanInvite,
+		CreateChannels: u.CanCreateChannels,
+		AttachFiles:    u.CanAttachFiles,
 	}
 }
 

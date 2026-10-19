@@ -64,6 +64,9 @@ type Querier interface {
 	GetUserByLogin(ctx context.Context, lower string) (User, error)
 	GetUserByNickname(ctx context.Context, lower string) (User, error)
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error)
+	// The role and what the server lets members do, in one read, for actions a
+	// server may open to members.
+	GetWorkspaceAccess(ctx context.Context, arg GetWorkspaceAccessParams) (GetWorkspaceAccessRow, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
 	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)

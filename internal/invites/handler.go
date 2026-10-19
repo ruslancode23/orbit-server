@@ -58,7 +58,7 @@ func (h *Handler) CreateInvite(ctx context.Context, req api.CreateInviteRequestO
 	case errors.Is(err, ErrNotFound):
 		return api.CreateInvite404JSONResponse(api.Error(notFound())), nil
 	case errors.Is(err, ErrForbidden):
-		return api.CreateInvite403JSONResponse(api.Error(forbidden("creating an invite needs the admin role"))), nil
+		return api.CreateInvite403JSONResponse(api.Error(forbidden("this server does not let members invite"))), nil
 	case errors.Is(err, ErrInvalidLifetime), errors.Is(err, ErrInvalidUses):
 		return api.CreateInvite400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:

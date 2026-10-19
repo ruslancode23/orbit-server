@@ -78,15 +78,19 @@ type Workspace struct {
 	// It never leaves the server: members get IconURL instead.
 	IconKey string
 	// IconURL is a signed link to the icon, filled in for members only.
-	IconURL   string
-	OwnerID   uuid.UUID
-	CreatedAt time.Time
+	IconURL string
+	// MemberPermissions is what the member role may do here.
+	MemberPermissions Permissions
+	OwnerID           uuid.UUID
+	CreatedAt         time.Time
 }
 
-// NewWorkspace is what creating a server takes.
+// NewWorkspace is what creating a server takes. Permissions not sent keep
+// their defaults.
 type NewWorkspace struct {
 	Name        string
 	Description string
+	Permissions PermissionsUpdate
 }
 
 // WorkspaceUpdate carries only what the caller asked to change. An empty
@@ -94,10 +98,11 @@ type NewWorkspace struct {
 type WorkspaceUpdate struct {
 	Name        *string
 	Description *string
+	Permissions PermissionsUpdate
 }
 
 func (u WorkspaceUpdate) empty() bool {
-	return u.Name == nil && u.Description == nil
+	return u.Name == nil && u.Description == nil && u.Permissions.empty()
 }
 
 // Membership is a server plus the role of the account that asked for it.
@@ -131,7 +136,7 @@ type Ban struct {
 // Store is the persistence this package needs.
 type Store interface {
 	// CreateWorkspace creates the server and its owner membership in one transaction.
-	CreateWorkspace(ctx context.Context, n NewWorkspace, ownerID uuid.UUID) (Workspace, error)
+	CreateWorkspace(ctx context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error)
 	Workspace(ctx context.Context, id uuid.UUID) (Workspace, error)
 	UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error)
 	// SetIcon stores the new icon key (empty removes it) and returns the one it replaced.
@@ -140,6 +145,9 @@ type Store interface {
 	ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	// Role returns ErrNotMember when the account is not on the server.
 	Role(ctx context.Context, workspaceID, userID uuid.UUID) (Role, error)
+	// Access is the role together with what the server lets members do; it
+	// returns ErrNotMember like Role.
+	Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error)
 	SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	AddMember(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID) error
@@ -266,7 +274,8 @@ func (s *Service) Create(ctx context.Context, n NewWorkspace, ownerID uuid.UUID)
 	if err != nil {
 		return Membership{}, err
 	}
-	workspace, err := s.store.CreateWorkspace(ctx, NewWorkspace{Name: name, Description: description}, ownerID)
+	permissions := n.Permissions.apply(DefaultPermissions())
+	workspace, err := s.store.CreateWorkspace(ctx, NewWorkspace{Name: name, Description: description}, permissions, ownerID)
 	if err != nil {
 		return Membership{}, err
 	}
@@ -296,7 +305,9 @@ func (s *Service) Get(ctx context.Context, workspaceID, callerID uuid.UUID) (Mem
 	return Membership{Workspace: s.present(ctx, workspace), Role: role}, nil
 }
 
-// Update changes the name or the description. Admin or owner.
+// Update changes the name, the description or what members may do. Admin or
+// owner. Nothing is cached, so new permissions bind the next request of
+// everyone; the event tells connected clients to redraw what they offer.
 func (s *Service) Update(ctx context.Context, workspaceID, callerID uuid.UUID, u WorkspaceUpdate) (Membership, error) {
 	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin)
 	if err != nil {
