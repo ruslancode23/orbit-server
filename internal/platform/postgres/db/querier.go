@@ -64,6 +64,9 @@ type Querier interface {
 	GetUserByLogin(ctx context.Context, lower string) (User, error)
 	GetUserByNickname(ctx context.Context, lower string) (User, error)
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error)
+	// The role and what the server lets members do, in one read, for actions a
+	// server may open to members.
+	GetWorkspaceAccess(ctx context.Context, arg GetWorkspaceAccessParams) (GetWorkspaceAccessRow, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
 	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)
@@ -96,17 +99,22 @@ type Querier interface {
 	PromoteGuest(ctx context.Context, arg PromoteGuestParams) (User, error)
 	RemoveReaction(ctx context.Context, arg RemoveReactionParams) (int64, error)
 	RemoveWorkspaceMember(ctx context.Context, arg RemoveWorkspaceMemberParams) (int64, error)
-	RenameWorkspace(ctx context.Context, arg RenameWorkspaceParams) (Workspace, error)
 	RevokeInvite(ctx context.Context, id pgtype.UUID) (int64, error)
 	RevokeSession(ctx context.Context, id pgtype.UUID) error
 	RevokeUserSessions(ctx context.Context, userID pgtype.UUID) error
 	// Reordering sends the whole list: position is the index of the channel in it.
 	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
+	// Swaps the icon and reports the key it replaced, so the caller can drop the old
+	// object. The row lock keeps two uploads at once from losing track of one.
+	SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconParams) (SetWorkspaceIconRow, error)
 	SetWorkspaceRole(ctx context.Context, arg SetWorkspaceRoleParams) (WorkspaceMember, error)
 	TouchSession(ctx context.Context, id pgtype.UUID) error
 	UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMemberParams) (int64, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)
+	// Only what the caller sent changes: a NULL name keeps the old one, and the
+	// description is touched only when set_description is true (NULL then clears it).
+	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 	UseInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
 }
 

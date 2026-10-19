@@ -35,6 +35,10 @@ type Storage struct {
 	LinkTTL time.Duration
 	// OrphanAge is how long a file without a message is kept before the sweep.
 	OrphanAge time.Duration
+	// MaxIconBytes caps one server icon.
+	MaxIconBytes int64
+	// IconLinkTTL is how long the signed link to a server icon stays valid.
+	IconLinkTTL time.Duration
 }
 
 type LiveKit struct {
@@ -90,6 +94,17 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_ORPHAN_ATTACHMENT_AGE: %w", err))
 	}
 
+	maxIcon, err := strconv.ParseInt(getenv("ORBIT_MAX_ICON_BYTES", "2097152"), 10, 64)
+	if err != nil || maxIcon <= 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_MAX_ICON_BYTES must be a positive number of bytes, got %q",
+			os.Getenv("ORBIT_MAX_ICON_BYTES")))
+	}
+
+	iconLinkTTL, err := time.ParseDuration(getenv("ORBIT_ICON_LINK_TTL", "1h"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_ICON_LINK_TTL: %w", err))
+	}
+
 	cfg := Config{
 		Env:             getenv("ORBIT_ENV", "production"),
 		HTTPAddr:        getenv("ORBIT_HTTP_ADDR", ":8080"),
@@ -106,6 +121,8 @@ func Load() (Config, error) {
 			MaxUploadBytes: maxUpload,
 			LinkTTL:        linkTTL,
 			OrphanAge:      orphanAge,
+			MaxIconBytes:   maxIcon,
+			IconLinkTTL:    iconLinkTTL,
 		},
 		LiveKit: LiveKit{
 			URL:       required("LIVEKIT_URL"),

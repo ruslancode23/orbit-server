@@ -31,8 +31,14 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
 
-// maxBodyBytes caps every request body. Raise it per route when uploads arrive.
-const maxBodyBytes = 1 << 10
+// maxBodyBytes caps every JSON request body. The largest is a message of 4000
+// characters, up to four bytes each; uploads have their own limits.
+const maxBodyBytes = 16 << 10
+
+// multipartSlack is room for the multipart headers around an icon, so an image
+// of exactly the limit is refused by the icon rule, with its own message, and
+// not by the body cap.
+const multipartSlack = 4 << 10
 
 const voiceTokenPath = "/api/v1/voice/token" //nolint:gosec // a URL path, not a credential
 
@@ -64,6 +70,8 @@ type Deps struct {
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
+	// MaxIconBytes is how large a server icon may be, the same way.
+	MaxIconBytes int64
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
@@ -137,7 +145,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		}
 		// JSON bodies stay tiny; only an upload may be large, and never larger
 		// than this instance allows.
-		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes))
+		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes, d.MaxIconBytes))
 		apiRoutes.Use(nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
 			DoNotValidateServers: true,
 			ErrorHandlerWithOpts: validationError,
@@ -221,6 +229,14 @@ func (s *server) GetWorkspace(ctx context.Context, req api.GetWorkspaceRequestOb
 
 func (s *server) UpdateWorkspace(ctx context.Context, req api.UpdateWorkspaceRequestObject) (api.UpdateWorkspaceResponseObject, error) {
 	return s.workspaces.UpdateWorkspace(ctx, req)
+}
+
+func (s *server) UploadWorkspaceIcon(ctx context.Context, req api.UploadWorkspaceIconRequestObject) (api.UploadWorkspaceIconResponseObject, error) {
+	return s.workspaces.UploadWorkspaceIcon(ctx, req)
+}
+
+func (s *server) DeleteWorkspaceIcon(ctx context.Context, req api.DeleteWorkspaceIconRequestObject) (api.DeleteWorkspaceIconResponseObject, error) {
+	return s.workspaces.DeleteWorkspaceIcon(ctx, req)
 }
 
 func (s *server) DeleteWorkspace(ctx context.Context, req api.DeleteWorkspaceRequestObject) (api.DeleteWorkspaceResponseObject, error) {
@@ -383,14 +399,18 @@ func notFound(path string) func(http.Handler) http.Handler {
 	}
 }
 
-// limitBody caps the request body. An upload of an attachment gets its own,
-// larger cap: everything else here is small JSON.
-func limitBody(normal, upload int64) func(http.Handler) http.Handler {
+// limitBody caps the request body. An upload of an attachment or of a server
+// icon gets its own, larger cap: everything else here is small JSON. The
+// multipart envelope counts too, so the cap leaves room for it.
+func limitBody(normal, upload, icon int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			limit := normal
-			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments") {
+			switch {
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments"):
 				limit = upload
+			case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/icon"):
+				limit = icon + multipartSlack
 			}
 			// A declared size over the limit is refused before a byte is read.
 			if r.ContentLength > limit {

@@ -70,7 +70,7 @@ func (h *Handler) CreateChannel(ctx context.Context, req api.CreateChannelReques
 	case errors.Is(err, ErrNotFound):
 		return api.CreateChannel404JSONResponse(api.Error(notFound())), nil
 	case errors.Is(err, ErrForbidden):
-		return api.CreateChannel403JSONResponse(api.Error(forbidden("creating a channel needs the admin role"))), nil
+		return api.CreateChannel403JSONResponse(api.Error(forbidden("this server does not let members create this channel"))), nil
 	case errors.Is(err, ErrNameTaken):
 		return api.CreateChannel409JSONResponse(api.Error(conflict(err.Error()))), nil
 	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidTopic):

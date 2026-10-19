@@ -59,15 +59,50 @@ var (
 	ErrNotBanned = errors.New("servers: not banned")
 	// ErrInvalidName means the name is empty or too long.
 	ErrInvalidName = errors.New("servers: name must be 1 to 64 characters")
+	// ErrInvalidDescription means the description is longer than the limit.
+	ErrInvalidDescription = errors.New("servers: description must be at most 500 characters")
+	// ErrNothingToUpdate means an update named no field.
+	ErrNothingToUpdate = errors.New("servers: nothing to update")
 )
 
-const maxNameLength = 64
+const (
+	maxNameLength        = 64
+	maxDescriptionLength = 500
+)
 
 type Workspace struct {
-	ID        uuid.UUID
-	Name      string
-	OwnerID   uuid.UUID
-	CreatedAt time.Time
+	ID          uuid.UUID
+	Name        string
+	Description string // empty when there is none
+	// IconKey is where the icon lives in the object store; empty without one.
+	// It never leaves the server: members get IconURL instead.
+	IconKey string
+	// IconURL is a signed link to the icon, filled in for members only.
+	IconURL string
+	// MemberPermissions is what the member role may do here.
+	MemberPermissions Permissions
+	OwnerID           uuid.UUID
+	CreatedAt         time.Time
+}
+
+// NewWorkspace is what creating a server takes. Permissions not sent keep
+// their defaults.
+type NewWorkspace struct {
+	Name        string
+	Description string
+	Permissions PermissionsUpdate
+}
+
+// WorkspaceUpdate carries only what the caller asked to change. An empty
+// description clears it.
+type WorkspaceUpdate struct {
+	Name        *string
+	Description *string
+	Permissions PermissionsUpdate
+}
+
+func (u WorkspaceUpdate) empty() bool {
+	return u.Name == nil && u.Description == nil && u.Permissions.empty()
 }
 
 // Membership is a server plus the role of the account that asked for it.
@@ -101,13 +136,18 @@ type Ban struct {
 // Store is the persistence this package needs.
 type Store interface {
 	// CreateWorkspace creates the server and its owner membership in one transaction.
-	CreateWorkspace(ctx context.Context, name string, ownerID uuid.UUID) (Workspace, error)
+	CreateWorkspace(ctx context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error)
 	Workspace(ctx context.Context, id uuid.UUID) (Workspace, error)
-	RenameWorkspace(ctx context.Context, id uuid.UUID, name string) (Workspace, error)
+	UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error)
+	// SetIcon stores the new icon key (empty removes it) and returns the one it replaced.
+	SetIcon(ctx context.Context, id uuid.UUID, key string) (previous string, err error)
 	DeleteWorkspace(ctx context.Context, id uuid.UUID) error
 	ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	// Role returns ErrNotMember when the account is not on the server.
 	Role(ctx context.Context, workspaceID, userID uuid.UUID) (Role, error)
+	// Access is the role together with what the server lets members do; it
+	// returns ErrNotMember like Role.
+	Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error)
 	SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	AddMember(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID) error
@@ -132,10 +172,24 @@ type Watchers interface {
 type Service struct {
 	store    Store
 	watchers Watchers
+	icons    Icons
 }
 
-func NewService(store Store, watchers Watchers) *Service {
-	return &Service{store: store, watchers: watchers}
+func NewService(store Store, watchers Watchers, icons Icons) *Service {
+	return &Service{store: store, watchers: watchers, icons: icons}
+}
+
+// changed tells everyone watching the server that the server itself changed.
+// The payload is the server as a member sees it, icon link included.
+func (s *Service) changed(ctx context.Context, workspace Workspace) {
+	if s.watchers == nil {
+		return
+	}
+	s.watchers.Publish(events.Event{
+		Kind:        events.KindWorkspaceUpdated,
+		WorkspaceID: workspace.ID,
+		Payload:     APIWorkspace(s.present(ctx, workspace)),
+	})
 }
 
 // announce tells the watchers that the membership of one account changed.
@@ -211,20 +265,32 @@ func (s *Service) RequireAtLeast(ctx context.Context, workspaceID, userID uuid.U
 	return role, nil
 }
 
-func (s *Service) Create(ctx context.Context, name string, ownerID uuid.UUID) (Membership, error) {
-	name, err := cleanName(name)
+func (s *Service) Create(ctx context.Context, n NewWorkspace, ownerID uuid.UUID) (Membership, error) {
+	name, err := cleanName(n.Name)
 	if err != nil {
 		return Membership{}, err
 	}
-	workspace, err := s.store.CreateWorkspace(ctx, name, ownerID)
+	description, err := cleanDescription(n.Description)
 	if err != nil {
 		return Membership{}, err
 	}
-	return Membership{Workspace: workspace, Role: RoleOwner}, nil
+	permissions := n.Permissions.apply(DefaultPermissions())
+	workspace, err := s.store.CreateWorkspace(ctx, NewWorkspace{Name: name, Description: description}, permissions, ownerID)
+	if err != nil {
+		return Membership{}, err
+	}
+	return Membership{Workspace: s.present(ctx, workspace), Role: RoleOwner}, nil
 }
 
 func (s *Service) List(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
-	return s.store.ListMemberships(ctx, userID)
+	list, err := s.store.ListMemberships(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		list[i].Workspace = s.present(ctx, list[i].Workspace)
+	}
+	return list, nil
 }
 
 func (s *Service) Get(ctx context.Context, workspaceID, callerID uuid.UUID) (Membership, error) {
@@ -236,30 +302,58 @@ func (s *Service) Get(ctx context.Context, workspaceID, callerID uuid.UUID) (Mem
 	if err != nil {
 		return Membership{}, err
 	}
-	return Membership{Workspace: workspace, Role: role}, nil
+	return Membership{Workspace: s.present(ctx, workspace), Role: role}, nil
 }
 
-func (s *Service) Rename(ctx context.Context, workspaceID, callerID uuid.UUID, name string) (Membership, error) {
+// Update changes the name, the description or what members may do. Admin or
+// owner. Nothing is cached, so new permissions bind the next request of
+// everyone; the event tells connected clients to redraw what they offer.
+func (s *Service) Update(ctx context.Context, workspaceID, callerID uuid.UUID, u WorkspaceUpdate) (Membership, error) {
 	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin)
 	if err != nil {
 		return Membership{}, err
 	}
-	name, err = cleanName(name)
+	if u.empty() {
+		return Membership{}, ErrNothingToUpdate
+	}
+	if u.Name != nil {
+		name, err := cleanName(*u.Name)
+		if err != nil {
+			return Membership{}, err
+		}
+		u.Name = &name
+	}
+	if u.Description != nil {
+		description, err := cleanDescription(*u.Description)
+		if err != nil {
+			return Membership{}, err
+		}
+		u.Description = &description
+	}
+
+	workspace, err := s.store.UpdateWorkspace(ctx, workspaceID, u)
 	if err != nil {
 		return Membership{}, err
 	}
-	workspace, err := s.store.RenameWorkspace(ctx, workspaceID, name)
-	if err != nil {
-		return Membership{}, err
-	}
-	return Membership{Workspace: workspace, Role: role}, nil
+	s.changed(ctx, workspace)
+	return Membership{Workspace: s.present(ctx, workspace), Role: role}, nil
 }
 
+// Delete removes the server with everything in it, then its icon.
 func (s *Service) Delete(ctx context.Context, workspaceID, callerID uuid.UUID) error {
 	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleOwner); err != nil {
 		return err
 	}
-	return s.store.DeleteWorkspace(ctx, workspaceID)
+	workspace, err := s.store.Workspace(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if err := s.store.DeleteWorkspace(ctx, workspaceID); err != nil {
+		return err
+	}
+	// The server is gone either way; an icon left behind is only wasted space.
+	s.dropIcon(ctx, workspace.IconKey)
+	return nil
 }
 
 func (s *Service) ListMembers(ctx context.Context, workspaceID, callerID uuid.UUID) ([]Member, error) {
@@ -424,6 +518,14 @@ func canActOn(caller, target Role) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+func cleanDescription(description string) (string, error) {
+	description = strings.TrimSpace(description)
+	if len([]rune(description)) > maxDescriptionLength {
+		return "", ErrInvalidDescription
+	}
+	return description, nil
 }
 
 func cleanName(name string) (string, error) {

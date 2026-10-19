@@ -52,6 +52,8 @@ func (h *Handler) UploadAttachment(ctx context.Context, req api.UploadAttachment
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return api.UploadAttachment404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrAttachNotAllowed):
+		return api.UploadAttachment403JSONResponse(api.Error(forbidden("this server does not let members attach files"))), nil
 	case errors.Is(err, ErrForbidden):
 		return api.UploadAttachment403JSONResponse(api.Error(forbidden("you cannot write in this channel"))), nil
 	case errors.Is(err, ErrTooLarge):

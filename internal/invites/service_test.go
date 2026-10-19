@@ -113,6 +113,22 @@ func (m *fakeMembers) RequireAtLeast(_ context.Context, workspaceID, userID uuid
 	return role, nil
 }
 
+// RequirePermission follows the server's own rule, with the flags set on the
+// fake's workspace.
+func (m *fakeMembers) RequirePermission(_ context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error) {
+	if workspaceID != m.workspace.ID {
+		return "", servers.ErrNotMember
+	}
+	role, ok := m.roles[userID]
+	if !ok {
+		return "", servers.ErrNotMember
+	}
+	if !m.workspace.MemberPermissions.Allows(role, permission) {
+		return role, servers.ErrForbidden
+	}
+	return role, nil
+}
+
 func (m *fakeMembers) Authorize(_ context.Context, workspaceID, userID uuid.UUID) (servers.Role, error) {
 	if workspaceID != m.workspace.ID {
 		return "", servers.ErrNotMember
@@ -179,8 +195,11 @@ func newWorld(t *testing.T) world {
 		guests: &fakeGuests{taken: map[string]bool{}},
 	}
 	w.members = &fakeMembers{
-		workspace: servers.Workspace{ID: uuid.New(), Name: "Команда Orbit", OwnerID: w.owner},
-		banned:    map[uuid.UUID]bool{},
+		workspace: servers.Workspace{
+			ID: uuid.New(), Name: "Команда Orbit", OwnerID: w.owner,
+			MemberPermissions: servers.DefaultPermissions(),
+		},
+		banned: map[uuid.UUID]bool{},
 	}
 	w.members.roles = map[uuid.UUID]servers.Role{w.owner: servers.RoleOwner, w.member: servers.RoleMember}
 	w.svc = NewService(w.store, w.members, w.guests)

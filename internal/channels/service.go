@@ -91,6 +91,8 @@ type Participants interface {
 // role on a server, read for this request. Declared here, by the consumer.
 type Authorizer interface {
 	RequireAtLeast(ctx context.Context, workspaceID, userID uuid.UUID, least servers.Role) (servers.Role, error)
+	// RequirePermission is the role when the server lets it take this action.
+	RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error)
 }
 
 type Service struct {
@@ -134,10 +136,16 @@ func (s *Service) Get(ctx context.Context, channelID, callerID uuid.UUID) (View,
 	return View{Channel: channel, CanWrite: channel.CanWrite(role)}, nil
 }
 
+// Create adds a channel. Admins and the owner may, and members too when the
+// server lets them — but only a channel everyone writes in: a read-only one is a
+// moderation tool, and a member could not even post in it.
 func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c NewChannel) (View, error) {
-	role, err := s.role(ctx, workspaceID, callerID, servers.RoleAdmin)
+	role, err := mapRoleError(s.roles.RequirePermission(ctx, workspaceID, callerID, servers.PermissionCreateChannels))
 	if err != nil {
 		return View{}, err
+	}
+	if c.IsReadOnly && role.Rank() < servers.RoleAdmin.Rank() {
+		return View{}, ErrForbidden
 	}
 	name, err := cleanName(c.Name)
 	if err != nil {
@@ -277,7 +285,10 @@ func (s *Service) isParticipant(ctx context.Context, channelID, userID uuid.UUID
 // role maps the server's answers to this package's: an outsider must not be able
 // to tell "no such server" from "not your server".
 func (s *Service) role(ctx context.Context, workspaceID, callerID uuid.UUID, least servers.Role) (servers.Role, error) {
-	role, err := s.roles.RequireAtLeast(ctx, workspaceID, callerID, least)
+	return mapRoleError(s.roles.RequireAtLeast(ctx, workspaceID, callerID, least))
+}
+
+func mapRoleError(role servers.Role, err error) (servers.Role, error) {
 	switch {
 	case errors.Is(err, servers.ErrNotMember):
 		return "", ErrNotFound
