@@ -36,8 +36,11 @@ func (s *fakeStore) account(id uuid.UUID) Account {
 	return a
 }
 
-func (s *fakeStore) CreateWorkspace(_ context.Context, name string, ownerID uuid.UUID) (Workspace, error) {
-	w := Workspace{ID: uuid.New(), Name: name, OwnerID: ownerID, CreatedAt: time.Now()}
+func (s *fakeStore) CreateWorkspace(_ context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error) {
+	w := Workspace{
+		ID: uuid.New(), Name: n.Name, Description: n.Description, MemberPermissions: permissions,
+		OwnerID: ownerID, CreatedAt: time.Now(),
+	}
 	s.workspaces[w.ID] = w
 	s.members[w.ID] = map[uuid.UUID]Member{
 		ownerID: {User: s.account(ownerID), Role: RoleOwner, JoinedAt: time.Now()},
@@ -54,14 +57,31 @@ func (s *fakeStore) Workspace(_ context.Context, id uuid.UUID) (Workspace, error
 	return w, nil
 }
 
-func (s *fakeStore) RenameWorkspace(_ context.Context, id uuid.UUID, name string) (Workspace, error) {
+func (s *fakeStore) UpdateWorkspace(_ context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
 	w, ok := s.workspaces[id]
 	if !ok {
 		return Workspace{}, ErrNotMember
 	}
-	w.Name = name
+	if u.Name != nil {
+		w.Name = *u.Name
+	}
+	if u.Description != nil {
+		w.Description = *u.Description
+	}
+	w.MemberPermissions = u.Permissions.apply(w.MemberPermissions)
 	s.workspaces[id] = w
 	return w, nil
+}
+
+func (s *fakeStore) SetIcon(_ context.Context, id uuid.UUID, key string) (string, error) {
+	w, ok := s.workspaces[id]
+	if !ok {
+		return "", ErrNotMember
+	}
+	previous := w.IconKey
+	w.IconKey = key
+	s.workspaces[id] = w
+	return previous, nil
 }
 
 func (s *fakeStore) DeleteWorkspace(_ context.Context, id uuid.UUID) error {
@@ -87,6 +107,14 @@ func (s *fakeStore) Role(_ context.Context, workspaceID, userID uuid.UUID) (Role
 		return "", ErrNotMember
 	}
 	return member.Role, nil
+}
+
+func (s *fakeStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error) {
+	role, err := s.Role(ctx, workspaceID, userID)
+	if err != nil {
+		return "", Permissions{}, err
+	}
+	return role, s.workspaces[workspaceID].MemberPermissions, nil
 }
 
 func (s *fakeStore) SetRole(_ context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
@@ -162,6 +190,11 @@ func (s *fakeStore) ListBans(_ context.Context, workspaceID uuid.UUID) ([]Ban, e
 	return out, nil
 }
 
+// rename changes only the name, the way the old endpoint did.
+func rename(ctx context.Context, svc *Service, workspaceID, callerID uuid.UUID, name string) (Membership, error) {
+	return svc.Update(ctx, workspaceID, callerID, WorkspaceUpdate{Name: &name})
+}
+
 // world is one server with a person in every role, plus an outsider.
 type world struct {
 	svc       *Service
@@ -178,10 +211,10 @@ type world struct {
 func newWorld(t *testing.T) world {
 	t.Helper()
 	store := newFakeStore()
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, Icons{})
 	owner := uuid.New()
 
-	membership, err := svc.Create(t.Context(), "Команда Orbit", owner)
+	membership, err := svc.Create(t.Context(), NewWorkspace{Name: "Команда Orbit"}, owner)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -203,10 +236,10 @@ func newWorld(t *testing.T) world {
 
 func TestCreateMakesTheCallerOwner(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, Icons{})
 	owner := uuid.New()
 
-	membership, err := svc.Create(t.Context(), "  Команда Orbit  ", owner)
+	membership, err := svc.Create(t.Context(), NewWorkspace{Name: "  Команда Orbit  "}, owner)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -223,10 +256,10 @@ func TestCreateMakesTheCallerOwner(t *testing.T) {
 }
 
 func TestCreateRejectsEmptyAndTooLongName(t *testing.T) {
-	svc := NewService(newFakeStore(), nil)
+	svc := NewService(newFakeStore(), nil, Icons{})
 
 	for _, name := range []string{"", "   ", string(make([]rune, maxNameLength+1))} {
-		if _, err := svc.Create(t.Context(), name, uuid.New()); !errors.Is(err, ErrInvalidName) {
+		if _, err := svc.Create(t.Context(), NewWorkspace{Name: name}, uuid.New()); !errors.Is(err, ErrInvalidName) {
 			t.Errorf("name %q: err = %v, want ErrInvalidName", name, err)
 		}
 	}
@@ -250,7 +283,7 @@ func TestPermissionMatrix(t *testing.T) {
 			return err
 		}},
 		{"rename the server", func(w world, caller uuid.UUID) error {
-			_, err := w.svc.Rename(context.Background(), w.workspace, caller, "Другое имя")
+			_, err := rename(context.Background(), w.svc, w.workspace, caller, "Другое имя")
 			return err
 		}},
 		{"list bans", func(w world, caller uuid.UUID) error {
@@ -445,7 +478,7 @@ func TestBanWorksForSomeoneWhoLeft(t *testing.T) {
 // Data of one server never shows up in another: a role is read per server.
 func TestWorkspacesAreIsolated(t *testing.T) {
 	w := newWorld(t)
-	other, err := w.svc.Create(t.Context(), "Другая команда", w.outsider)
+	other, err := w.svc.Create(t.Context(), NewWorkspace{Name: "Другая команда"}, w.outsider)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -475,7 +508,7 @@ func TestWorkspacesAreIsolated(t *testing.T) {
 func TestRoleChangeAppliesImmediately(t *testing.T) {
 	w := newWorld(t)
 
-	if _, err := w.svc.Rename(t.Context(), w.workspace, w.admin, "Переименовано админом"); err != nil {
+	if _, err := rename(t.Context(), w.svc, w.workspace, w.admin, "Переименовано админом"); err != nil {
 		t.Fatalf("Rename as admin: %v", err)
 	}
 
@@ -483,7 +516,7 @@ func TestRoleChangeAppliesImmediately(t *testing.T) {
 		t.Fatalf("SetRole: %v", err)
 	}
 
-	if _, err := w.svc.Rename(t.Context(), w.workspace, w.admin, "Снова"); !errors.Is(err, ErrForbidden) {
+	if _, err := rename(t.Context(), w.svc, w.workspace, w.admin, "Снова"); !errors.Is(err, ErrForbidden) {
 		t.Errorf("the demoted admin can still rename: %v", err)
 	}
 	if _, err := w.svc.Authorize(t.Context(), w.workspace, w.admin); err != nil {

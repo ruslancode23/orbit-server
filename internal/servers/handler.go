@@ -3,6 +3,7 @@ package servers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -61,9 +62,13 @@ func (h *Handler) CreateWorkspace(ctx context.Context, req api.CreateWorkspaceRe
 		return api.CreateWorkspace400JSONResponse{ErrorJSONResponse: badRequest("request body is required")}, nil
 	}
 
-	membership, err := h.svc.Create(ctx, req.Body.Name, userID)
+	membership, err := h.svc.Create(ctx, NewWorkspace{
+		Name:        req.Body.Name,
+		Description: value(req.Body.Description),
+		Permissions: permissionsUpdate(req.Body.MemberPermissions),
+	}, userID)
 	switch {
-	case errors.Is(err, ErrInvalidName):
+	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDescription):
 		return api.CreateWorkspace400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:
 		h.log.ErrorContext(ctx, "create workspace", slog.Any("error", err))
@@ -98,19 +103,79 @@ func (h *Handler) UpdateWorkspace(ctx context.Context, req api.UpdateWorkspaceRe
 		return api.UpdateWorkspace400JSONResponse{ErrorJSONResponse: badRequest("request body is required")}, nil
 	}
 
-	membership, err := h.svc.Rename(ctx, req.WorkspaceId, userID, req.Body.Name)
+	membership, err := h.svc.Update(ctx, req.WorkspaceId, userID, WorkspaceUpdate{
+		Name:        req.Body.Name,
+		Description: req.Body.Description,
+		Permissions: permissionsUpdate(req.Body.MemberPermissions),
+	})
 	switch {
 	case errors.Is(err, ErrNotMember):
 		return api.UpdateWorkspace404JSONResponse(notFound()), nil
 	case errors.Is(err, ErrForbidden):
-		return api.UpdateWorkspace403JSONResponse(forbidden("renaming a server needs the admin role")), nil
-	case errors.Is(err, ErrInvalidName):
+		return api.UpdateWorkspace403JSONResponse(forbidden("changing a server needs the admin role")), nil
+	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDescription), errors.Is(err, ErrNothingToUpdate):
 		return api.UpdateWorkspace400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:
-		h.log.ErrorContext(ctx, "rename workspace", slog.Any("error", err))
-		return api.UpdateWorkspace500JSONResponse(internal("could not rename the server")), nil
+		h.log.ErrorContext(ctx, "update workspace", slog.Any("error", err))
+		return api.UpdateWorkspace500JSONResponse(internal("could not change the server")), nil
 	}
 	return api.UpdateWorkspace200JSONResponse(toAPIMembership(membership)), nil
+}
+
+func (h *Handler) UploadWorkspaceIcon(ctx context.Context, req api.UploadWorkspaceIconRequestObject) (api.UploadWorkspaceIconResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.UploadWorkspaceIcon401JSONResponse(unauthorized()), nil
+	}
+	if req.Body == nil {
+		return api.UploadWorkspaceIcon400JSONResponse{ErrorJSONResponse: badRequest("an image is required")}, nil
+	}
+	part, err := req.Body.NextPart()
+	if err != nil {
+		return api.UploadWorkspaceIcon400JSONResponse{ErrorJSONResponse: badRequest("an image is required")}, nil
+	}
+	defer func() { _ = part.Close() }()
+	if part.FormName() != "file" {
+		return api.UploadWorkspaceIcon400JSONResponse{ErrorJSONResponse: badRequest(`the form field must be named "file"`)}, nil
+	}
+
+	membership, err := h.svc.SetIcon(ctx, req.WorkspaceId, userID, part)
+	switch {
+	case errors.Is(err, ErrNotMember):
+		return api.UploadWorkspaceIcon404JSONResponse(notFound()), nil
+	case errors.Is(err, ErrForbidden):
+		return api.UploadWorkspaceIcon403JSONResponse(forbidden("changing a server needs the admin role")), nil
+	case errors.Is(err, ErrIconTooLarge):
+		return api.UploadWorkspaceIcon413JSONResponse(errorBody(httpx.CodeBodyTooLarge,
+			fmt.Sprintf("the icon is larger than this server allows (%d bytes)", h.svc.MaxIconBytes()))), nil
+	case errors.Is(err, ErrIconType):
+		return api.UploadWorkspaceIcon415JSONResponse(errorBody(httpx.CodeInvalidRequest, "the icon must be a PNG, JPEG or WebP image")), nil
+	case errors.Is(err, ErrIconEmpty):
+		return api.UploadWorkspaceIcon400JSONResponse{ErrorJSONResponse: badRequest("the image is empty")}, nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "upload workspace icon", slog.Any("error", err))
+		return api.UploadWorkspaceIcon500JSONResponse(internal("could not store the icon")), nil
+	}
+	return api.UploadWorkspaceIcon200JSONResponse(toAPIMembership(membership)), nil
+}
+
+func (h *Handler) DeleteWorkspaceIcon(ctx context.Context, req api.DeleteWorkspaceIconRequestObject) (api.DeleteWorkspaceIconResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.DeleteWorkspaceIcon401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+
+	membership, err := h.svc.RemoveIcon(ctx, req.WorkspaceId, userID)
+	switch {
+	case errors.Is(err, ErrNotMember):
+		return api.DeleteWorkspaceIcon404JSONResponse(notFound()), nil
+	case errors.Is(err, ErrForbidden):
+		return api.DeleteWorkspaceIcon403JSONResponse(forbidden("changing a server needs the admin role")), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "delete workspace icon", slog.Any("error", err))
+		return api.DeleteWorkspaceIcon500JSONResponse(internal("could not remove the icon")), nil
+	}
+	return api.DeleteWorkspaceIcon200JSONResponse(toAPIMembership(membership)), nil
 }
 
 func (h *Handler) DeleteWorkspace(ctx context.Context, req api.DeleteWorkspaceRequestObject) (api.DeleteWorkspaceResponseObject, error) {
@@ -270,14 +335,53 @@ func (h *Handler) ListWorkspaceBans(ctx context.Context, req api.ListWorkspaceBa
 
 func toAPIMembership(m Membership) api.WorkspaceMembership {
 	return api.WorkspaceMembership{
-		Workspace: api.Workspace{
-			Id:        m.Workspace.ID,
-			Name:      m.Workspace.Name,
-			OwnerId:   m.Workspace.OwnerID,
-			CreatedAt: m.Workspace.CreatedAt,
-		},
-		Role: api.WorkspaceRole(m.Role),
+		Workspace: APIWorkspace(m.Workspace),
+		Role:      api.WorkspaceRole(m.Role),
 	}
+}
+
+// APIWorkspace is the shape a server takes on the wire, in responses and in the
+// workspace.updated event. The icon key stays here; only the signed link leaves.
+func APIWorkspace(w Workspace) api.Workspace {
+	return api.Workspace{
+		Id:          w.ID,
+		Name:        w.Name,
+		Description: optional(w.Description),
+		IconUrl:     optional(w.IconURL),
+		MemberPermissions: api.WorkspacePermissions{
+			CanInvite:         w.MemberPermissions.Invite,
+			CanCreateChannels: w.MemberPermissions.CreateChannels,
+			CanAttachFiles:    w.MemberPermissions.AttachFiles,
+		},
+		OwnerId:   w.OwnerID,
+		CreatedAt: w.CreatedAt,
+	}
+}
+
+func permissionsUpdate(u *api.WorkspacePermissionsUpdate) PermissionsUpdate {
+	if u == nil {
+		return PermissionsUpdate{}
+	}
+	return PermissionsUpdate{
+		Invite:         u.CanInvite,
+		CreateChannels: u.CanCreateChannels,
+		AttachFiles:    u.CanAttachFiles,
+	}
+}
+
+// optional is nil for an empty string: the API says null, not "".
+func optional(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func value(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func toAPIMember(m Member) api.WorkspaceMember {

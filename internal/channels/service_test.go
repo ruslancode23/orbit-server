@@ -101,9 +101,26 @@ func (s *fakeStore) Reorder(_ context.Context, workspaceID uuid.UUID, ids []uuid
 	return nil
 }
 
-// fakeRoles answers like internal/servers: a role per (server, account).
+// fakeRoles answers like internal/servers: a role per (server, account), and
+// what each server lets its members do (the defaults when not set).
 type fakeRoles struct {
 	roles map[uuid.UUID]map[uuid.UUID]servers.Role
+	perms map[uuid.UUID]servers.Permissions
+}
+
+func (r *fakeRoles) RequirePermission(_ context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error) {
+	role, ok := r.roles[workspaceID][userID]
+	if !ok {
+		return "", servers.ErrNotMember
+	}
+	perms, ok := r.perms[workspaceID]
+	if !ok {
+		perms = servers.DefaultPermissions()
+	}
+	if !perms.Allows(role, permission) {
+		return role, servers.ErrForbidden
+	}
+	return role, nil
 }
 
 func (r *fakeRoles) RequireAtLeast(_ context.Context, workspaceID, userID uuid.UUID, least servers.Role) (servers.Role, error) {
@@ -121,6 +138,7 @@ func (r *fakeRoles) RequireAtLeast(_ context.Context, workspaceID, userID uuid.U
 type world struct {
 	svc       *Service
 	store     *fakeStore
+	roles     *fakeRoles
 	workspace uuid.UUID
 	other     uuid.UUID // a second server, to prove isolation
 	owner     uuid.UUID
@@ -142,6 +160,7 @@ func newWorld(t *testing.T) world {
 		w.workspace: {w.owner: servers.RoleOwner, w.admin: servers.RoleAdmin, w.member: servers.RoleMember},
 		w.other:     {w.outsider: servers.RoleOwner},
 	}}
+	w.roles = roles
 	w.svc = NewService(store, roles)
 
 	general, err := w.svc.Create(t.Context(), w.workspace, w.admin, NewChannel{Name: "общий"})

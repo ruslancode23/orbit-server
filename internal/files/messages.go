@@ -2,9 +2,11 @@ package files
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 )
 
@@ -15,6 +17,17 @@ type ForMessages struct{ svc *Service }
 func NewForMessages(svc *Service) *ForMessages { return &ForMessages{svc: svc} }
 
 var _ messages.Files = (*ForMessages)(nil)
+
+func (f *ForMessages) MayAttach(ctx context.Context, channel channels.Channel, callerID uuid.UUID) error {
+	err := f.svc.MayAttach(ctx, channel, callerID)
+	switch {
+	case errors.Is(err, ErrAttachNotAllowed):
+		return messages.ErrAttachNotAllowed
+	case errors.Is(err, ErrNotFound):
+		return messages.ErrNotFound
+	}
+	return err
+}
 
 func (f *ForMessages) AttachAll(ctx context.Context, messageID, uploaderID uuid.UUID, ids []uuid.UUID) ([]messages.Attachment, error) {
 	attached, err := f.svc.AttachAll(ctx, messageID, uploaderID, ids)

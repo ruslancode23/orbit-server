@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
 type fakeStore struct {
@@ -143,8 +144,28 @@ func (m *fakeMessages) ChannelOf(_ context.Context, messageID uuid.UUID) (uuid.U
 	return channelID, nil
 }
 
+// fakePermissions answers like internal/servers: a role per (server, account)
+// and the server's own member permissions.
+type fakePermissions struct {
+	roles map[uuid.UUID]map[uuid.UUID]servers.Role
+	perms map[uuid.UUID]servers.Permissions
+}
+
+func (p *fakePermissions) RequirePermission(_ context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error) {
+	role, ok := p.roles[workspaceID][userID]
+	if !ok {
+		return "", servers.ErrNotMember
+	}
+	if !p.perms[workspaceID].Allows(role, permission) {
+		return role, servers.ErrForbidden
+	}
+	return role, nil
+}
+
 type world struct {
 	svc      *Service
+	access   *fakeChannels
+	perms    *fakePermissions
 	store    *fakeStore
 	storage  *fakeStorage
 	messages *fakeMessages
@@ -163,12 +184,20 @@ func newWorld(t *testing.T) world {
 		messages: &fakeMessages{channelOf: map[uuid.UUID]uuid.UUID{}},
 		channel:  uuid.New(), anna: uuid.New(), reader: uuid.New(), outsider: uuid.New(),
 	}
+	workspaceID := uuid.New()
 	access := &fakeChannels{
-		channel: channels.Channel{ID: w.channel, WorkspaceID: uuid.New(), Name: "общий"},
+		channel: channels.Channel{ID: w.channel, WorkspaceID: workspaceID, Name: "общий"},
 		readers: map[uuid.UUID]bool{w.anna: true, w.reader: true},
 		writers: map[uuid.UUID]bool{w.anna: true},
 	}
-	w.svc = NewService(w.store, w.storage, access, w.messages, maxBytes, time.Minute)
+	w.access = access
+	w.perms = &fakePermissions{
+		roles: map[uuid.UUID]map[uuid.UUID]servers.Role{
+			workspaceID: {w.anna: servers.RoleMember, w.reader: servers.RoleMember},
+		},
+		perms: map[uuid.UUID]servers.Permissions{workspaceID: servers.DefaultPermissions()},
+	}
+	w.svc = NewService(w.store, w.storage, access, w.messages, w.perms, maxBytes, time.Minute)
 	return w
 }
 

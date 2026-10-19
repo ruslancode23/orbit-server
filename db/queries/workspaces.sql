@@ -1,11 +1,37 @@
 -- name: CreateWorkspace :one
-INSERT INTO workspaces (name, owner_id) VALUES ($1, $2) RETURNING *;
+INSERT INTO workspaces (
+    name, description, owner_id,
+    members_can_invite, members_can_create_channels, members_can_attach_files
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;
 
 -- name: GetWorkspace :one
 SELECT * FROM workspaces WHERE id = $1;
 
--- name: RenameWorkspace :one
-UPDATE workspaces SET name = $2, updated_at = now() WHERE id = $1 RETURNING *;
+-- Only what the caller sent changes: a NULL name keeps the old one, and the
+-- description is touched only when set_description is true (NULL then clears it).
+-- name: UpdateWorkspace :one
+UPDATE workspaces
+SET name                        = coalesce(sqlc.narg(name), name),
+    description                 = CASE WHEN sqlc.arg(set_description)::bool THEN sqlc.narg(description) ELSE description END,
+    members_can_invite          = coalesce(sqlc.narg(members_can_invite), members_can_invite),
+    members_can_create_channels = coalesce(sqlc.narg(members_can_create_channels), members_can_create_channels),
+    members_can_attach_files    = coalesce(sqlc.narg(members_can_attach_files), members_can_attach_files),
+    updated_at                  = now()
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- Swaps the icon and reports the key it replaced, so the caller can drop the old
+-- object. The row lock keeps two uploads at once from losing track of one.
+-- name: SetWorkspaceIcon :one
+WITH previous AS (
+    SELECT id, icon_key FROM workspaces WHERE workspaces.id = sqlc.arg(id) FOR UPDATE
+)
+UPDATE workspaces
+SET icon_key = sqlc.narg(icon_key), updated_at = now()
+FROM previous
+WHERE workspaces.id = previous.id
+RETURNING workspaces.id, previous.icon_key AS previous_icon_key;
 
 -- name: DeleteWorkspace :exec
 DELETE FROM workspaces WHERE id = $1;
@@ -26,6 +52,17 @@ RETURNING *;
 -- Every handler asks this before it acts: no row means no access at all.
 -- name: GetWorkspaceRole :one
 SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2;
+
+-- The role and what the server lets members do, in one read, for actions a
+-- server may open to members.
+-- name: GetWorkspaceAccess :one
+SELECT workspace_members.role,
+       workspaces.members_can_invite,
+       workspaces.members_can_create_channels,
+       workspaces.members_can_attach_files
+FROM workspace_members
+    JOIN workspaces ON workspaces.id = workspace_members.workspace_id
+WHERE workspace_members.workspace_id = $1 AND workspace_members.user_id = $2;
 
 -- name: SetWorkspaceRole :one
 UPDATE workspace_members SET role = $3 WHERE workspace_id = $1 AND user_id = $2 RETURNING *;
