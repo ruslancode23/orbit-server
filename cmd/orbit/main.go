@@ -57,13 +57,15 @@ func run() error {
 
 	queries := db.New(pool)
 	hub := events.NewHub()
-	workspaces := servers.NewService(servers.NewPostgresStore(pool), hub)
-	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
 	storage, err := objectstore.New(ctx, cfg.Storage.Endpoint, cfg.Storage.Bucket,
 		cfg.Storage.AccessKey, cfg.Storage.SecretKey)
 	if err != nil {
 		return fmt.Errorf("connect object store: %w", err)
 	}
+	workspaces := servers.NewService(servers.NewPostgresStore(pool), hub, servers.Icons{
+		Storage: storage, MaxBytes: cfg.Storage.MaxIconBytes, LinkTTL: cfg.Storage.IconLinkTTL,
+	})
+	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
 
 	conversationService := conversations.NewService(conversations.NewPostgresStore(pool), cfg.MaxGroupMembers)
 	// A conversation is a channel without a server, so the channels module asks
@@ -90,6 +92,7 @@ func run() error {
 		Files:          files.NewHandler(fileService, log),
 		Conversations:  conversations.NewHandler(conversationService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
+		MaxIconBytes:   cfg.Storage.MaxIconBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,

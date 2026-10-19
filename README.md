@@ -73,6 +73,10 @@ docs/adr/               архитектурные решения
 Файл, чьё сообщение так и не пришло, удаляет фоновая уборка через `ORBIT_ORPHAN_ATTACHMENT_AGE`.
 Лимит размера — `ORBIT_MAX_UPLOAD_BYTES`.
 
+Иконка сервера — `PUT /api/v1/workspaces/{id}/icon` (multipart, поле `file`; только PNG, JPEG или WebP
+по содержимому), удаление — `DELETE` там же; меняют admin и owner. Участники видят её по подписанной
+ссылке `iconUrl` в ответах о сервере, она живёт `ORBIT_ICON_LINK_TTL`. Лимит — `ORBIT_MAX_ICON_BYTES`.
+
 ## Живой поток событий
 
 `GET /api/v1/ws` — WebSocket, вне OpenAPI (спецификация описывает запросы и ответы, а не поток).
@@ -82,7 +86,7 @@ docs/adr/               архитектурные решения
 необязательны — это то, на чём клиент остановился), `{"type":"unsubscribe"}`, `{"type":"ping"}`.
 
 От сервера: `subscribed`, `unsubscribed`, `pong`, события `message.created`, `message.updated`,
-`message.deleted`, `message.reaction`, `member.changed` (поля `workspaceId`, `channelId`, `seq`,
+`message.deleted`, `message.reaction`, `member.changed`, `workspace.updated` (поля `workspaceId`, `channelId`, `seq`,
 `payload`) и `error` с кодом. После `subscribe` сервер сначала досылает пропущенное по курсорам,
 потом включает живой поток и не повторяет то, что уже дослал.
 

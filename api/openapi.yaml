@@ -242,7 +242,10 @@ paths:
     patch:
       operationId: updateWorkspace
       tags: [workspaces]
-      summary: Rename a server. Admin or owner.
+      summary: Change the name or the description of a server. Admin or owner.
+      description: |
+        Only the fields sent change. An empty `description` clears it. Every member
+        watching the server gets a `workspace.updated` event.
       requestBody:
         required: true
         content:
@@ -250,7 +253,7 @@ paths:
             schema: { $ref: "#/components/schemas/WorkspaceUpdateRequest" }
       responses:
         "200":
-          description: The renamed server.
+          description: The server as it is now.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WorkspaceMembership" }
@@ -267,6 +270,66 @@ paths:
       responses:
         "204":
           description: Server deleted.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/icon:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    put:
+      operationId: uploadWorkspaceIcon
+      tags: [workspaces]
+      summary: Set the icon of a server. Admin or owner.
+      description: |
+        A PNG, JPEG or WebP image; the type is read from the bytes, not from the name.
+        The new icon replaces the old one, which is deleted. Members see it through
+        `iconUrl`, a short-lived signed link. Every member watching the server gets a
+        `workspace.updated` event.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: The server with its new icon.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413":
+          description: The image is larger than this instance allows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: Not a PNG, JPEG or WebP image.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteWorkspaceIcon
+      tags: [workspaces]
+      summary: Remove the icon of a server. Admin or owner.
+      description: Removing an icon that is not there is not an error.
+      responses:
+        "200":
+          description: The server without an icon.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -1175,7 +1238,7 @@ components:
     Workspace:
       type: object
       additionalProperties: false
-      required: [id, name, ownerId, createdAt]
+      required: [id, name, description, iconUrl, ownerId, createdAt]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -1183,6 +1246,17 @@ components:
           minLength: 1
           maxLength: 64
           example: Команда Orbit
+        description:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: What the server is about; null when nobody wrote it.
+        iconUrl:
+          type: string
+          nullable: true
+          description: |
+            A signed link to the icon, valid for a short while; null without an icon.
+            Read the server again for a fresh one, do not store it.
         ownerId: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
     WorkspaceMembership:
@@ -1219,21 +1293,31 @@ components:
       type: object
       additionalProperties: false
       required: [name]
+      description: The icon is uploaded separately, right after the server exists.
       properties:
         name:
           type: string
           minLength: 1
           maxLength: 64
           example: Команда Orbit
+        description:
+          type: string
+          maxLength: 500
+          description: Optional; empty means none.
     WorkspaceUpdateRequest:
       type: object
       additionalProperties: false
-      required: [name]
+      minProperties: 1
+      description: Only the fields sent change.
       properties:
         name:
           type: string
           minLength: 1
           maxLength: 64
+        description:
+          type: string
+          maxLength: 500
+          description: The new description; an empty string clears it.
     WorkspaceMemberRoleRequest:
       type: object
       additionalProperties: false

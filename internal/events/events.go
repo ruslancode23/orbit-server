@@ -16,6 +16,9 @@ const (
 	KindChannelChanged  Kind = "channel.changed"
 	KindChannelDeleted  Kind = "channel.deleted"
 	KindMemberChanged   Kind = "member.changed"
+	// KindWorkspaceUpdated says the server itself changed: its name, description,
+	// icon or what members may do. The payload is the server in its API shape.
+	KindWorkspaceUpdated Kind = "workspace.updated"
 	// KindReadChanged is personal: it goes only to the account whose cursor moved.
 	KindReadChanged Kind = "read.changed"
 )

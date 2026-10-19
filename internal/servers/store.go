@@ -32,7 +32,7 @@ var _ Store = (*PostgresStore)(nil)
 
 // CreateWorkspace writes the server and its owner membership together: a server
 // without an owner would be unmanageable.
-func (s *PostgresStore) CreateWorkspace(ctx context.Context, name string, ownerID uuid.UUID) (Workspace, error) {
+func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, ownerID uuid.UUID) (Workspace, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Workspace{}, fmt.Errorf("begin: %w", err)
@@ -40,7 +40,11 @@ func (s *PostgresStore) CreateWorkspace(ctx context.Context, name string, ownerI
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.q.WithTx(tx)
-	row, err := q.CreateWorkspace(ctx, db.CreateWorkspaceParams{Name: name, OwnerID: pgUUID(ownerID)})
+	row, err := q.CreateWorkspace(ctx, db.CreateWorkspaceParams{
+		Name:        n.Name,
+		Description: text(n.Description),
+		OwnerID:     pgUUID(ownerID),
+	})
 	if err != nil {
 		return Workspace{}, fmt.Errorf("create workspace: %w", err)
 	}
@@ -68,15 +72,34 @@ func (s *PostgresStore) Workspace(ctx context.Context, id uuid.UUID) (Workspace,
 	return toWorkspace(row), nil
 }
 
-func (s *PostgresStore) RenameWorkspace(ctx context.Context, id uuid.UUID, name string) (Workspace, error) {
-	row, err := s.q.RenameWorkspace(ctx, db.RenameWorkspaceParams{ID: pgUUID(id), Name: name})
+func (s *PostgresStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
+	params := db.UpdateWorkspaceParams{ID: pgUUID(id)}
+	if u.Name != nil {
+		params.Name = pgtype.Text{String: *u.Name, Valid: true}
+	}
+	if u.Description != nil {
+		params.SetDescription = true
+		params.Description = text(*u.Description)
+	}
+	row, err := s.q.UpdateWorkspace(ctx, params)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Workspace{}, ErrNotMember
 		}
-		return Workspace{}, fmt.Errorf("rename workspace: %w", err)
+		return Workspace{}, fmt.Errorf("update workspace: %w", err)
 	}
 	return toWorkspace(row), nil
+}
+
+func (s *PostgresStore) SetIcon(ctx context.Context, id uuid.UUID, key string) (string, error) {
+	row, err := s.q.SetWorkspaceIcon(ctx, db.SetWorkspaceIconParams{ID: pgUUID(id), IconKey: text(key)})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotMember
+		}
+		return "", fmt.Errorf("set workspace icon: %w", err)
+	}
+	return row.PreviousIconKey.String, nil
 }
 
 func (s *PostgresStore) DeleteWorkspace(ctx context.Context, id uuid.UUID) error {
@@ -272,10 +295,12 @@ func (s *PostgresStore) member(ctx context.Context, workspaceID, userID uuid.UUI
 
 func toWorkspace(row db.Workspace) Workspace {
 	return Workspace{
-		ID:        uuid.UUID(row.ID.Bytes),
-		Name:      row.Name,
-		OwnerID:   uuid.UUID(row.OwnerID.Bytes),
-		CreatedAt: row.CreatedAt.Time,
+		ID:          uuid.UUID(row.ID.Bytes),
+		Name:        row.Name,
+		Description: row.Description.String,
+		IconKey:     row.IconKey.String,
+		OwnerID:     uuid.UUID(row.OwnerID.Bytes),
+		CreatedAt:   row.CreatedAt.Time,
 	}
 }
 

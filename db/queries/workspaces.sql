@@ -1,11 +1,30 @@
 -- name: CreateWorkspace :one
-INSERT INTO workspaces (name, owner_id) VALUES ($1, $2) RETURNING *;
+INSERT INTO workspaces (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *;
 
 -- name: GetWorkspace :one
 SELECT * FROM workspaces WHERE id = $1;
 
--- name: RenameWorkspace :one
-UPDATE workspaces SET name = $2, updated_at = now() WHERE id = $1 RETURNING *;
+-- Only what the caller sent changes: a NULL name keeps the old one, and the
+-- description is touched only when set_description is true (NULL then clears it).
+-- name: UpdateWorkspace :one
+UPDATE workspaces
+SET name        = coalesce(sqlc.narg(name), name),
+    description = CASE WHEN sqlc.arg(set_description)::bool THEN sqlc.narg(description) ELSE description END,
+    updated_at  = now()
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- Swaps the icon and reports the key it replaced, so the caller can drop the old
+-- object. The row lock keeps two uploads at once from losing track of one.
+-- name: SetWorkspaceIcon :one
+WITH previous AS (
+    SELECT id, icon_key FROM workspaces WHERE workspaces.id = sqlc.arg(id) FOR UPDATE
+)
+UPDATE workspaces
+SET icon_key = sqlc.narg(icon_key), updated_at = now()
+FROM previous
+WHERE workspaces.id = previous.id
+RETURNING workspaces.id, previous.icon_key AS previous_icon_key;
 
 -- name: DeleteWorkspace :exec
 DELETE FROM workspaces WHERE id = $1;

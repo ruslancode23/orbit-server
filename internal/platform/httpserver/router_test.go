@@ -40,13 +40,14 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Auth:     auth.NewHandler(sessions, false, log),
 		Sessions: sessions,
 		// Reached only with a session, and these tests send no cookie.
-		Workspaces: servers.NewHandler(servers.NewService(nil, nil), log),
+		Workspaces: servers.NewHandler(servers.NewService(nil, nil, servers.Icons{}), log),
 		Channels:   channels.NewHandler(channels.NewService(nil, nil), log),
 		Messages:   messages.NewHandler(messages.NewService(nil, nil, nil, nil, nil), log),
 		Reads:      reads.NewHandler(reads.NewService(nil, nil, nil, nil), log),
 		Files: files.NewHandler(
 			files.NewService(nil, nil, nil, nil, 1<<20, time.Minute), log),
 		MaxUploadBytes: 1 << 20,
+		MaxIconBytes:   1 << 16,
 		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10), log),
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
@@ -96,7 +97,7 @@ func TestVoiceToken(t *testing.T) {
 		{"displayName too long", true, `{"room":"dev-room","displayName":"` + strings.Repeat("a", 33) + `"}`, http.StatusBadRequest, httpx.CodeInvalidRequest},
 		{"unknown field", true, `{"room":"dev-room","displayName":"Anna","canPublish":false}`, http.StatusBadRequest, httpx.CodeInvalidRequest},
 		{"not json", true, `room=dev-room`, http.StatusBadRequest, httpx.CodeInvalidRequest},
-		{"body too large", true, `{"room":"dev-room","displayName":"` + strings.Repeat("a", 2000) + `"}`, http.StatusRequestEntityTooLarge, httpx.CodeBodyTooLarge},
+		{"body too large", true, `{"room":"dev-room","displayName":"` + strings.Repeat("a", 20000) + `"}`, http.StatusRequestEntityTooLarge, httpx.CodeBodyTooLarge},
 		{"production hides route", false, valid, http.StatusNotFound, httpx.CodeNotFound},
 		{"production hides route before validation", false, `{"room":"../x"}`, http.StatusNotFound, httpx.CodeNotFound},
 	}
@@ -143,4 +144,39 @@ func TestUnknownRoute(t *testing.T) {
 	if rec.Code != http.StatusNotFound || errorCode(t, rec) != httpx.CodeNotFound {
 		t.Errorf("got %d %s, want 404 not_found", rec.Code, rec.Body)
 	}
+}
+
+// Each upload has its own cap, checked before a byte is read, and a JSON body
+// with a long description still fits the general one.
+func TestBodyLimits(t *testing.T) {
+	h := newRouter(t, false, nil)
+	iconPath := "/api/v1/workspaces/7d1f3c56-9f8e-4b52-9d0c-6f2f4d1e0a11/icon"
+
+	t.Run("icon over the limit", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, iconPath, strings.NewReader(""))
+		req.ContentLength = 1<<16 + multipartSlack + 1
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", rec.Code)
+		}
+	})
+
+	t.Run("a long description is not too large", func(t *testing.T) {
+		body := `{"name":"Команда","description":"` + strings.Repeat("я", 500) + `"}`
+		rec := do(t, h, http.MethodPost, "/api/v1/workspaces", body)
+		// No session: the request got past the body cap and the schema.
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401; body %s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("a description over 500 characters", func(t *testing.T) {
+		body := `{"name":"Команда","description":"` + strings.Repeat("я", 501) + `"}`
+		rec := do(t, h, http.MethodPost, "/api/v1/workspaces", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
+		}
+	})
 }

@@ -81,16 +81,17 @@ func (q *Queries) CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.U
 }
 
 const createWorkspace = `-- name: CreateWorkspace :one
-INSERT INTO workspaces (name, owner_id) VALUES ($1, $2) RETURNING id, name, owner_id, created_at, updated_at
+INSERT INTO workspaces (name, description, owner_id) VALUES ($1, $2, $3) RETURNING id, name, owner_id, created_at, updated_at, description, icon_key
 `
 
 type CreateWorkspaceParams struct {
-	Name    string      `json:"name"`
-	OwnerID pgtype.UUID `json:"owner_id"`
+	Name        string      `json:"name"`
+	Description pgtype.Text `json:"description"`
+	OwnerID     pgtype.UUID `json:"owner_id"`
 }
 
 func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, createWorkspace, arg.Name, arg.OwnerID)
+	row := q.db.QueryRow(ctx, createWorkspace, arg.Name, arg.Description, arg.OwnerID)
 	var i Workspace
 	err := row.Scan(
 		&i.ID,
@@ -98,6 +99,8 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.OwnerID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Description,
+		&i.IconKey,
 	)
 	return i, err
 }
@@ -112,7 +115,7 @@ func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
-SELECT id, name, owner_id, created_at, updated_at FROM workspaces WHERE id = $1
+SELECT id, name, owner_id, created_at, updated_at, description, icon_key FROM workspaces WHERE id = $1
 `
 
 func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error) {
@@ -124,6 +127,8 @@ func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, 
 		&i.OwnerID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Description,
+		&i.IconKey,
 	)
 	return i, err
 }
@@ -162,7 +167,7 @@ func (q *Queries) IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMe
 }
 
 const listUserWorkspaces = `-- name: ListUserWorkspaces :many
-SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspace_members.role
+SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, workspace_members.role
 FROM workspaces
     JOIN workspace_members ON workspace_members.workspace_id = workspaces.id
 WHERE workspace_members.user_id = $1
@@ -189,6 +194,8 @@ func (q *Queries) ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([
 			&i.Workspace.OwnerID,
 			&i.Workspace.CreatedAt,
 			&i.Workspace.UpdatedAt,
+			&i.Workspace.Description,
+			&i.Workspace.IconKey,
 			&i.Role,
 		); err != nil {
 			return nil, err
@@ -308,25 +315,33 @@ func (q *Queries) RemoveWorkspaceMember(ctx context.Context, arg RemoveWorkspace
 	return result.RowsAffected(), nil
 }
 
-const renameWorkspace = `-- name: RenameWorkspace :one
-UPDATE workspaces SET name = $2, updated_at = now() WHERE id = $1 RETURNING id, name, owner_id, created_at, updated_at
+const setWorkspaceIcon = `-- name: SetWorkspaceIcon :one
+WITH previous AS (
+    SELECT id, icon_key FROM workspaces WHERE workspaces.id = $2 FOR UPDATE
+)
+UPDATE workspaces
+SET icon_key = $1, updated_at = now()
+FROM previous
+WHERE workspaces.id = previous.id
+RETURNING workspaces.id, previous.icon_key AS previous_icon_key
 `
 
-type RenameWorkspaceParams struct {
-	ID   pgtype.UUID `json:"id"`
-	Name string      `json:"name"`
+type SetWorkspaceIconParams struct {
+	IconKey pgtype.Text `json:"icon_key"`
+	ID      pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) RenameWorkspace(ctx context.Context, arg RenameWorkspaceParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, renameWorkspace, arg.ID, arg.Name)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.OwnerID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
+type SetWorkspaceIconRow struct {
+	ID              pgtype.UUID `json:"id"`
+	PreviousIconKey pgtype.Text `json:"previous_icon_key"`
+}
+
+// Swaps the icon and reports the key it replaced, so the caller can drop the old
+// object. The row lock keeps two uploads at once from losing track of one.
+func (q *Queries) SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconParams) (SetWorkspaceIconRow, error) {
+	row := q.db.QueryRow(ctx, setWorkspaceIcon, arg.IconKey, arg.ID)
+	var i SetWorkspaceIconRow
+	err := row.Scan(&i.ID, &i.PreviousIconKey)
 	return i, err
 }
 
@@ -367,4 +382,42 @@ func (q *Queries) UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMe
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const updateWorkspace = `-- name: UpdateWorkspace :one
+UPDATE workspaces
+SET name        = coalesce($1, name),
+    description = CASE WHEN $2::bool THEN $3 ELSE description END,
+    updated_at  = now()
+WHERE id = $4
+RETURNING id, name, owner_id, created_at, updated_at, description, icon_key
+`
+
+type UpdateWorkspaceParams struct {
+	Name           pgtype.Text `json:"name"`
+	SetDescription bool        `json:"set_description"`
+	Description    pgtype.Text `json:"description"`
+	ID             pgtype.UUID `json:"id"`
+}
+
+// Only what the caller sent changes: a NULL name keeps the old one, and the
+// description is touched only when set_description is true (NULL then clears it).
+func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, updateWorkspace,
+		arg.Name,
+		arg.SetDescription,
+		arg.Description,
+		arg.ID,
+	)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.IconKey,
+	)
+	return i, err
 }
