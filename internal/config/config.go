@@ -19,8 +19,11 @@ type Config struct {
 	SessionTTL      time.Duration
 	// MaxGroupMembers caps a group chat, counting its creator.
 	MaxGroupMembers int
-	LiveKit         LiveKit
-	Storage         Storage
+	// NewConversationLimit caps how many new conversations one account may open
+	// per minute. Zero turns the guard off.
+	NewConversationLimit int
+	LiveKit              LiveKit
+	Storage              Storage
 }
 
 // Storage is the object store for attachments (SeaweedFS locally, S3 elsewhere).
@@ -78,6 +81,12 @@ func Load() (Config, error) {
 			os.Getenv("ORBIT_MAX_GROUP_MEMBERS")))
 	}
 
+	newConversations, err := strconv.Atoi(getenv("ORBIT_NEW_CONVERSATION_LIMIT", "10"))
+	if err != nil || newConversations < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_NEW_CONVERSATION_LIMIT must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_NEW_CONVERSATION_LIMIT")))
+	}
+
 	maxUpload, err := strconv.ParseInt(getenv("ORBIT_MAX_UPLOAD_BYTES", "26214400"), 10, 64)
 	if err != nil || maxUpload <= 0 {
 		errs = append(errs, fmt.Errorf("ORBIT_MAX_UPLOAD_BYTES must be a positive number of bytes, got %q",
@@ -106,13 +115,14 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Env:             getenv("ORBIT_ENV", "production"),
-		HTTPAddr:        getenv("ORBIT_HTTP_ADDR", ":8080"),
-		ShutdownTimeout: shutdownTimeout,
-		DatabaseURL:     required("ORBIT_DATABASE_URL"),
-		CORSOrigins:     splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
-		SessionTTL:      sessionTTL,
-		MaxGroupMembers: maxGroup,
+		Env:                  getenv("ORBIT_ENV", "production"),
+		HTTPAddr:             getenv("ORBIT_HTTP_ADDR", ":8080"),
+		ShutdownTimeout:      shutdownTimeout,
+		DatabaseURL:          required("ORBIT_DATABASE_URL"),
+		CORSOrigins:          splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
+		SessionTTL:           sessionTTL,
+		MaxGroupMembers:      maxGroup,
+		NewConversationLimit: newConversations,
 		Storage: Storage{
 			Endpoint:       required("ORBIT_S3_ENDPOINT"),
 			Bucket:         required("ORBIT_S3_BUCKET"),

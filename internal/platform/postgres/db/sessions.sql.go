@@ -51,7 +51,7 @@ func (q *Queries) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 }
 
 const getLiveSessionUser = `-- name: GetLiveSessionUser :one
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, sessions.id AS session_id, sessions.expires_at
+SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, sessions.id AS session_id, sessions.expires_at
 FROM sessions
     JOIN users ON users.id = sessions.user_id
 WHERE sessions.token_hash = $1
@@ -78,6 +78,7 @@ func (q *Queries) GetLiveSessionUser(ctx context.Context, tokenHash []byte) (Get
 		&i.User.IsGuest,
 		&i.User.CreatedAt,
 		&i.User.UpdatedAt,
+		&i.User.DmPolicy,
 		&i.SessionID,
 		&i.ExpiresAt,
 	)

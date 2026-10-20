@@ -44,6 +44,19 @@ func (q *Queries) AddReaction(ctx context.Context, arg AddReactionParams) error 
 	return err
 }
 
+const channelHasMessages = `-- name: ChannelHasMessages :one
+SELECT EXISTS (SELECT 1 FROM messages WHERE channel_id = $1)
+`
+
+// The first message of a dialogue spends the same per-account rate-limit token
+// as opening one; this answers whether the dialogue has any message yet.
+func (q *Queries) ChannelHasMessages(ctx context.Context, channelID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, channelHasMessages, channelID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const createMessage = `-- name: CreateMessage :one
 INSERT INTO messages (channel_id, author_id, client_message_id, content, reply_to_id)
 VALUES ($1, $2, $3, $4, $5)
@@ -166,7 +179,7 @@ func (q *Queries) EditMessage(ctx context.Context, arg EditMessageParams) (Messa
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
 FROM messages
     LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.id = $1
@@ -198,12 +211,13 @@ func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow
 		&i.User.IsGuest,
 		&i.User.CreatedAt,
 		&i.User.UpdatedAt,
+		&i.User.DmPolicy,
 	)
 	return i, err
 }
 
 const listChannelMessages = `-- name: ListChannelMessages :many
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
 FROM messages
     LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1
@@ -252,6 +266,7 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 			&i.User.IsGuest,
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
+			&i.User.DmPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -264,7 +279,7 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 }
 
 const listChannelMessagesAfter = `-- name: ListChannelMessagesAfter :many
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
 FROM messages
     LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1 AND messages.seq > $3
@@ -311,6 +326,7 @@ func (q *Queries) ListChannelMessagesAfter(ctx context.Context, arg ListChannelM
 			&i.User.IsGuest,
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
+			&i.User.DmPolicy,
 		); err != nil {
 			return nil, err
 		}

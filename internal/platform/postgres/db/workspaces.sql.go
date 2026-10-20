@@ -268,7 +268,7 @@ func (q *Queries) ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const listWorkspaceBans = `-- name: ListWorkspaceBans :many
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, bans.reason, bans.banned_by, bans.created_at
+SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, bans.reason, bans.banned_by, bans.created_at
 FROM bans
     JOIN users ON users.id = bans.user_id
 WHERE bans.workspace_id = $1
@@ -299,6 +299,7 @@ func (q *Queries) ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID
 			&i.User.IsGuest,
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
+			&i.User.DmPolicy,
 			&i.Reason,
 			&i.BannedBy,
 			&i.CreatedAt,
@@ -314,7 +315,7 @@ func (q *Queries) ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID
 }
 
 const listWorkspaceMembers = `-- name: ListWorkspaceMembers :many
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, workspace_members.role, workspace_members.joined_at
+SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, workspace_members.role, workspace_members.joined_at
 FROM workspace_members
     JOIN users ON users.id = workspace_members.user_id
 WHERE workspace_members.workspace_id = $1
@@ -344,6 +345,7 @@ func (q *Queries) ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.U
 			&i.User.IsGuest,
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
+			&i.User.DmPolicy,
 			&i.Role,
 			&i.JoinedAt,
 		); err != nil {

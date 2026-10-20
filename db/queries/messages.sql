@@ -73,3 +73,8 @@ FROM messages
 WHERE messages.channel_id = $1 AND messages.seq > sqlc.arg(after_seq)
 ORDER BY messages.seq
 LIMIT $2;
+
+-- The first message of a dialogue spends the same per-account rate-limit token
+-- as opening one; this answers whether the dialogue has any message yet.
+-- name: ChannelHasMessages :one
+SELECT EXISTS (SELECT 1 FROM messages WHERE channel_id = $1);

@@ -12,7 +12,7 @@ func setRequired(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "ORBIT_SESSION_TTL", "ORBIT_MAX_UPLOAD_BYTES",
-		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "LIVEKIT_PUBLIC_URL",
+		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "ORBIT_NEW_CONVERSATION_LIMIT", "LIVEKIT_PUBLIC_URL",
 	} {
 		t.Setenv(name, "")
 	}
@@ -115,6 +115,42 @@ func TestLoadSessionTTL(t *testing.T) {
 
 		if _, err := Load(); err == nil {
 			t.Error("Load() error = nil, want a complaint about ORBIT_SESSION_TTL")
+		}
+	})
+}
+
+func TestLoadNewConversationLimit(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		setRequired(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.NewConversationLimit != 10 {
+			t.Errorf("NewConversationLimit = %d, want 10", cfg.NewConversationLimit)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_NEW_CONVERSATION_LIMIT", "0")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.NewConversationLimit != 0 {
+			t.Errorf("NewConversationLimit = %d, want 0", cfg.NewConversationLimit)
+		}
+	})
+
+	t.Run("negative", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_NEW_CONVERSATION_LIMIT", "-1")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_NEW_CONVERSATION_LIMIT")
 		}
 	})
 }

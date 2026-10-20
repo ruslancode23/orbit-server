@@ -23,6 +23,11 @@ type Querier interface {
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
+	// Blocking twice is the same as blocking once: the endpoint is idempotent.
+	BlockUser(ctx context.Context, arg BlockUserParams) error
+	// The first message of a dialogue spends the same per-account rate-limit token
+	// as opening one; this answers whether the dialogue has any message yet.
+	ChannelHasMessages(ctx context.Context, channelID pgtype.UUID) (bool, error)
 	ClaimOneTimeKey(ctx context.Context, deviceID pgtype.UUID) (ClaimOneTimeKeyRow, error)
 	CountChannelMembers(ctx context.Context, channelID pgtype.UUID) (int64, error)
 	// The counts of one channel, for the answer after the cursor moved.
@@ -70,6 +75,7 @@ type Querier interface {
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
+	GetDMPolicy(ctx context.Context, id pgtype.UUID) (string, error)
 	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 	GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
@@ -87,6 +93,12 @@ type Querier interface {
 	GetUserByLogin(ctx context.Context, lower string) (User, error)
 	GetUserByNickname(ctx context.Context, lower string) (User, error)
 	GetUserDeviceByKeys(ctx context.Context, arg GetUserDeviceByKeysParams) (Device, error)
+	// Who may write to whom (SCRUM-85). The privacy module owns users.dm_policy and
+	// user_blocks; the users table itself belongs to internal/auth, which is why
+	// only this module reads the policy column.
+	// Both accounts of a dialogue in one query: a missing row means an unknown
+	// account, which the caller treats the same as a refusal.
+	GetUserPrivacy(ctx context.Context, ids []pgtype.UUID) ([]GetUserPrivacyRow, error)
 	// The peer of a secret chat, as this device sees it: the other device, its
 	// person and its public keys.
 	GetUserSecretChat(ctx context.Context, arg GetUserSecretChatParams) (GetUserSecretChatRow, error)
@@ -96,12 +108,22 @@ type Querier interface {
 	GetWorkspaceAccess(ctx context.Context, arg GetWorkspaceAccessParams) (GetWorkspaceAccessRow, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
+	// The only proof of acquaintance the product has so far: two accounts on one
+	// server. One query, so starting a dialogue does not walk a list of servers.
+	HasSharedWorkspace(ctx context.Context, arg HasSharedWorkspaceParams) (bool, error)
+	// A block counts in both directions: the blocked person cannot start either.
+	IsBlockedEitherWay(ctx context.Context, arg IsBlockedEitherWayParams) (bool, error)
 	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)
 	IsSecretChatDevice(ctx context.Context, arg IsSecretChatDeviceParams) (bool, error)
 	IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMemberBannedParams) (bool, error)
 	// Deleting a secret chat deletes the pair: the channel cascades to bindings,
 	// envelopes and files. Only a device in the chat may do it.
 	LeaveSecretChat(ctx context.Context, arg LeaveSecretChatParams) (int64, error)
+	// The accounts this person blocked: their authors are hidden in history and in
+	// live group events.
+	ListBlockedIDs(ctx context.Context, blockerID pgtype.UUID) ([]pgtype.UUID, error)
+	// The settings screen: whom the caller blocked and when.
+	ListBlockedUsers(ctx context.Context, blockerID pgtype.UUID) ([]ListBlockedUsersRow, error)
 	// One page of history, newest first: the caller passes the seq it already has
 	// (NULL for the first page) and gets the next portion.
 	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)
@@ -146,6 +168,7 @@ type Querier interface {
 	RevokeUserSessions(ctx context.Context, userID pgtype.UUID) error
 	// Reordering sends the whole list: position is the index of the channel in it.
 	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)
+	SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
 	// Swaps the icon and reports the key it replaced, so the caller can drop the old
 	// object. The row lock keeps two uploads at once from losing track of one.
@@ -154,11 +177,14 @@ type Querier interface {
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
 	TouchSession(ctx context.Context, id pgtype.UUID) error
 	UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMemberParams) (int64, error)
+	UnblockUser(ctx context.Context, arg UnblockUserParams) error
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)
 	// Only what the caller sent changes: a NULL name keeps the old one, and the
 	// description is touched only when set_description is true (NULL then clears it).
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 	UseInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
+	// Blocking an id that names no account is a 404, not a foreign key error.
+	UserExists(ctx context.Context, id pgtype.UUID) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)

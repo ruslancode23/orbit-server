@@ -141,8 +141,29 @@ func newWorld(t *testing.T) world {
 	for _, id := range []uuid.UUID{w.anna, w.bob, w.vika, w.outsider} {
 		w.store.known[id] = true
 	}
-	w.svc = NewService(w.store, maxMembers)
+	w.svc = NewService(w.store, maxMembers, &fakePrivacy{})
 	return w
+}
+
+// fakePrivacy answers the rules a conversation start asks; the real rules live
+// in internal/privacy and are tested there.
+type fakePrivacy struct {
+	allowDirect func(fromID, toID uuid.UUID) bool
+	allowGroup  func(callerID uuid.UUID, memberIDs []uuid.UUID) bool
+}
+
+func (p *fakePrivacy) CanStartDirect(_ context.Context, fromID, toID uuid.UUID) (bool, error) {
+	if p.allowDirect == nil {
+		return true, nil
+	}
+	return p.allowDirect(fromID, toID), nil
+}
+
+func (p *fakePrivacy) CanStartGroup(_ context.Context, callerID uuid.UUID, memberIDs []uuid.UUID) (bool, error) {
+	if p.allowGroup == nil {
+		return true, nil
+	}
+	return p.allowGroup(callerID, memberIDs), nil
 }
 
 // A pair has one dialogue, whoever opens it and in whichever order.
@@ -209,8 +230,10 @@ func TestStartRejectsNobodyUnknownAndTooMany(t *testing.T) {
 	if _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.anna}); !errors.Is(err, ErrNoMembers) {
 		t.Errorf("only myself: err = %v, want ErrNoMembers", err)
 	}
-	if _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{uuid.New()}); !errors.Is(err, ErrUnknownMember) {
-		t.Errorf("unknown account: err = %v, want ErrUnknownMember", err)
+	// An unknown account and a refusal to talk to a real one are the same
+	// answer, or the API tells strangers which accounts exist.
+	if _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{uuid.New()}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown account: err = %v, want ErrNotFound", err)
 	}
 
 	many := make([]uuid.UUID, 0, maxMembers)
