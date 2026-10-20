@@ -239,6 +239,13 @@ type User struct {
 	IsGuest      bool               `json:"is_guest"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	DmPolicy     string             `json:"dm_policy"`
+}
+
+type UserBlock struct {
+	BlockerID pgtype.UUID        `json:"blocker_id"`
+	BlockedID pgtype.UUID        `json:"blocked_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Workspace struct {

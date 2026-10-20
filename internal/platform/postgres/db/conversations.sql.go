@@ -158,7 +158,7 @@ func (q *Queries) ListConversationMemberIDs(ctx context.Context, channelID pgtyp
 }
 
 const listConversationMembers = `-- name: ListConversationMembers :many
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, channel_members.joined_at
+SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, channel_members.joined_at
 FROM channel_members
     JOIN users ON users.id = channel_members.user_id
 WHERE channel_members.channel_id = $1
@@ -187,6 +187,7 @@ func (q *Queries) ListConversationMembers(ctx context.Context, channelID pgtype.
 			&i.User.IsGuest,
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
+			&i.User.DmPolicy,
 			&i.JoinedAt,
 		); err != nil {
 			return nil, err
