@@ -406,6 +406,10 @@ func (s *server) GetSecretChat(ctx context.Context, req api.GetSecretChatRequest
 	return s.secrets.GetSecretChat(ctx, req)
 }
 
+func (s *server) LeaveSecretChat(ctx context.Context, req api.LeaveSecretChatRequestObject) (api.LeaveSecretChatResponseObject, error) {
+	return s.secrets.LeaveSecretChat(ctx, req)
+}
+
 func (s *server) ListSecretEnvelopes(ctx context.Context, req api.ListSecretEnvelopesRequestObject) (api.ListSecretEnvelopesResponseObject, error) {
 	return s.secrets.ListSecretEnvelopes(ctx, req)
 }

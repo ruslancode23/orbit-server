@@ -203,6 +203,21 @@ func (s *fakeStore) SecretChats(_ context.Context, deviceID, userID uuid.UUID) (
 	return out, nil
 }
 
+func (s *fakeStore) LeaveSecretChat(_ context.Context, chatID, deviceID, userID uuid.UUID) error {
+	mine, ok := s.bindings[chatID][deviceID]
+	if !ok || mine.userID != userID {
+		return ErrNotFound
+	}
+	delete(s.bindings, chatID)
+	delete(s.created, chatID)
+	for id, envelope := range s.envelopes {
+		if envelope.ChatID == chatID {
+			delete(s.envelopes, id)
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) CreateEnvelope(_ context.Context, envelope Envelope) (Envelope, error) {
 	envelope.ID = uuid.New()
 	envelope.CreatedAt = time.Now()
@@ -652,5 +667,45 @@ func TestEnvelopeEventIsWireShaped(t *testing.T) {
 	}
 	if payload.Body != "b3BhcXVl" {
 		t.Errorf("body = %q, want base64 of the ciphertext", payload.Body)
+	}
+}
+
+// Deleting a secret chat deletes it for both devices: the server drops the
+// binding and the pending envelopes, and both streams hear about it.
+func TestLeaveSecretChatDeletesThePair(t *testing.T) {
+	w := newWorld(t)
+	peerDevice := w.registerPeer(t, w.bob)
+	chat := w.startChat(t, peerDevice)
+	recorder := &recorder{}
+	w.svc = NewService(w.store, w.chats, recorder)
+
+	if _, err := w.svc.SendEnvelope(t.Context(), w.anna, w.device, chat.ID, EnvelopeInput{
+		RecipientDeviceID: peerDevice, Type: 0, Body: []byte("x"), ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SendEnvelope: %v", err)
+	}
+	recorder.events = nil
+	if err := w.svc.LeaveChat(t.Context(), w.anna, w.device, chat.ID); err != nil {
+		t.Fatalf("LeaveChat: %v", err)
+	}
+	if len(w.store.envelopes) != 0 {
+		t.Errorf("envelopes left: %v", w.store.envelopes)
+	}
+	if _, err := w.svc.Chat(t.Context(), w.bob, peerDevice, chat.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("peer still sees the chat: %v", err)
+	}
+	if len(recorder.events) != 2 {
+		t.Fatalf("published %d events, want one per participant", len(recorder.events))
+	}
+	for _, published := range recorder.events {
+		if published.event.Kind != events.KindSecretChatDeleted {
+			t.Errorf("event = %v, want %v", published.event.Kind, events.KindSecretChatDeleted)
+		}
+	}
+
+	// Only a device in the chat may delete it.
+	other := w.registerPeer(t, w.anna)
+	if err := w.svc.LeaveChat(t.Context(), w.anna, other, chat.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another device: err = %v, want ErrNotFound", err)
 	}
 }

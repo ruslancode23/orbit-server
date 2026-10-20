@@ -227,6 +227,21 @@ func (s *PostgresStore) SecretChats(ctx context.Context, deviceID, userID uuid.U
 	return out, nil
 }
 
+func (s *PostgresStore) LeaveSecretChat(ctx context.Context, chatID, deviceID, userID uuid.UUID) error {
+	removed, err := s.q.LeaveSecretChat(ctx, db.LeaveSecretChatParams{
+		ID:       pgUUID(chatID),
+		DeviceID: pgUUID(deviceID),
+		UserID:   pgUUID(userID),
+	})
+	if err != nil {
+		return fmt.Errorf("leave secret chat: %w", err)
+	}
+	if removed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PostgresStore) CreateEnvelope(ctx context.Context, envelope Envelope) (Envelope, error) {
 	row, err := s.q.CreateSecretEnvelope(ctx, db.CreateSecretEnvelopeParams{
 		ChannelID:         pgUUID(envelope.ChatID),

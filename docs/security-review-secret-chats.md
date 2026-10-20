@@ -18,6 +18,7 @@
 | На проводе нет открытого текста | клиент шифрует до отправки | `session.test.ts` (тело конверта и blob не содержат plaintext), `e2e/secret-chat.spec.ts` (перехват POST `/envelopes`) |
 | В `localStorage` нет ключей и сообщений | `PlatformAdapter.secretStore` (IndexedDB), pickles под AES-GCM | `session.test.ts` (`localStorage.length === 0`) |
 | Смена ключа сбрасывает сверку и блокирует отправку | `SecretSession.loadState`, `SecretChatPage` | `session.test.ts`, `SecretChatPage.test.tsx` |
+| Удаление чата убирает его у обоих; выход стирает локальные ключи и отзывает устройство | `LeaveSecretChat`, `clearSecretChats` | Go-тест leave, e2e удаления, `clear-secret-chats.test.ts` |
 | Уведомление не содержит текста | `useSecretNotifications` | `useSecretNotifications.test.tsx` |
 | CSP и SRI включены в сборке | `scripts/security-html.ts`, `vite.config.ts` | `tests/security-html.test.ts` |
 
