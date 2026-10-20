@@ -62,6 +62,21 @@ func NewDaily(perDay int) *Limiter {
 	}
 }
 
+// NewHourly builds a limiter that allows perHour operations at once and then
+// refills one token every hour/perHour. It is the same token bucket as the daily
+// one, for a budget that is small but needs a shorter Retry-After.
+func NewHourly(perHour int) *Limiter {
+	if perHour <= 0 {
+		return nil
+	}
+	return &Limiter{
+		perSecond: float64(perHour) / (60 * 60),
+		burst:     float64(perHour),
+		now:       time.Now,
+		buckets:   make(map[uuid.UUID]*bucket),
+	}
+}
+
 // Allow takes one token for the account. When there is none left it reports how
 // long the caller should wait before asking again; the HTTP layer puts that in
 // Retry-After.
@@ -102,10 +117,13 @@ func (l *Limiter) Allow(userID uuid.UUID) (bool, time.Duration) {
 }
 
 // forgetIdle drops the buckets that have been full for idleFor; it runs only
-// when the map has grown, so an ordinary process sweeps rarely.
+// when the map has grown, so an ordinary process sweeps rarely. A bucket that
+// has not refilled yet is kept: dropping it would hand the account a fresh
+// budget and quietly defeat the limit.
 func (l *Limiter) forgetIdle(now time.Time) {
 	for id, b := range l.buckets {
-		if now.Sub(b.last) >= idleFor {
+		elapsed := now.Sub(b.last).Seconds()
+		if elapsed >= idleFor.Seconds() && b.tokens+elapsed*l.perSecond >= l.burst {
 			delete(l.buckets, id)
 		}
 	}

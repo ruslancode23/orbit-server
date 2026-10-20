@@ -114,3 +114,61 @@ func TestZeroDailyLimitDisablesTheGuard(t *testing.T) {
 		t.Fatalf("NewDaily(0) = %v, want nil", limiter)
 	}
 }
+
+// Two renames an hour means a burst of two and then half an hour to the next.
+func TestHourlyBucket(t *testing.T) {
+	limiter := NewHourly(2)
+	clock := time.Now()
+	limiter.now = func() time.Time { return clock }
+	anna := uuid.New()
+
+	for range 2 {
+		if allowed, _ := limiter.Allow(anna); !allowed {
+			t.Fatal("a call inside the hourly budget was refused")
+		}
+	}
+	allowed, retryAfter := limiter.Allow(anna)
+	if allowed {
+		t.Fatal("the hourly budget was not enforced")
+	}
+	if retryAfter != 30*time.Minute {
+		t.Errorf("RetryAfter = %v, want 30m", retryAfter)
+	}
+
+	clock = clock.Add(30 * time.Minute)
+	if allowed, _ := limiter.Allow(anna); !allowed {
+		t.Error("no token after half an hour with a two-per-hour budget")
+	}
+}
+
+func TestZeroHourlyLimitDisablesTheGuard(t *testing.T) {
+	if limiter := NewHourly(0); limiter != nil {
+		t.Fatalf("NewHourly(0) = %v, want nil", limiter)
+	}
+}
+
+// A bucket that has not refilled yet must survive the sweep: forgetting it
+// would reset the budget and let an account change again immediately.
+func TestIdleSweepKeepsAPartialBucket(t *testing.T) {
+	limiter := NewHourly(2)
+	clock := time.Now()
+	limiter.now = func() time.Time { return clock }
+	anna := uuid.New()
+
+	for range 2 {
+		if allowed, _ := limiter.Allow(anna); !allowed {
+			t.Fatal("a call inside the hourly budget was refused")
+		}
+	}
+	for range 1100 {
+		limiter.Allow(uuid.New())
+	}
+	clock = clock.Add(11 * time.Minute)
+	limiter.mu.Lock()
+	limiter.forgetIdle(clock)
+	limiter.mu.Unlock()
+
+	if allowed, _ := limiter.Allow(anna); allowed {
+		t.Error("the sweep reset a partly refilled hourly bucket")
+	}
+}

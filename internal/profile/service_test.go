@@ -108,6 +108,19 @@ func (s *fakeStore) SetStatus(_ context.Context, userID uuid.UUID, emoji, text s
 	return profile, nil
 }
 
+func (s *fakeStore) SetAvatar(_ context.Context, userID uuid.UUID, key string) (Stored, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profile, ok := s.profiles[userID]
+	if !ok {
+		return Stored{}, "", ErrNotFound
+	}
+	previous := profile.AvatarKey
+	profile.AvatarKey = key
+	s.profiles[userID] = profile
+	return profile, previous, nil
+}
+
 func (s *fakeStore) ClearStatus(_ context.Context, userID uuid.UUID) (Stored, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

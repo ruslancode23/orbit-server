@@ -31,6 +31,9 @@ type Config struct {
 	// FriendRequestPendingLimit caps outgoing requests that are still waiting
 	// for an answer; zero turns the guard off.
 	FriendRequestPendingLimit int
+	// NicknameChangeHourlyLimit caps nickname changes per account per hour;
+	// zero turns the guard off.
+	NicknameChangeHourlyLimit int
 	LiveKit                   LiveKit
 	Storage                   Storage
 }
@@ -51,6 +54,11 @@ type Storage struct {
 	MaxIconBytes int64
 	// IconLinkTTL is how long the signed link to a server icon stays valid.
 	IconLinkTTL time.Duration
+	// MaxAvatarBytes caps one avatar upload.
+	MaxAvatarBytes int64
+	// AvatarLinkTTL is how long the signed link to an avatar stays valid. S3
+	// refuses a presigned link longer than seven days.
+	AvatarLinkTTL time.Duration
 }
 
 type LiveKit struct {
@@ -114,6 +122,12 @@ func Load() (Config, error) {
 			os.Getenv("ORBIT_FRIEND_REQUEST_PENDING_LIMIT")))
 	}
 
+	nicknameChanges, err := strconv.Atoi(getenv("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT", "2"))
+	if err != nil || nicknameChanges < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT")))
+	}
+
 	maxUpload, err := strconv.ParseInt(getenv("ORBIT_MAX_UPLOAD_BYTES", "26214400"), 10, 64)
 	if err != nil || maxUpload <= 0 {
 		errs = append(errs, fmt.Errorf("ORBIT_MAX_UPLOAD_BYTES must be a positive number of bytes, got %q",
@@ -141,6 +155,22 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_ICON_LINK_TTL: %w", err))
 	}
 
+	maxAvatar, err := strconv.ParseInt(getenv("ORBIT_MAX_AVATAR_BYTES", "8388608"), 10, 64)
+	if err != nil || maxAvatar <= 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_MAX_AVATAR_BYTES must be a positive number of bytes, got %q",
+			os.Getenv("ORBIT_MAX_AVATAR_BYTES")))
+	}
+
+	avatarLinkTTL, err := time.ParseDuration(getenv("ORBIT_AVATAR_LINK_TTL", "168h"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_AVATAR_LINK_TTL: %w", err))
+	}
+	// S3's SigV4 presigner refuses anything longer, so fail at startup instead
+	// of returning an avatar URL that cannot be built.
+	if avatarLinkTTL > 7*24*time.Hour {
+		errs = append(errs, fmt.Errorf("ORBIT_AVATAR_LINK_TTL must not exceed 168h, got %q", os.Getenv("ORBIT_AVATAR_LINK_TTL")))
+	}
+
 	cfg := Config{
 		Env:                       getenv("ORBIT_ENV", "production"),
 		HTTPAddr:                  getenv("ORBIT_HTTP_ADDR", ":8080"),
@@ -153,6 +183,7 @@ func Load() (Config, error) {
 		MaxFriends:                maxFriends,
 		FriendRequestDailyLimit:   friendRequestDaily,
 		FriendRequestPendingLimit: friendRequestPending,
+		NicknameChangeHourlyLimit: nicknameChanges,
 		Storage: Storage{
 			Endpoint:       required("ORBIT_S3_ENDPOINT"),
 			Bucket:         required("ORBIT_S3_BUCKET"),
@@ -163,6 +194,8 @@ func Load() (Config, error) {
 			OrphanAge:      orphanAge,
 			MaxIconBytes:   maxIcon,
 			IconLinkTTL:    iconLinkTTL,
+			MaxAvatarBytes: maxAvatar,
+			AvatarLinkTTL:  avatarLinkTTL,
 		},
 		LiveKit: LiveKit{
 			URL:       required("LIVEKIT_URL"),

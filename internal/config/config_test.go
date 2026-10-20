@@ -14,6 +14,8 @@ func setRequired(t *testing.T) {
 		"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "ORBIT_SESSION_TTL", "ORBIT_MAX_UPLOAD_BYTES",
 		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "ORBIT_NEW_CONVERSATION_LIMIT",
 		"ORBIT_MAX_FRIENDS", "ORBIT_FRIEND_REQUEST_DAILY_LIMIT", "ORBIT_FRIEND_REQUEST_PENDING_LIMIT", "LIVEKIT_PUBLIC_URL",
+		"ORBIT_MAX_ICON_BYTES", "ORBIT_ICON_LINK_TTL", "ORBIT_MAX_AVATAR_BYTES", "ORBIT_AVATAR_LINK_TTL",
+		"ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT",
 	} {
 		t.Setenv(name, "")
 	}
@@ -205,6 +207,66 @@ func TestLoadFriendLimits(t *testing.T) {
 
 		if _, err := Load(); err == nil {
 			t.Error("Load() error = nil, want complaints about the request limits")
+		}
+	})
+}
+
+func TestLoadAvatarAndNicknameSettings(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		setRequired(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Storage.MaxAvatarBytes != 8<<20 {
+			t.Errorf("MaxAvatarBytes = %d, want 8 MiB", cfg.Storage.MaxAvatarBytes)
+		}
+		if cfg.Storage.AvatarLinkTTL != 168*time.Hour {
+			t.Errorf("AvatarLinkTTL = %v, want 168h", cfg.Storage.AvatarLinkTTL)
+		}
+		if cfg.NicknameChangeHourlyLimit != 2 {
+			t.Errorf("NicknameChangeHourlyLimit = %d, want 2", cfg.NicknameChangeHourlyLimit)
+		}
+	})
+
+	t.Run("nickname limit off", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT", "0")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.NicknameChangeHourlyLimit != 0 {
+			t.Errorf("NicknameChangeHourlyLimit = %d, want 0", cfg.NicknameChangeHourlyLimit)
+		}
+	})
+
+	t.Run("negative nickname limit", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT", "-1")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT")
+		}
+	})
+
+	t.Run("avatar link longer than S3 allows", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_AVATAR_LINK_TTL", "200h")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_AVATAR_LINK_TTL")
+		}
+	})
+
+	t.Run("empty avatar limit", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_MAX_AVATAR_BYTES", "0")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_MAX_AVATAR_BYTES")
 		}
 	})
 }

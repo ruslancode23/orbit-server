@@ -107,8 +107,13 @@ func run() error {
 	// A friend sees the profile of a friend: the friendship is what makes the
 	// two strangers readable to each other.
 	profileService.SetFriends(friendService)
-	// Avatars are signed the same way server icons are; uploading one is PR-2.
-	profileService.SetAvatars(profile.Avatars{Storage: storage, LinkTTL: cfg.Storage.IconLinkTTL})
+	// Avatars are re-encoded into WebP before they are stored, so their links can
+	// be rendered inline and cached for long.
+	profileService.SetAvatars(profile.Avatars{
+		Storage:  storage,
+		MaxBytes: cfg.Storage.MaxAvatarBytes,
+		LinkTTL:  cfg.Storage.AvatarLinkTTL,
+	})
 	workspaces.SetProfiles(profileService)
 	conversationService.SetProfiles(profileService)
 
@@ -129,8 +134,14 @@ func run() error {
 	secretService := secrets.NewService(secrets.NewPostgresStore(pool), conversationService, hub)
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
+	// A nickname is an identity change: it confirms the password in internal/auth
+	// and then asks the profile module to announce the account like any other
+	// profile change. Two renames per hour is the account-wide budget.
+	sessions.SetNicknameLimiter(ratelimit.NewHourly(cfg.NicknameChangeHourlyLimit))
+
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
 	authHandler.SetProfiles(profileService)
+	authHandler.SetProfileEvents(profileService)
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
 
 	workspaceHandler := servers.NewHandler(workspaces, log)
@@ -172,6 +183,7 @@ func run() error {
 		Profiles:       profile.NewHandler(profileService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		MaxIconBytes:   cfg.Storage.MaxIconBytes,
+		MaxAvatarBytes: cfg.Storage.MaxAvatarBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,

@@ -30,6 +30,11 @@ type Querier interface {
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
 	// Blocking twice is the same as blocking once: the endpoint is idempotent.
 	BlockUser(ctx context.Context, arg BlockUserParams) error
+	// Renaming releases the old handle in the same statement that takes the new
+	// one: no window in which neither row is visible. A case-only change keeps the
+	// key and adds no hold. The unique index settles a name two accounts ask for,
+	// and the trigger settles one still held.
+	ChangeUserNickname(ctx context.Context, arg ChangeUserNicknameParams) (User, error)
 	// The first message of a dialogue spends the same per-account rate-limit token
 	// as opening one; this answers whether the dialogue has any message yet.
 	ChannelHasMessages(ctx context.Context, channelID pgtype.UUID) (bool, error)
@@ -213,6 +218,9 @@ type Querier interface {
 	ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error)
 	// The cursor only moves forward: a stale device cannot mark messages unread again.
 	MarkChannelRead(ctx context.Context, arg MarkChannelReadParams) (ChannelRead, error)
+	// A released nickname stays unclaimable for seven days. The check is here for a
+	// clear 409; the trigger on users is what makes it race-free.
+	NicknameIsHeld(ctx context.Context, arg NicknameIsHeldParams) (bool, error)
 	// A guest that signs up keeps its id, so its messages and memberships stay with it.
 	PromoteGuest(ctx context.Context, arg PromoteGuestParams) (User, error)
 	RemoveReaction(ctx context.Context, arg RemoveReactionParams) (int64, error)
@@ -225,6 +233,12 @@ type Querier interface {
 	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)
 	SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error
 	SetFriendRequestPolicy(ctx context.Context, arg SetFriendRequestPolicyParams) error
+	// One statement reads the old key and writes the new one, so two uploads racing
+	// cannot both report the same previous key and leave one object alive.
+	SetUserAvatar(ctx context.Context, arg SetUserAvatarParams) (SetUserAvatarRow, error)
+	// There is no confirmation email yet, so a hand-written address is unverified.
+	// An empty address clears it; the unique index allows any number of NULLs.
+	SetUserEmail(ctx context.Context, arg SetUserEmailParams) (User, error)
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
 	// A status replaces the old one entirely: clearing one of its two parts must
 	// not leave the other behind. An expiry is part of the status, not a separate

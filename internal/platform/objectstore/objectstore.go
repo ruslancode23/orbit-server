@@ -69,6 +69,25 @@ func (c *Client) SignedURL(ctx context.Context, key, fileName string, ttl time.D
 	return request.URL, nil
 }
 
+// SignedInlineURL is a link meant to be rendered, not downloaded: the browser
+// shows the image in place. It is for content this server produced itself — a
+// re-encoded avatar, never an upload passed through unchanged — and it asks the
+// browser to keep it for a year, which is safe because every avatar lives under
+// a key that changes on every upload. S3 caps a presigned link at seven days.
+func (c *Client) SignedInlineURL(ctx context.Context, key, mimeType string, ttl time.Duration) (string, error) {
+	request, err := c.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket:                     aws.String(c.bucket),
+		Key:                        aws.String(key),
+		ResponseContentDisposition: aws.String("inline"),
+		ResponseContentType:        aws.String(mimeType),
+		ResponseCacheControl:       aws.String("public, max-age=31536000, immutable"),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", fmt.Errorf("presign inline object: %w", err)
+	}
+	return request.URL, nil
+}
+
 func (c *Client) Delete(ctx context.Context, key string) error {
 	_, err := c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),

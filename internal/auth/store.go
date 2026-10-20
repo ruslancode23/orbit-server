@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,8 +15,13 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 )
 
-// uniqueViolation is PostgreSQL's SQLSTATE for a broken unique constraint.
-const uniqueViolation = "23505"
+const (
+	// uniqueViolation is PostgreSQL's SQLSTATE for a broken unique constraint.
+	uniqueViolation = "23505"
+	// raiseException is what RAISE EXCEPTION without a code reports. The nickname
+	// trigger uses it, so the message tells this one apart from any other.
+	raiseException = "P0001"
+)
 
 // PostgresStore implements Store over the sqlc queries.
 type PostgresStore struct {
@@ -34,9 +40,8 @@ func (s *PostgresStore) CreateUser(ctx context.Context, u NewUser) (User, error)
 		IsGuest:      u.IsGuest,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-			return User{}, ErrTaken
+		if known := mapAccountConflict(err); known != nil {
+			return User{}, known
 		}
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
@@ -132,17 +137,78 @@ func (s *PostgresStore) PromoteGuest(ctx context.Context, id uuid.UUID, nickname
 		PasswordHash: text(passwordHash),
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
+		if errors.Is(err, pgx.ErrNoRows) {
 			// The row is there but no longer a guest, or it is gone entirely.
 			return User{}, ErrNotGuest
-		case errors.As(err, &pgErr) && pgErr.Code == uniqueViolation:
-			return User{}, ErrTaken
+		}
+		if known := mapAccountConflict(err); known != nil {
+			return User{}, known
 		}
 		return User{}, fmt.Errorf("promote guest: %w", err)
 	}
 	return toUser(row), nil
+}
+
+func (s *PostgresStore) NicknameIsHeld(ctx context.Context, nickname string, since time.Time) (bool, error) {
+	held, err := s.q.NicknameIsHeld(ctx, db.NicknameIsHeldParams{
+		Nickname: nickname,
+		Since:    pgTime(since),
+	})
+	if err != nil {
+		return false, fmt.Errorf("check nickname hold: %w", err)
+	}
+	return held, nil
+}
+
+func (s *PostgresStore) ChangeNickname(ctx context.Context, id uuid.UUID, nickname string) (User, error) {
+	row, err := s.q.ChangeUserNickname(ctx, db.ChangeUserNicknameParams{
+		ID:       pgUUID(id),
+		Nickname: nickname,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, ErrNoUser
+		}
+		if known := mapAccountConflict(err); known != nil {
+			return User{}, known
+		}
+		return User{}, fmt.Errorf("change nickname: %w", err)
+	}
+	return toUser(row), nil
+}
+
+func (s *PostgresStore) ChangeEmail(ctx context.Context, id uuid.UUID, email string) (User, error) {
+	row, err := s.q.SetUserEmail(ctx, db.SetUserEmailParams{
+		ID:    pgUUID(id),
+		Email: text(email),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, ErrNoUser
+		}
+		if known := mapAccountConflict(err); known != nil {
+			return User{}, known
+		}
+		return User{}, fmt.Errorf("set email: %w", err)
+	}
+	return toUser(row), nil
+}
+
+// mapAccountConflict turns the two database guards behind a nickname into the
+// errors the API has names for: the unique index (taken) and the release
+// trigger (held for a week). Anything else is left to the caller to wrap.
+func mapAccountConflict(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return nil
+	}
+	switch {
+	case pgErr.Code == uniqueViolation:
+		return ErrTaken
+	case pgErr.Code == raiseException && strings.Contains(pgErr.Message, "nickname is reserved"):
+		return ErrNicknameReserved
+	}
+	return nil
 }
 
 func toUser(row db.User) User {

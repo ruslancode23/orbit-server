@@ -60,3 +60,19 @@ WHERE id = sqlc.arg(id)
 RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
           custom_status_emoji, custom_status_text, custom_status_expires_at,
           is_guest, created_at;
+
+-- One statement reads the old key and writes the new one, so two uploads racing
+-- cannot both report the same previous key and leave one object alive.
+-- name: SetUserAvatar :one
+WITH previous AS (
+    SELECT avatar_key FROM users WHERE users.id = sqlc.arg(id)
+)
+UPDATE users
+SET avatar_key = sqlc.narg(avatar_key)::text,
+    profile_updated_at = now(),
+    updated_at = now()
+WHERE users.id = sqlc.arg(id)
+RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
+          custom_status_emoji, custom_status_text, custom_status_expires_at,
+          is_guest, created_at,
+          (SELECT avatar_key FROM previous) AS previous_avatar_key;

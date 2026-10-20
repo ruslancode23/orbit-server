@@ -91,6 +91,8 @@ type Deps struct {
 	MaxUploadBytes int64
 	// MaxIconBytes is how large a server icon may be, the same way.
 	MaxIconBytes int64
+	// MaxAvatarBytes is how large an avatar may be, the same way.
+	MaxAvatarBytes int64
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
@@ -164,7 +166,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Group(func(apiRoutes chi.Router) {
 		// JSON bodies stay tiny; only an upload may be large, and never larger
 		// than this instance allows.
-		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes, d.MaxIconBytes))
+		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes, d.MaxIconBytes, d.MaxAvatarBytes))
 		apiRoutes.Use(nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
 			DoNotValidateServers: true,
 			ErrorHandlerWithOpts: validationError,
@@ -483,6 +485,22 @@ func (s *server) GetUserProfile(ctx context.Context, req api.GetUserProfileReque
 	return s.profiles.GetUserProfile(ctx, req)
 }
 
+func (s *server) UploadMyAvatar(ctx context.Context, req api.UploadMyAvatarRequestObject) (api.UploadMyAvatarResponseObject, error) {
+	return s.profiles.UploadMyAvatar(ctx, req)
+}
+
+func (s *server) DeleteMyAvatar(ctx context.Context, req api.DeleteMyAvatarRequestObject) (api.DeleteMyAvatarResponseObject, error) {
+	return s.profiles.DeleteMyAvatar(ctx, req)
+}
+
+func (s *server) UpdateMyNickname(ctx context.Context, req api.UpdateMyNicknameRequestObject) (api.UpdateMyNicknameResponseObject, error) {
+	return s.auth.UpdateMyNickname(ctx, req)
+}
+
+func (s *server) UpdateMyEmail(ctx context.Context, req api.UpdateMyEmailRequestObject) (api.UpdateMyEmailResponseObject, error) {
+	return s.auth.UpdateMyEmail(ctx, req)
+}
+
 func (s *server) GetFriendRequestPolicy(ctx context.Context, req api.GetFriendRequestPolicyRequestObject) (api.GetFriendRequestPolicyResponseObject, error) {
 	return s.privacy.GetFriendRequestPolicy(ctx, req)
 }
@@ -531,10 +549,10 @@ func validationError(_ context.Context, err error, w http.ResponseWriter, _ *htt
 	}
 }
 
-// limitBody caps the request body. An upload of an attachment or of a server
-// icon gets its own, larger cap: everything else here is small JSON. The
+// limitBody caps the request body. An upload of an attachment, a server icon or
+// an avatar gets its own, larger cap: everything else here is small JSON. The
 // multipart envelope counts too, so the cap leaves room for it.
-func limitBody(normal, upload, icon int64) func(http.Handler) http.Handler {
+func limitBody(normal, upload, icon, avatar int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			limit := normal
@@ -546,6 +564,8 @@ func limitBody(normal, upload, icon int64) func(http.Handler) http.Handler {
 				limit = envelopeBodyBytes
 			case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/icon"):
 				limit = icon + multipartSlack
+			case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/avatar"):
+				limit = avatar + multipartSlack
 			}
 			// A declared size over the limit is refused before a byte is read.
 			if r.ContentLength > limit {

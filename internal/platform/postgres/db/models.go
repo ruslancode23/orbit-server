@@ -213,6 +213,12 @@ type MessageReaction struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type ReleasedNickname struct {
+	NicknameKey string             `json:"nickname_key"`
+	ReleasedAt  pgtype.Timestamptz `json:"released_at"`
+	ReleasedBy  pgtype.UUID        `json:"released_by"`
+}
+
 type SecretChatDevice struct {
 	ChannelID pgtype.UUID        `json:"channel_id"`
 	UserID    pgtype.UUID        `json:"user_id"`
@@ -259,6 +265,7 @@ type User struct {
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
 	ProfileUpdatedAt      pgtype.Timestamptz `json:"profile_updated_at"`
+	EmailVerifiedAt       pgtype.Timestamptz `json:"email_verified_at"`
 }
 
 type UserBlock struct {

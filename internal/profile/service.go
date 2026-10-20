@@ -3,8 +3,8 @@ package profile
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
-	"path"
 	"sync"
 	"time"
 
@@ -35,6 +35,9 @@ type Store interface {
 	// become NULLs.
 	SetStatus(ctx context.Context, userID uuid.UUID, emoji, text string, expiresAt *time.Time) (Stored, error)
 	ClearStatus(ctx context.Context, userID uuid.UUID) (Stored, error)
+	// SetAvatar points the account at a new avatar key and returns the key it
+	// pointed at before, so the caller can delete the old objects.
+	SetAvatar(ctx context.Context, userID uuid.UUID, key string) (Stored, string, error)
 }
 
 // Servers tells which servers an account is on: everyone there may see its
@@ -67,16 +70,22 @@ type Publisher interface {
 	PublishToUser(userID uuid.UUID, event events.Event)
 }
 
-// AvatarStorage signs links to avatar objects; the object store fits. Uploading
-// an avatar is PR-2 (SCRUM-104); until then no row carries an avatar key.
+// AvatarStorage keeps the re-encoded avatar objects and signs links to them.
+// The object store fits; the interface lives here because that is where it is
+// consumed.
 type AvatarStorage interface {
-	SignedURL(ctx context.Context, key, fileName string, ttl time.Duration) (string, error)
+	Put(ctx context.Context, key, mimeType string, body io.Reader, size int64) error
+	// SignedInlineURL is a link the browser renders rather than downloads.
+	SignedInlineURL(ctx context.Context, key, mimeType string, ttl time.Duration) (string, error)
+	Delete(ctx context.Context, key string) error
 }
 
-// Avatars configures avatar links. The zero value turns them off: an account
-// with a key then simply shows no avatar.
+// Avatars configures avatar uploads and links. The zero value turns uploads
+// off: an account with a key then simply shows no avatar.
 type Avatars struct {
-	Storage AvatarStorage
+	Storage  AvatarStorage
+	MaxBytes int64
+	// LinkTTL is how long an avatarUrl stays valid. S3 caps it at seven days.
 	LinkTTL time.Duration
 }
 
@@ -422,7 +431,7 @@ func (s *Service) present(ctx context.Context, stored Stored) Public {
 	if profile.AvatarURL != "" || stored.AvatarKey == "" || s.avatars.Storage == nil {
 		return profile
 	}
-	url, err := s.avatars.Storage.SignedURL(ctx, stored.AvatarKey, "avatar"+path.Ext(stored.AvatarKey), s.avatars.LinkTTL)
+	url, err := s.avatars.Storage.SignedInlineURL(ctx, avatarObjectKey(stored.AvatarKey, avatarLarge), "image/webp", s.avatars.LinkTTL)
 	if err == nil {
 		profile.AvatarURL = url
 	}
