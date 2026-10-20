@@ -7,11 +7,11 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // Handler serves the generated workspace operations. It only maps HTTP to the
@@ -435,14 +435,14 @@ func value(s *string) string {
 
 func toAPIMember(m Member) api.WorkspaceMember {
 	return api.WorkspaceMember{
-		User:     toAPIUser(m.User),
+		User:     profile.APIProfile(m.User),
 		Role:     api.WorkspaceRole(m.Role),
 		JoinedAt: m.JoinedAt,
 	}
 }
 
 func toAPIBan(b Ban) api.WorkspaceBan {
-	ban := api.WorkspaceBan{User: toAPIUser(b.User), CreatedAt: b.CreatedAt}
+	ban := api.WorkspaceBan{User: profile.APIProfile(b.User), CreatedAt: b.CreatedAt}
 	if b.Reason != "" {
 		reason := b.Reason
 		ban.Reason = &reason
@@ -452,20 +452,6 @@ func toAPIBan(b Ban) api.WorkspaceBan {
 		ban.BannedBy = &bannedBy
 	}
 	return ban
-}
-
-func toAPIUser(a Account) api.User {
-	user := api.User{
-		Id:        a.ID,
-		Nickname:  a.Nickname,
-		IsGuest:   a.IsGuest,
-		CreatedAt: a.CreatedAt,
-	}
-	if a.Email != "" {
-		mail := openapi_types.Email(a.Email)
-		user.Email = &mail
-	}
-	return user
 }
 
 func unauthorized() api.ErrorJSONResponse {

@@ -6,6 +6,7 @@ package conversations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
 
@@ -58,9 +60,9 @@ type Conversation struct {
 }
 
 type Member struct {
-	ID       uuid.UUID
-	Nickname string
-	IsGuest  bool
+	// Public is the same profile the rest of the API returns, filled in by
+	// internal/profile in one batch per conversation list.
+	profile.Public
 	JoinedAt time.Time
 }
 
@@ -79,6 +81,12 @@ type Store interface {
 	MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 	// KnownUsers reports which of the ids are real accounts.
 	KnownUsers(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
+	// SharesConversation reports a common conversation: profile visibility asks
+	// it instead of reading channel_members itself.
+	SharesConversation(ctx context.Context, a, b uuid.UUID) (bool, error)
+	// Peers is everyone who shares a conversation with this account: the
+	// personal audience of user.updated.
+	Peers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 }
 
 // Publisher tells a person's other connections what happened. Optional: with
@@ -99,6 +107,12 @@ type Privacy interface {
 	CanStartGroup(ctx context.Context, callerID uuid.UUID, memberIDs []uuid.UUID) (bool, error)
 }
 
+// Profiles is the public part of an account, owned by internal/profile. One
+// call fills every participant of a conversation list.
+type Profiles interface {
+	Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]profile.Public, error)
+}
+
 type Service struct {
 	store Store
 	// maxMembers caps a group chat; a pair is always two.
@@ -109,10 +123,63 @@ type Service struct {
 	limiter *ratelimit.Limiter
 	// publisher is optional; see Publisher.
 	publisher Publisher
+	// profiles is optional at construction; main wires it in. Without it a
+	// participant carries only the id, which is still enough for access checks.
+	profiles Profiles
 }
 
 func NewService(store Store, maxMembers int, privacy Privacy) *Service {
 	return &Service{store: store, maxMembers: maxMembers, privacy: privacy}
+}
+
+// SetProfiles wires the profile module in after both exist.
+func (s *Service) SetProfiles(profiles Profiles) { s.profiles = profiles }
+
+// withProfiles fills every participant of every conversation in one call, so a
+// list of ten dialogues does not cost ten profile reads.
+func (s *Service) withProfiles(ctx context.Context, conversations []Conversation) ([]Conversation, error) {
+	if s.profiles == nil || len(conversations) == 0 {
+		return conversations, nil
+	}
+	ids := make([]uuid.UUID, 0)
+	seen := make(map[uuid.UUID]bool)
+	for _, conversation := range conversations {
+		for _, member := range conversation.Members {
+			if !seen[member.ID] {
+				seen[member.ID] = true
+				ids = append(ids, member.ID)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return conversations, nil
+	}
+	profiles, err := s.profiles.Profiles(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load conversation profiles: %w", err)
+	}
+	out := make([]Conversation, 0, len(conversations))
+	for _, conversation := range conversations {
+		members := make([]Member, 0, len(conversation.Members))
+		for _, member := range conversation.Members {
+			if loaded, ok := profiles[member.ID]; ok {
+				member.Public = loaded
+			}
+			members = append(members, member)
+		}
+		conversation.Members = members
+		out = append(out, conversation)
+	}
+	return out, nil
+}
+
+// one fills the participants of a single conversation.
+func (s *Service) one(ctx context.Context, conversation Conversation) (Conversation, error) {
+	list, err := s.withProfiles(ctx, []Conversation{conversation})
+	if err != nil {
+		return Conversation{}, err
+	}
+	return list[0], nil
 }
 
 // SetLimiter wires the per-account bucket in after construction. Without it a
@@ -168,7 +235,7 @@ func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.
 		existing, err := s.store.Direct(ctx, directKey)
 		switch {
 		case err == nil:
-			return existing, nil
+			return s.one(ctx, existing)
 		case !errors.Is(err, ErrNotFound):
 			return Conversation{}, err
 		}
@@ -195,6 +262,10 @@ func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.
 	if err != nil {
 		return Conversation{}, err
 	}
+	created, err = s.one(ctx, created)
+	if err != nil {
+		return Conversation{}, err
+	}
 	s.publish(events.KindConversationCreated, created)
 	return created, nil
 }
@@ -212,12 +283,20 @@ func (s *Service) EnsureSecret(ctx context.Context, key string, memberIDs []uuid
 	existing, err := s.store.Secret(ctx, key)
 	switch {
 	case err == nil:
-		return existing, false, nil
+		found, err := s.one(ctx, existing)
+		if err != nil {
+			return Conversation{}, false, err
+		}
+		return found, false, nil
 	case !errors.Is(err, ErrNotFound):
 		return Conversation{}, false, err
 	}
 
 	created, err := s.store.Create(ctx, KindSecret, key, members)
+	if err != nil {
+		return Conversation{}, false, err
+	}
+	created, err = s.one(ctx, created)
 	if err != nil {
 		return Conversation{}, false, err
 	}
@@ -273,12 +352,40 @@ func (s *Service) Get(ctx context.Context, id, callerID uuid.UUID) (Conversation
 	if conversation.Kind == KindSecret {
 		return Conversation{}, ErrNotFound
 	}
-	return conversation, nil
+	return s.one(ctx, conversation)
 }
 
 // List is the caller's conversations, the liveliest first.
 func (s *Service) List(ctx context.Context, callerID uuid.UUID) ([]Conversation, error) {
-	return s.store.List(ctx, callerID)
+	conversations, err := s.store.List(ctx, callerID)
+	if err != nil {
+		return nil, err
+	}
+	return s.withProfiles(ctx, conversations)
+}
+
+// SharesConversation reports a common conversation, secret chats included:
+// internal/profile asks it before it shows a profile, so the rule stays in this
+// module's SQL.
+func (s *Service) SharesConversation(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	if a == b || a == uuid.Nil || b == uuid.Nil {
+		return false, nil
+	}
+	shared, err := s.store.SharesConversation(ctx, a, b)
+	if err != nil {
+		return false, fmt.Errorf("check shared conversation: %w", err)
+	}
+	return shared, nil
+}
+
+// Peers is everyone who shares a conversation with this account. It is the
+// personal audience of a user.updated event.
+func (s *Service) Peers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	peers, err := s.store.Peers(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list conversation peers: %w", err)
+	}
+	return peers, nil
 }
 
 // IsParticipant answers internal/channels, which routes access to a channel

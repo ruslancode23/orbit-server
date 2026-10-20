@@ -7,12 +7,14 @@ package servers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // Role is what someone may do on one server. Ordered: owner > admin > member.
@@ -111,23 +113,16 @@ type Membership struct {
 	Role      Role
 }
 
-// Account is the part of a user this package shows; the auth module owns the rest.
-type Account struct {
-	ID        uuid.UUID
-	Nickname  string
-	Email     string
-	IsGuest   bool
-	CreatedAt time.Time
-}
-
+// Member is one person on a server. User is the public profile: this module
+// reads it from internal/profile in one batch, never from its own SQL.
 type Member struct {
-	User     Account
+	User     profile.Public
 	Role     Role
 	JoinedAt time.Time
 }
 
 type Ban struct {
-	User      Account
+	User      profile.Public
 	Reason    string
 	BannedBy  uuid.UUID // uuid.Nil when the account that banned is gone
 	CreatedAt time.Time
@@ -168,15 +163,63 @@ type Watchers interface {
 	Revoke(workspaceID, userID uuid.UUID)
 }
 
+// Profiles is the public part of an account, owned by internal/profile. One
+// call fills a whole member list, so the list never asks per member.
+type Profiles interface {
+	Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]profile.Public, error)
+}
+
 // Service holds the rules. It knows nothing about HTTP.
 type Service struct {
 	store    Store
 	watchers Watchers
 	icons    Icons
+	// profiles is optional at construction; main wires it in. Without it a member
+	// carries only the id, which is still enough for every permission check.
+	profiles Profiles
 }
 
 func NewService(store Store, watchers Watchers, icons Icons) *Service {
 	return &Service{store: store, watchers: watchers, icons: icons}
+}
+
+// SetProfiles wires the profile module in after both exist.
+func (s *Service) SetProfiles(profiles Profiles) { s.profiles = profiles }
+
+// withProfiles fills the public part of a whole list in one call. A nil profile
+// module leaves the ids as they are; anything else propagates the failure rather
+// than silently showing bare ids.
+func (s *Service) withProfiles(ctx context.Context, members []Member) error {
+	if s.profiles == nil || len(members) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(members))
+	for _, member := range members {
+		ids = append(ids, member.User.ID)
+	}
+	profiles, err := s.profiles.Profiles(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("load member profiles: %w", err)
+	}
+	for i := range members {
+		if loaded, ok := profiles[members[i].User.ID]; ok {
+			members[i].User = loaded
+		}
+	}
+	return nil
+}
+
+// withProfile fills the public part of one member or ban.
+func (s *Service) withProfile(ctx context.Context, account *profile.Public) error {
+	if s.profiles == nil {
+		return nil
+	}
+	members := []Member{{User: *account}}
+	if err := s.withProfiles(ctx, members); err != nil {
+		return err
+	}
+	*account = members[0].User
+	return nil
 }
 
 // changed tells everyone watching the server that the server itself changed.
@@ -374,7 +417,14 @@ func (s *Service) ListMembers(ctx context.Context, workspaceID, callerID uuid.UU
 	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleMember); err != nil {
 		return nil, err
 	}
-	return s.store.ListMembers(ctx, workspaceID)
+	members, err := s.store.ListMembers(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.withProfiles(ctx, members); err != nil {
+		return nil, err
+	}
+	return members, nil
 }
 
 // Join adds an account as a member. Used by invites (task 2.7); a banned
@@ -389,6 +439,9 @@ func (s *Service) Join(ctx context.Context, workspaceID, userID uuid.UUID) (Memb
 	}
 	member, err := s.store.AddMember(ctx, workspaceID, userID, RoleMember)
 	if err != nil {
+		return Member{}, err
+	}
+	if err := s.withProfile(ctx, &member.User); err != nil {
 		return Member{}, err
 	}
 	s.announce(workspaceID, userID, RoleMember, true)
@@ -409,7 +462,14 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 		return Member{}, err
 	}
 	if target == role {
-		return s.store.SetRole(ctx, workspaceID, targetID, role)
+		member, err := s.store.SetRole(ctx, workspaceID, targetID, role)
+		if err != nil {
+			return Member{}, err
+		}
+		if err := s.withProfile(ctx, &member.User); err != nil {
+			return Member{}, err
+		}
+		return member, nil
 	}
 
 	// Taking the owner role away from the last owner would leave the server without one.
@@ -425,6 +485,9 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 
 	member, err := s.store.SetRole(ctx, workspaceID, targetID, role)
 	if err != nil {
+		return Member{}, err
+	}
+	if err := s.withProfile(ctx, &member.User); err != nil {
 		return Member{}, err
 	}
 	s.announce(workspaceID, targetID, role, true)
@@ -506,6 +569,9 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 	if err != nil {
 		return Ban{}, err
 	}
+	if err := s.withProfile(ctx, &ban.User); err != nil {
+		return Ban{}, err
+	}
 	s.announce(workspaceID, targetID, "", false)
 	s.cutOff(workspaceID, targetID)
 	return ban, nil
@@ -522,7 +588,22 @@ func (s *Service) ListBans(ctx context.Context, workspaceID, callerID uuid.UUID)
 	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin); err != nil {
 		return nil, err
 	}
-	return s.store.ListBans(ctx, workspaceID)
+	bans, err := s.store.ListBans(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	// One batch for the whole ban list, the same shape the member list uses.
+	accounts := make([]Member, len(bans))
+	for i := range bans {
+		accounts[i].User = bans[i].User
+	}
+	if err := s.withProfiles(ctx, accounts); err != nil {
+		return nil, err
+	}
+	for i := range bans {
+		bans[i].User = accounts[i].User
+	}
+	return bans, nil
 }
 
 // canActOn allows moderation only downwards: an admin may act on members, the

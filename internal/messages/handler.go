@@ -12,6 +12,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // Handler serves the generated message operations; the rules live in Service.
@@ -218,16 +219,7 @@ func APIMessage(m Message) api.Message {
 		})
 	}
 	if m.Author != nil {
-		author := api.User{
-			Id:        m.Author.ID,
-			Nickname:  m.Author.Nickname,
-			IsGuest:   m.Author.IsGuest,
-			CreatedAt: m.Author.CreatedAt,
-		}
-		if m.Author.Email != "" {
-			mail := openapi_types.Email(m.Author.Email)
-			author.Email = &mail
-		}
+		author := profile.APIProfile(*m.Author)
 		message.Author = &author
 	}
 	return message

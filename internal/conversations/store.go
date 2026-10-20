@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // Pool is the part of pgxpool.Pool this store needs: queries plus a
@@ -181,11 +182,33 @@ func (s *PostgresStore) members(ctx context.Context, channelID uuid.UUID) ([]Mem
 	out := make([]Member, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, Member{
-			ID:       uuid.UUID(row.User.ID.Bytes),
-			Nickname: row.User.Nickname,
-			IsGuest:  row.User.IsGuest,
+			// Only the id is known here: Service fills the public part in one batch.
+			Public:   profile.Public{ID: uuid.UUID(row.UserID.Bytes)},
 			JoinedAt: row.JoinedAt.Time,
 		})
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) SharesConversation(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	shared, err := s.q.HasSharedConversation(ctx, db.HasSharedConversationParams{
+		A: pgUUID(a),
+		B: pgUUID(b),
+	})
+	if err != nil {
+		return false, fmt.Errorf("has shared conversation: %w", err)
+	}
+	return shared, nil
+}
+
+func (s *PostgresStore) Peers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.q.ListConversationPeers(ctx, pgUUID(userID))
+	if err != nil {
+		return nil, fmt.Errorf("list conversation peers: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, uuid.UUID(row.Bytes))
 	}
 	return out, nil
 }

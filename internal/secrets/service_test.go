@@ -14,6 +14,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 type binding struct {
@@ -279,7 +280,7 @@ func (c *fakeChats) EnsureSecret(_ context.Context, key string, memberIDs []uuid
 	c.creates++
 	members := make([]conversations.Member, 0, len(memberIDs))
 	for _, id := range memberIDs {
-		members = append(members, conversations.Member{ID: id, JoinedAt: time.Now()})
+		members = append(members, conversations.Member{Public: profile.Public{ID: id}, JoinedAt: time.Now()})
 	}
 	chat := conversations.Conversation{
 		ID: uuid.New(), Kind: conversations.KindSecret, Members: members, CreatedAt: time.Now(),

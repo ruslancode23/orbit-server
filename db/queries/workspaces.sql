@@ -70,10 +70,11 @@ UPDATE workspace_members SET role = $3 WHERE workspace_id = $1 AND user_id = $2 
 -- name: RemoveWorkspaceMember :execrows
 DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2;
 
+-- The member list carries ids only: internal/profile fills in the public part
+-- of every account in one query, so this module never reads auth's table.
 -- name: ListWorkspaceMembers :many
-SELECT sqlc.embed(users), workspace_members.role, workspace_members.joined_at
+SELECT workspace_members.user_id, workspace_members.role, workspace_members.joined_at
 FROM workspace_members
-    JOIN users ON users.id = workspace_members.user_id
 WHERE workspace_members.workspace_id = $1
 ORDER BY workspace_members.joined_at;
 
@@ -89,10 +90,10 @@ DELETE FROM bans WHERE workspace_id = $1 AND user_id = $2;
 -- name: IsWorkspaceMemberBanned :one
 SELECT EXISTS (SELECT 1 FROM bans WHERE workspace_id = $1 AND user_id = $2);
 
+-- Same as the member list: ids only, the public part comes from internal/profile.
 -- name: ListWorkspaceBans :many
-SELECT sqlc.embed(users), bans.reason, bans.banned_by, bans.created_at
+SELECT bans.user_id, bans.reason, bans.banned_by, bans.created_at
 FROM bans
-    JOIN users ON users.id = bans.user_id
 WHERE bans.workspace_id = $1
 ORDER BY bans.created_at DESC;
 

@@ -21,6 +21,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -53,6 +54,7 @@ func newRouter(t *testing.T, dbErr error) http.Handler {
 		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
 		Secrets:        secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
 		Privacy:        privacy.NewHandler(privacy.NewService(nil), log),
+		Profiles:       profile.NewHandler(profile.NewService(nil, nil, log), log),
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 		Voice: voice.NewHandler(

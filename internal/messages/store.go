@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 type PostgresStore struct {
@@ -43,8 +44,9 @@ func (s *PostgresStore) Create(ctx context.Context, m NewMessage) (Message, bool
 		EditedAt:  timePtr(row.EditedAt),
 		DeletedAt: timePtr(row.DeletedAt),
 	}
-	// The author is the caller; the row carries only the id.
-	message.Author = &Author{ID: m.AuthorID}
+	// The author is the caller; the public part is filled by Service, because
+	// this module does not read auth's table.
+	message.Author = &profile.Public{ID: m.AuthorID}
 	return message, !row.Inserted, nil
 }
 
@@ -56,7 +58,7 @@ func (s *PostgresStore) Message(ctx context.Context, id uuid.UUID) (Message, err
 		}
 		return Message{}, fmt.Errorf("get message: %w", err)
 	}
-	return toMessage(row.Message, row.User), nil
+	return toMessage(row), nil
 }
 
 func (s *PostgresStore) List(ctx context.Context, channelID uuid.UUID, before *int64, limit int, viewerID uuid.UUID) ([]Message, error) {
@@ -72,7 +74,7 @@ func (s *PostgresStore) List(ctx context.Context, channelID uuid.UUID, before *i
 	list := make([]Message, 0, len(rows))
 	ids := make([]uuid.UUID, 0, len(rows))
 	for _, row := range rows {
-		message := toMessage(row.Message, row.User)
+		message := toMessage(row)
 		list = append(list, message)
 		ids = append(ids, message.ID)
 	}
@@ -95,7 +97,7 @@ func (s *PostgresStore) Since(ctx context.Context, channelID uuid.UUID, afterSeq
 	list := make([]Message, 0, len(rows))
 	ids := make([]uuid.UUID, 0, len(rows))
 	for _, row := range rows {
-		message := toMessage(row.Message, row.User)
+		message := toMessage(row)
 		list = append(list, message)
 		ids = append(ids, message.ID)
 	}
@@ -229,7 +231,7 @@ func (s *PostgresStore) decorate(ctx context.Context, list []Message, ids []uuid
 	return list, nil
 }
 
-func toMessage(row db.Message, user db.User) Message {
+func toMessage(row db.Message) Message {
 	message := Message{
 		ID:        uuid.UUID(row.ID.Bytes),
 		ChannelID: uuid.UUID(row.ChannelID.Bytes),
@@ -240,15 +242,9 @@ func toMessage(row db.Message, user db.User) Message {
 		EditedAt:  timePtr(row.EditedAt),
 		DeletedAt: timePtr(row.DeletedAt),
 	}
-	// The LEFT JOIN leaves an empty user when the account has been deleted.
-	if row.AuthorID.Valid && user.ID.Valid {
-		message.Author = &Author{
-			ID:        uuid.UUID(user.ID.Bytes),
-			Nickname:  user.Nickname,
-			Email:     user.Email.String,
-			IsGuest:   user.IsGuest,
-			CreatedAt: user.CreatedAt.Time,
-		}
+	// A NULL author_id means the account has been deleted; the message stays.
+	if row.AuthorID.Valid {
+		message.Author = &profile.Public{ID: uuid.UUID(row.AuthorID.Bytes)}
 	}
 	return message
 }

@@ -15,10 +15,11 @@ SELECT EXISTS (
     SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2
 );
 
+-- The participant list carries ids only: internal/profile fills in the public
+-- part in one query, so this module never reads auth's table.
 -- name: ListConversationMembers :many
-SELECT sqlc.embed(users), channel_members.joined_at
+SELECT channel_members.user_id, channel_members.joined_at
 FROM channel_members
-    JOIN users ON users.id = channel_members.user_id
 WHERE channel_members.channel_id = $1
 ORDER BY channel_members.joined_at;
 
@@ -50,3 +51,31 @@ SELECT user_id FROM channel_members WHERE channel_id = $1 ORDER BY joined_at;
 
 -- name: GetSecretConversation :one
 SELECT * FROM channels WHERE direct_key = $1 AND kind = 'secret';
+
+-- One query twice, so profile visibility never walks a list of conversations:
+-- whether two accounts share any conversation, secret chats included — their
+-- participants already know each other.
+-- name: HasSharedConversation :one
+SELECT EXISTS (
+    SELECT 1
+    FROM channel_members mine
+        JOIN channel_members theirs ON theirs.channel_id = mine.channel_id
+        JOIN channels ON channels.id = mine.channel_id
+    WHERE mine.user_id = sqlc.arg(a)::uuid
+      AND theirs.user_id = sqlc.arg(b)::uuid
+      AND channels.workspace_id IS NULL
+      AND channels.kind IN ('direct', 'group', 'secret')
+);
+
+-- Everyone who shares a conversation with this account: the audience of a
+-- user.updated event. A secret chat counts too: the peer already knows the
+-- account, and the event travels on the personal stream, not in the chat.
+-- name: ListConversationPeers :many
+SELECT DISTINCT theirs.user_id
+FROM channel_members mine
+    JOIN channel_members theirs ON theirs.channel_id = mine.channel_id
+    JOIN channels ON channels.id = mine.channel_id
+WHERE mine.user_id = $1
+  AND theirs.user_id <> $1
+  AND channels.workspace_id IS NULL
+  AND channels.kind IN ('direct', 'group', 'secret');

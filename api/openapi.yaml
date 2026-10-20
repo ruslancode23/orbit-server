@@ -77,6 +77,14 @@ tags:
       never reveals whether someone is here. A block works both ways for starting
       and writing in a dialogue; in a group chat the messages of a blocked author
       stay in history, marked for the person who blocked them.
+  - name: profile
+    description: |
+      What people see about each other: a display name, a bio, an accent colour
+      and a custom status with an optional deadline. The unique `@nickname` stays
+      the handle — mentions and search keep using it, and the display name is only
+      what the UI draws. A profile is visible to people on a common server, in a
+      common conversation, or to friends once friendships exist; anyone else gets
+      the same 404 as an unknown account. Changes arrive as `user.updated`.
 paths:
   /healthz:
     get:
@@ -183,10 +191,10 @@ paths:
       summary: The account of this session. Needs a session.
       responses:
         "200":
-          description: The current account.
+          description: The current account, with its public profile.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema: { $ref: "#/components/schemas/UserProfile" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/password:
@@ -1197,6 +1205,89 @@ paths:
           description: Unblocked.
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/profile:
+    patch:
+      operationId: updateMyProfile
+      tags: [profile]
+      summary: Change your own profile. Needs a session.
+      description: |
+        Only the fields sent change: omitting one leaves it as it was. An empty
+        `displayName` or `bio` clears it, and the display name then falls back to
+        the nickname. The nickname itself is not editable here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileUpdate" }
+      responses:
+        "200":
+          description: The profile as it is now.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/status:
+    put:
+      operationId: setMyStatus
+      tags: [profile]
+      summary: Replace your custom status. Needs a session.
+      description: |
+        At least one of `emoji` and `text` must be non-empty: an empty status is
+        removed with DELETE instead. `expiresIn` is measured by the server, so a
+        wrong client clock cannot stretch a status; without it the status lasts
+        until it is replaced. An expired status is never returned, even before
+        anything rewrites the row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusUpdate" }
+      responses:
+        "200":
+          description: The profile with the new status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: clearMyStatus
+      tags: [profile]
+      summary: Remove your custom status. Needs a session.
+      description: Removing a status that is not set is fine.
+      responses:
+        "200":
+          description: The profile without a custom status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{userId}/profile:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: getUserProfile
+      tags: [profile]
+      summary: Someone's public profile. Needs a shared server or conversation.
+      description: |
+        A common server, a common conversation or a friendship opens this; a
+        stranger and an unknown id both answer 404, so the endpoint does not tell
+        which accounts exist. Your own profile is always readable.
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/{userId}/devices:
     parameters:
       - $ref: "#/components/parameters/UserId"
@@ -1625,6 +1716,10 @@ components:
     User:
       type: object
       additionalProperties: false
+      description: |
+        A private account shape for the auth responses: it carries the email and is
+        only returned to its owner or at sign-up. Wherever people see each other,
+        `UserProfile` is the shape.
       required: [id, nickname, isGuest, createdAt]
       properties:
         id:
@@ -1645,6 +1740,98 @@ components:
         createdAt:
           type: string
           format: date-time
+    AccentColor:
+      type: string
+      enum: [slate, red, amber, green, teal, sky, indigo, violet, pink]
+      description: |
+        One of the product's named accent tokens, never a raw hex colour: the client
+        maps the token to its own palette, so a profile looks right in every theme.
+        `slate` is the default.
+    CustomStatus:
+      type: object
+      additionalProperties: false
+      description: A short line next to the name, with an optional deadline.
+      properties:
+        emoji:
+          type: string
+          maxLength: 32
+          description: Shown before the text; a custom status may have only this.
+        text:
+          type: string
+          maxLength: 128
+          description: Shown after the emoji; a custom status may have only this.
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            When the status stops showing. Absent means it stays until replaced.
+            The server hides an expired status from every response and event.
+    UserProfile:
+      type: object
+      additionalProperties: false
+      required: [id, nickname, displayName, accentColor, bio, isGuest, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        nickname:
+          type: string
+          description: |
+            The unique handle. Mentions and search keep using it — the display name
+            is only what the UI draws.
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: What other people see. Equals `nickname` until the account picks another.
+        avatarUrl:
+          type: string
+          description: |
+            A short-lived signed link to the avatar. Absent until an avatar is
+            uploaded; the key itself never leaves the server.
+        accentColor: { $ref: "#/components/schemas/AccentColor" }
+        bio:
+          type: string
+          maxLength: 190
+        customStatus: { $ref: "#/components/schemas/CustomStatus" }
+        isGuest:
+          type: boolean
+          description: A guest has no password and keeps its id when it signs up.
+        createdAt: { type: string, format: date-time }
+    ProfileUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        Only the fields sent change. An empty `displayName` or `bio` clears it; the
+        display name then falls back to the nickname. The nickname is not editable.
+      properties:
+        displayName:
+          type: string
+          maxLength: 32
+          description: Empty string clears it and shows the nickname again.
+        bio:
+          type: string
+          maxLength: 190
+          description: Empty string clears it.
+        accentColor: { $ref: "#/components/schemas/AccentColor" }
+    StatusUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        Replaces the custom status. At least one of `emoji` and `text` must be
+        non-empty; use DELETE to clear the status.
+      properties:
+        emoji:
+          type: string
+          maxLength: 32
+        text:
+          type: string
+          maxLength: 128
+        expiresIn:
+          type: string
+          enum: [30m, 4h, end_of_day, never]
+          description: |
+            How long the status lives. `end_of_day` is the end of the current UTC
+            day (00:00 UTC next day), computed by the server so a client clock
+            cannot stretch it. Absent means `never`: until replaced or removed.
     DmPolicy:
       type: string
       enum: [shared, friends, nobody]
@@ -1802,7 +1989,7 @@ components:
       additionalProperties: false
       required: [user, role, joinedAt]
       properties:
-        user: { $ref: "#/components/schemas/User" }
+        user: { $ref: "#/components/schemas/UserProfile" }
         role: { $ref: "#/components/schemas/WorkspaceRole" }
         joinedAt: { type: string, format: date-time }
         presence:
@@ -1812,7 +1999,7 @@ components:
       additionalProperties: false
       required: [user, createdAt]
       properties:
-        user: { $ref: "#/components/schemas/User" }
+        user: { $ref: "#/components/schemas/UserProfile" }
         reason:
           type: string
           maxLength: 500
@@ -1960,7 +2147,7 @@ components:
           description: Order inside the channel; also the cursor for the next page.
         author:
           allOf:
-            - $ref: "#/components/schemas/User"
+            - $ref: "#/components/schemas/UserProfile"
           description: Absent when the account has been deleted; the message stays.
         content:
           type: string
@@ -2187,11 +2374,20 @@ components:
     ConversationMember:
       type: object
       additionalProperties: false
-      required: [id, nickname, isGuest, joinedAt]
+      # The same public fields as UserProfile plus joinedAt. Spelled out rather
+      # than allOf: UserProfile forbids additional properties, so an allOf with
+      # joinedAt would make the joinedAt itself an unwanted extra field.
+      required: [id, nickname, displayName, accentColor, bio, isGuest, createdAt, joinedAt]
       properties:
         id: { type: string, format: uuid }
         nickname: { type: string }
+        displayName: { type: string, maxLength: 32 }
+        avatarUrl: { type: string }
+        accentColor: { $ref: "#/components/schemas/AccentColor" }
+        bio: { type: string, maxLength: 190 }
+        customStatus: { $ref: "#/components/schemas/CustomStatus" }
         isGuest: { type: boolean }
+        createdAt: { type: string, format: date-time }
         joinedAt: { type: string, format: date-time }
     ConversationStartRequest:
       type: object

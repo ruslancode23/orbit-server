@@ -179,47 +179,32 @@ func (q *Queries) EditMessage(ctx context.Context, arg EditMessageParams) (Messa
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
-FROM messages
-    LEFT JOIN users ON users.id = messages.author_id
-WHERE messages.id = $1
+SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at FROM messages WHERE id = $1
 `
 
-type GetMessageRow struct {
-	Message Message `json:"message"`
-	User    User    `json:"user"`
-}
-
-func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow, error) {
+// The author's public part comes from internal/profile in one batch per page:
+// this module never reads auth's table.
+func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (Message, error) {
 	row := q.db.QueryRow(ctx, getMessage, id)
-	var i GetMessageRow
+	var i Message
 	err := row.Scan(
-		&i.Message.Seq,
-		&i.Message.ID,
-		&i.Message.ChannelID,
-		&i.Message.AuthorID,
-		&i.Message.ClientMessageID,
-		&i.Message.Content,
-		&i.Message.ReplyToID,
-		&i.Message.CreatedAt,
-		&i.Message.EditedAt,
-		&i.Message.DeletedAt,
-		&i.User.ID,
-		&i.User.Nickname,
-		&i.User.Email,
-		&i.User.PasswordHash,
-		&i.User.IsGuest,
-		&i.User.CreatedAt,
-		&i.User.UpdatedAt,
-		&i.User.DmPolicy,
+		&i.Seq,
+		&i.ID,
+		&i.ChannelID,
+		&i.AuthorID,
+		&i.ClientMessageID,
+		&i.Content,
+		&i.ReplyToID,
+		&i.CreatedAt,
+		&i.EditedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const listChannelMessages = `-- name: ListChannelMessages :many
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
+SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at
 FROM messages
-    LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1
   AND ($3::bigint IS NULL OR messages.seq < $3::bigint)
 ORDER BY messages.seq DESC
@@ -232,41 +217,28 @@ type ListChannelMessagesParams struct {
 	BeforeSeq pgtype.Int8 `json:"before_seq"`
 }
 
-type ListChannelMessagesRow struct {
-	Message Message `json:"message"`
-	User    User    `json:"user"`
-}
-
 // One page of history, newest first: the caller passes the seq it already has
 // (NULL for the first page) and gets the next portion.
-func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error) {
+func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]Message, error) {
 	rows, err := q.db.Query(ctx, listChannelMessages, arg.ChannelID, arg.Limit, arg.BeforeSeq)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListChannelMessagesRow{}
+	items := []Message{}
 	for rows.Next() {
-		var i ListChannelMessagesRow
+		var i Message
 		if err := rows.Scan(
-			&i.Message.Seq,
-			&i.Message.ID,
-			&i.Message.ChannelID,
-			&i.Message.AuthorID,
-			&i.Message.ClientMessageID,
-			&i.Message.Content,
-			&i.Message.ReplyToID,
-			&i.Message.CreatedAt,
-			&i.Message.EditedAt,
-			&i.Message.DeletedAt,
-			&i.User.ID,
-			&i.User.Nickname,
-			&i.User.Email,
-			&i.User.PasswordHash,
-			&i.User.IsGuest,
-			&i.User.CreatedAt,
-			&i.User.UpdatedAt,
-			&i.User.DmPolicy,
+			&i.Seq,
+			&i.ID,
+			&i.ChannelID,
+			&i.AuthorID,
+			&i.ClientMessageID,
+			&i.Content,
+			&i.ReplyToID,
+			&i.CreatedAt,
+			&i.EditedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -279,9 +251,8 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 }
 
 const listChannelMessagesAfter = `-- name: ListChannelMessagesAfter :many
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
+SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at
 FROM messages
-    LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1 AND messages.seq > $3
 ORDER BY messages.seq
 LIMIT $2
@@ -293,40 +264,27 @@ type ListChannelMessagesAfterParams struct {
 	AfterSeq  int64       `json:"after_seq"`
 }
 
-type ListChannelMessagesAfterRow struct {
-	Message Message `json:"message"`
-	User    User    `json:"user"`
-}
-
 // What a reconnecting client missed in one channel, oldest first (task 2.6).
-func (q *Queries) ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]ListChannelMessagesAfterRow, error) {
+func (q *Queries) ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]Message, error) {
 	rows, err := q.db.Query(ctx, listChannelMessagesAfter, arg.ChannelID, arg.Limit, arg.AfterSeq)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListChannelMessagesAfterRow{}
+	items := []Message{}
 	for rows.Next() {
-		var i ListChannelMessagesAfterRow
+		var i Message
 		if err := rows.Scan(
-			&i.Message.Seq,
-			&i.Message.ID,
-			&i.Message.ChannelID,
-			&i.Message.AuthorID,
-			&i.Message.ClientMessageID,
-			&i.Message.Content,
-			&i.Message.ReplyToID,
-			&i.Message.CreatedAt,
-			&i.Message.EditedAt,
-			&i.Message.DeletedAt,
-			&i.User.ID,
-			&i.User.Nickname,
-			&i.User.Email,
-			&i.User.PasswordHash,
-			&i.User.IsGuest,
-			&i.User.CreatedAt,
-			&i.User.UpdatedAt,
-			&i.User.DmPolicy,
+			&i.Seq,
+			&i.ID,
+			&i.ChannelID,
+			&i.AuthorID,
+			&i.ClientMessageID,
+			&i.Content,
+			&i.ReplyToID,
+			&i.CreatedAt,
+			&i.EditedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
