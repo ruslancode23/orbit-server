@@ -242,15 +242,23 @@ type Session struct {
 }
 
 type User struct {
-	ID                  pgtype.UUID        `json:"id"`
-	Nickname            string             `json:"nickname"`
-	Email               pgtype.Text        `json:"email"`
-	PasswordHash        pgtype.Text        `json:"password_hash"`
-	IsGuest             bool               `json:"is_guest"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-	DmPolicy            string             `json:"dm_policy"`
-	FriendRequestPolicy string             `json:"friend_request_policy"`
+	ID                    pgtype.UUID        `json:"id"`
+	Nickname              string             `json:"nickname"`
+	Email                 pgtype.Text        `json:"email"`
+	PasswordHash          pgtype.Text        `json:"password_hash"`
+	IsGuest               bool               `json:"is_guest"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	DmPolicy              string             `json:"dm_policy"`
+	FriendRequestPolicy   string             `json:"friend_request_policy"`
+	DisplayName           pgtype.Text        `json:"display_name"`
+	Bio                   string             `json:"bio"`
+	AccentColor           string             `json:"accent_color"`
+	AvatarKey             pgtype.Text        `json:"avatar_key"`
+	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
+	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
+	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileUpdatedAt      pgtype.Timestamptz `json:"profile_updated_at"`
 }
 
 type UserBlock struct {

@@ -60,6 +60,32 @@ curl -b cookies.txt -X POST localhost:8080/api/v1/channels/$CHANNEL_ID/voice-tok
 видит ничего. Объявления сглажены: не чаще одного на аккаунт в 5 секунд, а `offline` после закрытия
 последней вкладки — через 30 секунд, поэтому обновление страницы не мигает.
 
+## Профиль и статус
+
+Что человек показывает о себе, живёт в `internal/profile`: отображаемое имя, био (до 190 символов),
+акцентный цвет, ключ аватара и статус со сроком. Уникальный `@nickname` остаётся ручкой аккаунта —
+упоминания и поиск заявок работают по нему, а `displayName` только рисуется в интерфейсе.
+
+- `PATCH /api/v1/users/me/profile` — частичное изменение: `displayName`, `bio`, `accentColor`.
+  Не переданное поле не меняется; пустая строка очищает имя или био (имя снова равно нику).
+- `PUT /api/v1/users/me/status` — статус: `emoji` и/или `text` (до 128 символов) и срок
+  `expiresIn`: `30m`, `4h`, `end_of_day` или `never` (по умолчанию). Срок считает сервер, а не
+  клиент: `end_of_day` — это 00:00 UTC следующего дня, потому что своего часового пояса у аккаунта
+  нет. Просроченный статус не отдаётся ни в одном ответе и событии, даже если строка ещё не
+  перезаписана.
+- `DELETE /api/v1/users/me/status` — убрать статус.
+- `GET /api/v1/users/{id}/profile` — профиль человека. Виден тому, с кем есть общий сервер, общая
+  беседа или дружба; посторонний получает тот же 404, что и несуществующий id, чтобы нельзя было
+  перебирать аккаунты. Свой профиль виден всегда.
+
+Палитра акцента — именованные токены, не hex: `slate` (по умолчанию), `red`, `amber`, `green`,
+`teal`, `sky`, `indigo`, `violet`, `pink`. Клиент сам сопоставляет токен со своей темой, поэтому
+профиль выглядит правильно и в светлой, и в тёмной. Изменения приходят событием `user.updated`:
+его получают серверы аккаунта, участники его бесед, друзья и другие вкладки самого
+аккаунта. Payload — схема `UserProfile`, та же, что в ответах API. Объявления сглажены — не чаще
+одного на аккаунт в 2 секунды. Загрузка аватара и подписанные ссылки — PR-2 (SCRUM-104); пока
+`avatarUrl` отсутствует, если ключа нет.
+
 ## Команды
 
 `make help` выводит все цели. Основные: `make test`, `make lint`, `make fmt`, `make sqlc`,
@@ -181,12 +207,15 @@ docs/adr/               архитектурные решения
 участникам, поэтому вышедший из группы перестаёт получать их сразу.
 
 От сервера: `subscribed`, `unsubscribed`, `pong`, события `message.created`, `message.updated`,
-`message.deleted`, `message.reaction`, `member.changed`, `workspace.updated`, `voice.presence`,
-`presence.updated`, `friend.request.created`, `friend.request.removed`, `friend.added` и
-`friend.removed` (поля `workspaceId`, `channelId`, `seq`, `payload`) и `error` с кодом. После
+`message.deleted`, `message.reaction`, `member.changed`, `workspace.updated`, `user.updated`,
+`voice.presence`, `presence.updated`, `friend.request.created`, `friend.request.removed`, `friend.added`
+и `friend.removed` (поля `workspaceId`, `channelId`, `seq`, `payload`) и `error` с кодом. После
 `subscribe` сервер сначала досылает пропущенное по курсорам, потом включает живой поток и не повторяет
 то, что уже дослал. У `presence.updated` payload — `{"userId":"…","status":"online","updatedAt":"…"}`:
 свои собственные обновления клиент тоже получает (он участник своих серверов) и пропускает по `userId`.
+У `user.updated` payload — та же схема `UserProfile`, что и в ответах API, поэтому клиент заменяет
+автора в уже загруженной ленте.
+
 
 Коды ошибок потока: `not_found` — нет доступа к серверу; `forbidden` — доступ пропал уже во время
 подключения (бан или кик), поток закрыт; `behind` — клиент не успевал читать, нужно переподключиться

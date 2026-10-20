@@ -9,18 +9,16 @@ ON CONFLICT (channel_id, author_id, client_message_id) WHERE author_id IS NOT NU
 -- found the message already stored.
 RETURNING *, (xmax = 0) AS inserted;
 
+-- The author's public part comes from internal/profile in one batch per page:
+-- this module never reads auth's table.
 -- name: GetMessage :one
-SELECT sqlc.embed(messages), sqlc.embed(users)
-FROM messages
-    LEFT JOIN users ON users.id = messages.author_id
-WHERE messages.id = $1;
+SELECT * FROM messages WHERE id = $1;
 
 -- One page of history, newest first: the caller passes the seq it already has
 -- (NULL for the first page) and gets the next portion.
 -- name: ListChannelMessages :many
-SELECT sqlc.embed(messages), sqlc.embed(users)
+SELECT *
 FROM messages
-    LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1
   AND (sqlc.narg(before_seq)::bigint IS NULL OR messages.seq < sqlc.narg(before_seq)::bigint)
 ORDER BY messages.seq DESC
@@ -67,9 +65,8 @@ ORDER BY message_id, emoji;
 
 -- What a reconnecting client missed in one channel, oldest first (task 2.6).
 -- name: ListChannelMessagesAfter :many
-SELECT sqlc.embed(messages), sqlc.embed(users)
+SELECT *
 FROM messages
-    LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1 AND messages.seq > sqlc.arg(after_seq)
 ORDER BY messages.seq
 LIMIT $2;

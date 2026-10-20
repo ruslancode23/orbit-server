@@ -11,6 +11,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 type Handler struct {
@@ -115,11 +116,19 @@ func (h *Handler) GetConversation(ctx context.Context, req api.GetConversationRe
 func toAPIConversation(c Conversation) api.Conversation {
 	members := make([]api.ConversationMember, 0, len(c.Members))
 	for _, m := range c.Members {
+		// The same public fields as everywhere else, plus when they joined.
+		user := profile.APIProfile(m.Public)
 		members = append(members, api.ConversationMember{
-			Id:       m.ID,
-			Nickname: m.Nickname,
-			IsGuest:  m.IsGuest,
-			JoinedAt: m.JoinedAt,
+			Id:           user.Id,
+			Nickname:     user.Nickname,
+			DisplayName:  user.DisplayName,
+			AvatarUrl:    user.AvatarUrl,
+			AccentColor:  user.AccentColor,
+			Bio:          user.Bio,
+			CustomStatus: user.CustomStatus,
+			IsGuest:      user.IsGuest,
+			CreatedAt:    user.CreatedAt,
+			JoinedAt:     m.JoinedAt,
 		})
 	}
 	return api.Conversation{

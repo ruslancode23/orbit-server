@@ -220,6 +220,51 @@ func TestMeReturnsTheSessionAccount(t *testing.T) {
 	}
 }
 
+// The answer about oneself carries the email; nobody else's profile does.
+func TestMeCarriesTheEmailAndAGuestHasNone(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+
+	user, creds := registerTestUser(t, svc)
+	session, err := svc.Authenticate(context.Background(), creds.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	resp, err := h.GetCurrentUser(WithSession(context.Background(), session), api.GetCurrentUserRequestObject{})
+	if err != nil {
+		t.Fatalf("GetCurrentUser: %v", err)
+	}
+	me, ok := resp.(api.GetCurrentUser200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	if me.Email == nil || string(*me.Email) != user.Email {
+		t.Fatalf("email = %v, want %q", me.Email, user.Email)
+	}
+
+	guest, guestCreds, err := svc.RegisterGuest(context.Background(), "Guest")
+	if err != nil {
+		t.Fatalf("RegisterGuest: %v", err)
+	}
+	guestSession, err := svc.Authenticate(context.Background(), guestCreds.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	resp, err = h.GetCurrentUser(WithSession(context.Background(), guestSession), api.GetCurrentUserRequestObject{})
+	if err != nil {
+		t.Fatalf("GetCurrentUser: %v", err)
+	}
+	guestMe, ok := resp.(api.GetCurrentUser200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	if guestMe.Email != nil {
+		t.Fatalf("guest email = %v, want null", *guestMe.Email)
+	}
+	if guestMe.Id != guest.ID || guestMe.DisplayName != guest.Nickname {
+		t.Fatalf("guest = %+v, want %v / %q", guestMe, guest.ID, guest.Nickname)
+	}
+}
+
 func TestLogoutAndPasswordChangeClearTheCookie(t *testing.T) {
 	h, svc, _ := newTestHandler(t, true)
 	user, creds := registerTestUser(t, svc)

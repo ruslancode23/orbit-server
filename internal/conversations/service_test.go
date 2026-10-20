@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // fakeStore keeps conversations in memory with the rule the database keeps:
@@ -34,7 +35,7 @@ func (s *fakeStore) Create(_ context.Context, kind Kind, directKey string, membe
 	s.creates++
 	conversation := Conversation{ID: uuid.New(), Kind: kind, CreatedAt: time.Now()}
 	for _, id := range memberIDs {
-		conversation.Members = append(conversation.Members, Member{ID: id, JoinedAt: time.Now()})
+		conversation.Members = append(conversation.Members, Member{Public: profile.Public{ID: id}, JoinedAt: time.Now()})
 	}
 	s.conversations[conversation.ID] = &conversation
 	if directKey != "" {
@@ -117,6 +118,41 @@ func (s *fakeStore) KnownUsers(_ context.Context, ids []uuid.UUID) (map[uuid.UUI
 	out := make(map[uuid.UUID]bool, len(ids))
 	for _, id := range ids {
 		out[id] = s.known[id]
+	}
+	return out, nil
+}
+
+func (s *fakeStore) SharesConversation(_ context.Context, a, b uuid.UUID) (bool, error) {
+	for _, conversation := range s.conversations {
+		var hasA, hasB bool
+		for _, member := range conversation.Members {
+			hasA = hasA || member.ID == a
+			hasB = hasB || member.ID == b
+		}
+		if hasA && hasB {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *fakeStore) Peers(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	seen := map[uuid.UUID]bool{}
+	var out []uuid.UUID
+	for _, conversation := range s.conversations {
+		inside := false
+		for _, member := range conversation.Members {
+			inside = inside || member.ID == userID
+		}
+		if !inside {
+			continue
+		}
+		for _, member := range conversation.Members {
+			if member.ID != userID && !seen[member.ID] {
+				seen[member.ID] = true
+				out = append(out, member.ID)
+			}
+		}
 	}
 	return out, nil
 }

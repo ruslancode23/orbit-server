@@ -28,6 +28,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -81,6 +82,8 @@ type Deps struct {
 	// Privacy serves block lists, the direct message policy and the friendship
 	// request policy.
 	Privacy *privacy.Handler
+	// Profiles serves display names, bios, accent colours and custom statuses.
+	Profiles *profile.Handler
 	// Friends serves friendship requests and the friend list.
 	Friends *friends.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
@@ -102,7 +105,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Friends == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -148,7 +151,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, friends: d.Friends, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -193,6 +196,7 @@ type server struct {
 	conversations *conversations.Handler
 	secrets       *secrets.Handler
 	privacy       *privacy.Handler
+	profiles      *profile.Handler
 	friends       *friends.Handler
 	voice         *voice.Handler
 }
@@ -461,6 +465,22 @@ func (s *server) GetDmPolicy(ctx context.Context, req api.GetDmPolicyRequestObje
 
 func (s *server) SetDmPolicy(ctx context.Context, req api.SetDmPolicyRequestObject) (api.SetDmPolicyResponseObject, error) {
 	return s.privacy.SetDmPolicy(ctx, req)
+}
+
+func (s *server) UpdateMyProfile(ctx context.Context, req api.UpdateMyProfileRequestObject) (api.UpdateMyProfileResponseObject, error) {
+	return s.profiles.UpdateMyProfile(ctx, req)
+}
+
+func (s *server) SetMyStatus(ctx context.Context, req api.SetMyStatusRequestObject) (api.SetMyStatusResponseObject, error) {
+	return s.profiles.SetMyStatus(ctx, req)
+}
+
+func (s *server) ClearMyStatus(ctx context.Context, req api.ClearMyStatusRequestObject) (api.ClearMyStatusResponseObject, error) {
+	return s.profiles.ClearMyStatus(ctx, req)
+}
+
+func (s *server) GetUserProfile(ctx context.Context, req api.GetUserProfileRequestObject) (api.GetUserProfileResponseObject, error) {
+	return s.profiles.GetUserProfile(ctx, req)
 }
 
 func (s *server) GetFriendRequestPolicy(ctx context.Context, req api.GetFriendRequestPolicyRequestObject) (api.GetFriendRequestPolicyResponseObject, error) {

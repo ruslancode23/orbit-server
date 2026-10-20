@@ -268,20 +268,20 @@ func (q *Queries) ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const listWorkspaceBans = `-- name: ListWorkspaceBans :many
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, users.friend_request_policy, bans.reason, bans.banned_by, bans.created_at
+SELECT bans.user_id, bans.reason, bans.banned_by, bans.created_at
 FROM bans
-    JOIN users ON users.id = bans.user_id
 WHERE bans.workspace_id = $1
 ORDER BY bans.created_at DESC
 `
 
 type ListWorkspaceBansRow struct {
-	User      User               `json:"user"`
+	UserID    pgtype.UUID        `json:"user_id"`
 	Reason    pgtype.Text        `json:"reason"`
 	BannedBy  pgtype.UUID        `json:"banned_by"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+// Same as the member list: ids only, the public part comes from internal/profile.
 func (q *Queries) ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceBans, workspaceID)
 	if err != nil {
@@ -292,15 +292,7 @@ func (q *Queries) ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID
 	for rows.Next() {
 		var i ListWorkspaceBansRow
 		if err := rows.Scan(
-			&i.User.ID,
-			&i.User.Nickname,
-			&i.User.Email,
-			&i.User.PasswordHash,
-			&i.User.IsGuest,
-			&i.User.CreatedAt,
-			&i.User.UpdatedAt,
-			&i.User.DmPolicy,
-			&i.User.FriendRequestPolicy,
+			&i.UserID,
 			&i.Reason,
 			&i.BannedBy,
 			&i.CreatedAt,
@@ -316,19 +308,20 @@ func (q *Queries) ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID
 }
 
 const listWorkspaceMembers = `-- name: ListWorkspaceMembers :many
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, users.friend_request_policy, workspace_members.role, workspace_members.joined_at
+SELECT workspace_members.user_id, workspace_members.role, workspace_members.joined_at
 FROM workspace_members
-    JOIN users ON users.id = workspace_members.user_id
 WHERE workspace_members.workspace_id = $1
 ORDER BY workspace_members.joined_at
 `
 
 type ListWorkspaceMembersRow struct {
-	User     User               `json:"user"`
+	UserID   pgtype.UUID        `json:"user_id"`
 	Role     WorkspaceRole      `json:"role"`
 	JoinedAt pgtype.Timestamptz `json:"joined_at"`
 }
 
+// The member list carries ids only: internal/profile fills in the public part
+// of every account in one query, so this module never reads auth's table.
 func (q *Queries) ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceMembers, workspaceID)
 	if err != nil {
@@ -338,19 +331,7 @@ func (q *Queries) ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.U
 	items := []ListWorkspaceMembersRow{}
 	for rows.Next() {
 		var i ListWorkspaceMembersRow
-		if err := rows.Scan(
-			&i.User.ID,
-			&i.User.Nickname,
-			&i.User.Email,
-			&i.User.PasswordHash,
-			&i.User.IsGuest,
-			&i.User.CreatedAt,
-			&i.User.UpdatedAt,
-			&i.User.DmPolicy,
-			&i.User.FriendRequestPolicy,
-			&i.Role,
-			&i.JoinedAt,
-		); err != nil {
+		if err := rows.Scan(&i.UserID, &i.Role, &i.JoinedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

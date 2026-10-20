@@ -25,6 +25,11 @@ const (
 	// KindWorkspaceUpdated says the server itself changed: its name, description,
 	// icon or what members may do. The payload is the server in its API shape.
 	KindWorkspaceUpdated Kind = "workspace.updated"
+	// KindUserUpdated says a profile changed: display name, avatar, accent,
+	// bio or custom status. The payload is the `UserProfile` the API returns, so
+	// a client replaces the author already in a loaded feed. It goes to the
+	// account's servers and conversations, and to its friends once they exist.
+	KindUserUpdated Kind = "user.updated"
 	// KindReadChanged is personal: it goes only to the account whose cursor moved.
 	KindReadChanged Kind = "read.changed"
 	// KindConversationCreated is personal: a dialogue or group was opened, or a

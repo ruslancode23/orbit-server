@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // Pool is the part of pgxpool.Pool this store needs: queries plus transactions,
@@ -206,7 +207,8 @@ func (s *PostgresStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) 
 	out := make([]Member, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, Member{
-			User:     toAccount(row.User),
+			// Only the id is known here: Service fills the public part in one batch.
+			User:     profile.Public{ID: uuid.UUID(row.UserID.Bytes)},
 			Role:     Role(row.Role),
 			JoinedAt: row.JoinedAt.Time,
 		})
@@ -295,7 +297,7 @@ func (s *PostgresStore) ListBans(ctx context.Context, workspaceID uuid.UUID) ([]
 	out := make([]Ban, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, Ban{
-			User:      toAccount(row.User),
+			User:      profile.Public{ID: uuid.UUID(row.UserID.Bytes)},
 			Reason:    row.Reason.String,
 			BannedBy:  uuid.UUID(row.BannedBy.Bytes),
 			CreatedAt: row.CreatedAt.Time,
@@ -329,16 +331,6 @@ func toWorkspace(row db.Workspace) Workspace {
 			AttachFiles:    row.MembersCanAttachFiles,
 		},
 		OwnerID:   uuid.UUID(row.OwnerID.Bytes),
-		CreatedAt: row.CreatedAt.Time,
-	}
-}
-
-func toAccount(row db.User) Account {
-	return Account{
-		ID:        uuid.UUID(row.ID.Bytes),
-		Nickname:  row.Nickname,
-		Email:     row.Email.String,
-		IsGuest:   row.IsGuest,
 		CreatedAt: row.CreatedAt.Time,
 	}
 }

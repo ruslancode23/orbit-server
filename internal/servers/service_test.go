@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
 // fakeStore keeps servers, memberships and bans in memory with the same rules the
@@ -15,7 +17,7 @@ type fakeStore struct {
 	workspaces map[uuid.UUID]Workspace
 	members    map[uuid.UUID]map[uuid.UUID]Member
 	bans       map[uuid.UUID]map[uuid.UUID]Ban
-	accounts   map[uuid.UUID]Account
+	accounts   map[uuid.UUID]profile.Public
 }
 
 func newFakeStore() *fakeStore {
@@ -23,15 +25,15 @@ func newFakeStore() *fakeStore {
 		workspaces: map[uuid.UUID]Workspace{},
 		members:    map[uuid.UUID]map[uuid.UUID]Member{},
 		bans:       map[uuid.UUID]map[uuid.UUID]Ban{},
-		accounts:   map[uuid.UUID]Account{},
+		accounts:   map[uuid.UUID]profile.Public{},
 	}
 }
 
-func (s *fakeStore) account(id uuid.UUID) Account {
+func (s *fakeStore) account(id uuid.UUID) profile.Public {
 	if a, ok := s.accounts[id]; ok {
 		return a
 	}
-	a := Account{ID: id, Nickname: id.String()[:8], CreatedAt: time.Now()}
+	a := profile.Public{ID: id, Nickname: id.String()[:8], CreatedAt: time.Now()}
 	s.accounts[id] = a
 	return a
 }

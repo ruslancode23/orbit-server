@@ -113,6 +113,34 @@ func (q *Queries) GetSecretConversation(ctx context.Context, directKey pgtype.Te
 	return i, err
 }
 
+const hasSharedConversation = `-- name: HasSharedConversation :one
+SELECT EXISTS (
+    SELECT 1
+    FROM channel_members mine
+        JOIN channel_members theirs ON theirs.channel_id = mine.channel_id
+        JOIN channels ON channels.id = mine.channel_id
+    WHERE mine.user_id = $1::uuid
+      AND theirs.user_id = $2::uuid
+      AND channels.workspace_id IS NULL
+      AND channels.kind IN ('direct', 'group', 'secret')
+)
+`
+
+type HasSharedConversationParams struct {
+	A pgtype.UUID `json:"a"`
+	B pgtype.UUID `json:"b"`
+}
+
+// One query twice, so profile visibility never walks a list of conversations:
+// whether two accounts share any conversation, secret chats included — their
+// participants already know each other.
+func (q *Queries) HasSharedConversation(ctx context.Context, arg HasSharedConversationParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasSharedConversation, arg.A, arg.B)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const isChannelMember = `-- name: IsChannelMember :one
 SELECT EXISTS (
     SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2
@@ -158,18 +186,19 @@ func (q *Queries) ListConversationMemberIDs(ctx context.Context, channelID pgtyp
 }
 
 const listConversationMembers = `-- name: ListConversationMembers :many
-SELECT users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, users.friend_request_policy, channel_members.joined_at
+SELECT channel_members.user_id, channel_members.joined_at
 FROM channel_members
-    JOIN users ON users.id = channel_members.user_id
 WHERE channel_members.channel_id = $1
 ORDER BY channel_members.joined_at
 `
 
 type ListConversationMembersRow struct {
-	User     User               `json:"user"`
+	UserID   pgtype.UUID        `json:"user_id"`
 	JoinedAt pgtype.Timestamptz `json:"joined_at"`
 }
 
+// The participant list carries ids only: internal/profile fills in the public
+// part in one query, so this module never reads auth's table.
 func (q *Queries) ListConversationMembers(ctx context.Context, channelID pgtype.UUID) ([]ListConversationMembersRow, error) {
 	rows, err := q.db.Query(ctx, listConversationMembers, channelID)
 	if err != nil {
@@ -179,21 +208,44 @@ func (q *Queries) ListConversationMembers(ctx context.Context, channelID pgtype.
 	items := []ListConversationMembersRow{}
 	for rows.Next() {
 		var i ListConversationMembersRow
-		if err := rows.Scan(
-			&i.User.ID,
-			&i.User.Nickname,
-			&i.User.Email,
-			&i.User.PasswordHash,
-			&i.User.IsGuest,
-			&i.User.CreatedAt,
-			&i.User.UpdatedAt,
-			&i.User.DmPolicy,
-			&i.User.FriendRequestPolicy,
-			&i.JoinedAt,
-		); err != nil {
+		if err := rows.Scan(&i.UserID, &i.JoinedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConversationPeers = `-- name: ListConversationPeers :many
+SELECT DISTINCT theirs.user_id
+FROM channel_members mine
+    JOIN channel_members theirs ON theirs.channel_id = mine.channel_id
+    JOIN channels ON channels.id = mine.channel_id
+WHERE mine.user_id = $1
+  AND theirs.user_id <> $1
+  AND channels.workspace_id IS NULL
+  AND channels.kind IN ('direct', 'group', 'secret')
+`
+
+// Everyone who shares a conversation with this account: the audience of a
+// user.updated event. A secret chat counts too: the peer already knows the
+// account, and the event travels on the personal stream, not in the chat.
+func (q *Queries) ListConversationPeers(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listConversationPeers, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -15,6 +15,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
 
@@ -52,14 +53,9 @@ const (
 	maxPageSize      = 100
 )
 
-// Author is who wrote a message, as the API shows them.
-type Author struct {
-	ID        uuid.UUID
-	Nickname  string
-	Email     string
-	IsGuest   bool
-	CreatedAt time.Time
-}
+// Author is who wrote a message, as the API shows them. It is the same public
+// profile every other list returns, filled by internal/profile.
+type Author = profile.Public
 
 type Message struct {
 	ID        uuid.UUID
@@ -192,6 +188,12 @@ type Privacy interface {
 	BlockedIDs(ctx context.Context, userID uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
+// Profiles is the public part of an account, owned by internal/profile. One
+// call fills every author of a page, so history never asks per message.
+type Profiles interface {
+	Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]profile.Public, error)
+}
+
 type Service struct {
 	store    Store
 	channels ChannelAccess
@@ -206,6 +208,9 @@ type Service struct {
 	privacy Privacy
 	// limiter caps the first message of a new dialogue; nil means no cap.
 	limiter *ratelimit.Limiter
+	// profiles is optional at construction; main wires it in. Without it an
+	// author carries only the id, which is still enough to check authorship.
+	profiles Profiles
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -227,6 +232,49 @@ func (s *Service) SetPrivacy(p Privacy) { s.privacy = p }
 
 // SetLimiter wires the per-account bucket for the first message of a dialogue.
 func (s *Service) SetLimiter(limiter *ratelimit.Limiter) { s.limiter = limiter }
+
+// SetProfiles wires the profile module in after both exist.
+func (s *Service) SetProfiles(profiles Profiles) { s.profiles = profiles }
+
+// fillAuthors loads the public part of every author on a page in one call. The
+// author of a deleted account stays nil: its messages keep their place.
+func (s *Service) fillAuthors(ctx context.Context, list []Message) error {
+	if s.profiles == nil || len(list) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(list))
+	for i := range list {
+		if list[i].Author != nil {
+			ids = append(ids, list[i].Author.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	profiles, err := s.profiles.Profiles(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("load message authors: %w", err)
+	}
+	for i := range list {
+		if list[i].Author == nil {
+			continue
+		}
+		if loaded, ok := profiles[list[i].Author.ID]; ok {
+			author := loaded
+			list[i].Author = &author
+		}
+	}
+	return nil
+}
+
+// fillAuthor is fillAuthors for one message.
+func (s *Service) fillAuthor(ctx context.Context, message Message) (Message, error) {
+	list := []Message{message}
+	if err := s.fillAuthors(ctx, list); err != nil {
+		return Message{}, err
+	}
+	return list[0], nil
+}
 
 // withAttachments fills in the files of one message.
 func (s *Service) withAttachments(ctx context.Context, m Message) (Message, error) {
@@ -277,6 +325,9 @@ func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afte
 	}
 	list, err := s.store.Since(ctx, channelID, afterSeq, limit, callerID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.fillAuthors(ctx, list); err != nil {
 		return nil, err
 	}
 	if view.Channel.WorkspaceID == uuid.Nil {
@@ -538,6 +589,10 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	if err != nil {
 		return Message{}, false, err
 	}
+	loaded, err = s.fillAuthor(ctx, loaded)
+	if err != nil {
+		return Message{}, false, err
+	}
 	// A resend is not news: the watchers already saw this message.
 	if !existed {
 		s.publish(ctx, events.KindMessageCreated, channel.WorkspaceID, loaded)
@@ -563,6 +618,9 @@ func (s *Service) History(ctx context.Context, channelID, callerID uuid.UUID, be
 
 	list, err := s.store.List(ctx, channelID, before, limit, callerID)
 	if err != nil {
+		return Page{}, err
+	}
+	if err := s.fillAuthors(ctx, list); err != nil {
 		return Page{}, err
 	}
 
@@ -616,6 +674,10 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 	if err != nil {
 		return Message{}, err
 	}
+	loaded, err = s.fillAuthor(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
 	s.publish(ctx, events.KindMessageUpdated, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
@@ -638,6 +700,10 @@ func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Me
 		return Message{}, err
 	}
 	loaded, err = s.withAttachments(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
+	loaded, err = s.fillAuthor(ctx, loaded)
 	if err != nil {
 		return Message{}, err
 	}
@@ -679,6 +745,10 @@ func (s *Service) React(ctx context.Context, messageID, callerID uuid.UUID, emoj
 	if err != nil {
 		return Message{}, err
 	}
+	loaded, err = s.fillAuthor(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
 	s.publish(ctx, events.KindReactionChanged, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
@@ -706,6 +776,10 @@ func (s *Service) Unreact(ctx context.Context, messageID, callerID uuid.UUID, em
 	if err != nil {
 		return Message{}, err
 	}
+	loaded, err = s.fillAuthor(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
 	s.publish(ctx, events.KindReactionChanged, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
@@ -727,7 +801,9 @@ func (s *Service) readable(ctx context.Context, messageID, callerID uuid.UUID) (
 }
 
 // knownMembers drops mentions of accounts outside the server: a notification to
-// someone who cannot open the channel is noise at best.
+// someone who cannot open the channel is noise at best. The client sends ids,
+// never text, so a display name cannot redirect a mention: @nickname stays the
+// handle even when the profile shows another name.
 func (s *Service) knownMembers(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
 	seen := make(map[uuid.UUID]bool, len(ids))
 	out := make([]uuid.UUID, 0, len(ids))

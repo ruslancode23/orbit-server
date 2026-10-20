@@ -13,6 +13,14 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 )
 
+// Profiles is the public part of an account, owned by internal/profile. It
+// answers in the generated shape rather than the module's own type: the profile
+// handler reads sessions from this package, so this package must not import it
+// back. One call serves a whole list, which is how /auth/me stays one query.
+type Profiles interface {
+	UserProfiles(ctx context.Context, ids []openapi_types.UUID) (map[openapi_types.UUID]api.UserProfile, error)
+}
+
 // Handler serves the generated auth operations. The request body is already
 // validated against api/openapi.yaml when a method runs.
 type Handler struct {
@@ -20,11 +28,16 @@ type Handler struct {
 	// secureCookies is false only for plain-http local development.
 	secureCookies bool
 	log           *slog.Logger
+	// profiles is optional at construction; main wires it in.
+	profiles Profiles
 }
 
 func NewHandler(svc *Service, secureCookies bool, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, secureCookies: secureCookies, log: log}
 }
+
+// SetProfiles wires the profile module in after both exist.
+func (h *Handler) SetProfiles(profiles Profiles) { h.profiles = profiles }
 
 func (h *Handler) Register(ctx context.Context, req api.RegisterRequestObject) (api.RegisterResponseObject, error) {
 	if req.Body == nil {
@@ -88,7 +101,55 @@ func (h *Handler) GetCurrentUser(ctx context.Context, _ api.GetCurrentUserReques
 	if !ok {
 		return api.GetCurrentUser401JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeUnauthorized, "sign in first")}, nil
 	}
-	return api.GetCurrentUser200JSONResponse(toAPIUser(session.User)), nil
+
+	if h.profiles != nil {
+		profiles, err := h.profiles.UserProfiles(ctx, []openapi_types.UUID{session.User.ID})
+		if err != nil {
+			h.log.ErrorContext(ctx, "read own profile", slog.Any("error", err))
+			return api.GetCurrentUser500JSONResponse(errorBody(httpx.CodeInternal, "could not read the account")), nil
+		}
+		if profile, ok := profiles[session.User.ID]; ok {
+			return api.GetCurrentUser200JSONResponse(selfProfile(profile, session.User.Email)), nil
+		}
+	}
+	// Without the profile module the account itself is still known: answer the
+	// auth part, with the nickname standing in for the display name.
+	return api.GetCurrentUser200JSONResponse(selfProfile(toAPIProfile(session.User), session.User.Email)), nil
+}
+
+// selfProfile is the answer about oneself: the public profile plus the email,
+// which nobody else may read. A guest has no address, so the field is null.
+func selfProfile(profile api.UserProfile, email string) api.SelfProfile {
+	self := api.SelfProfile{
+		AccentColor:  profile.AccentColor,
+		AvatarUrl:    profile.AvatarUrl,
+		Bio:          profile.Bio,
+		CreatedAt:    profile.CreatedAt,
+		CustomStatus: profile.CustomStatus,
+		DisplayName:  profile.DisplayName,
+		Id:           profile.Id,
+		IsGuest:      profile.IsGuest,
+		Nickname:     profile.Nickname,
+	}
+	if email != "" {
+		address := openapi_types.Email(email)
+		self.Email = &address
+	}
+	return self
+}
+
+// toAPIProfile is the fallback shape of /auth/me when the profile module is not
+// wired in. Production always wires it.
+func toAPIProfile(u User) api.UserProfile {
+	return api.UserProfile{
+		Id:          u.ID,
+		Nickname:    u.Nickname,
+		DisplayName: u.Nickname,
+		AccentColor: api.Slate,
+		Bio:         "",
+		IsGuest:     u.IsGuest,
+		CreatedAt:   u.CreatedAt,
+	}
 }
 
 func (h *Handler) ChangePassword(ctx context.Context, req api.ChangePasswordRequestObject) (api.ChangePasswordResponseObject, error) {

@@ -30,6 +30,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 	"github.com/ruslancode23/orbit-server/internal/presence"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
+	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
@@ -98,7 +99,21 @@ func run() error {
 	// this one who may read it.
 	channelService.SetParticipants(conversationService)
 
+	// Display names, bios and custom statuses. The module owns the profile
+	// columns; servers and conversations only tell it who already knows whom.
+	profileService := profile.NewService(profile.NewPostgresStore(queries), hub, log)
+	profileService.SetServers(workspaces)
+	profileService.SetConversations(conversationService)
+	// A friend sees the profile of a friend: the friendship is what makes the
+	// two strangers readable to each other.
+	profileService.SetFriends(friendService)
+	// Avatars are signed the same way server icons are; uploading one is PR-2.
+	profileService.SetAvatars(profile.Avatars{Storage: storage, LinkTTL: cfg.Storage.IconLinkTTL})
+	workspaces.SetProfiles(profileService)
+	conversationService.SetProfiles(profileService)
+
 	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, nil, hub)
+	messageService.SetProfiles(profileService)
 	fileService := files.NewService(files.NewPostgresStore(queries), storage, channelService, messageService,
 		workspaces, cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
 	// The two know each other: a message carries files, a file needs its channel.
@@ -115,6 +130,7 @@ func run() error {
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
+	authHandler.SetProfiles(profileService)
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
 
 	workspaceHandler := servers.NewHandler(workspaces, log)
@@ -153,6 +169,7 @@ func run() error {
 		Secrets:        secrets.NewHandler(secretService, log),
 		Privacy:        privacy.NewHandler(privacyService, log),
 		Friends:        friends.NewHandler(friendService, log),
+		Profiles:       profile.NewHandler(profileService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		MaxIconBytes:   cfg.Storage.MaxIconBytes,
 		Reads: reads.NewHandler(
@@ -179,6 +196,8 @@ func run() error {
 	// Statuses are published from this loop: the debounce and the offline grace
 	// need a clock that is not a request.
 	go userPresence.Run(ctx)
+	// Profile changes wait out their own debounce in this loop, for the same reason.
+	go profileService.Run(ctx)
 
 	router, err := httpserver.NewRouter(deps)
 	if err != nil {

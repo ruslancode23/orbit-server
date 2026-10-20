@@ -34,6 +34,7 @@ type Querier interface {
 	// as opening one; this answers whether the dialogue has any message yet.
 	ChannelHasMessages(ctx context.Context, channelID pgtype.UUID) (bool, error)
 	ClaimOneTimeKey(ctx context.Context, deviceID pgtype.UUID) (ClaimOneTimeKeyRow, error)
+	ClearUserStatus(ctx context.Context, id pgtype.UUID) (ClearUserStatusRow, error)
 	CountChannelMembers(ctx context.Context, channelID pgtype.UUID) (int64, error)
 	// The counts of one channel, for the answer after the cursor moved.
 	CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error)
@@ -109,7 +110,9 @@ type Querier interface {
 	// Only a live session resolves to its user; expiry and revocation are checked here,
 	// not by the caller.
 	GetLiveSessionUser(ctx context.Context, tokenHash []byte) (GetLiveSessionUserRow, error)
-	GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow, error)
+	// The author's public part comes from internal/profile in one batch per page:
+	// this module never reads auth's table.
+	GetMessage(ctx context.Context, id pgtype.UUID) (Message, error)
 	GetSecretConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetSecretEnvelope(ctx context.Context, id pgtype.UUID) (SecretEnvelope, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)
@@ -124,6 +127,11 @@ type Querier interface {
 	// Both accounts of a dialogue in one query: a missing row means an unknown
 	// account, which the caller treats the same as a refusal.
 	GetUserPrivacy(ctx context.Context, ids []pgtype.UUID) ([]GetUserPrivacyRow, error)
+	// What a person shows about themselves (SCRUM-103). These queries own the
+	// profile columns of users; internal/auth keeps owning the rest of the row.
+	// The avatar key is read here but never leaves the profile module: the API
+	// carries a signed link instead.
+	GetUserProfile(ctx context.Context, id pgtype.UUID) (GetUserProfileRow, error)
 	// The peer of a secret chat, as this device sees it: the other device, its
 	// person and its public keys.
 	GetUserSecretChat(ctx context.Context, arg GetUserSecretChatParams) (GetUserSecretChatRow, error)
@@ -133,6 +141,10 @@ type Querier interface {
 	GetWorkspaceAccess(ctx context.Context, arg GetWorkspaceAccessParams) (GetWorkspaceAccessRow, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
+	// One query twice, so profile visibility never walks a list of conversations:
+	// whether two accounts share any conversation, secret chats included — their
+	// participants already know each other.
+	HasSharedConversation(ctx context.Context, arg HasSharedConversationParams) (bool, error)
 	// The only proof of acquaintance the product has so far: two accounts on one
 	// server. One query, so starting a dialogue does not walk a list of servers.
 	HasSharedWorkspace(ctx context.Context, arg HasSharedWorkspaceParams) (bool, error)
@@ -151,13 +163,19 @@ type Querier interface {
 	ListBlockedUsers(ctx context.Context, blockerID pgtype.UUID) ([]ListBlockedUsersRow, error)
 	// One page of history, newest first: the caller passes the seq it already has
 	// (NULL for the first page) and gets the next portion.
-	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)
+	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]Message, error)
 	// What a reconnecting client missed in one channel, oldest first (task 2.6).
-	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]ListChannelMessagesAfterRow, error)
+	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]Message, error)
 	// Who belongs to a conversation. Messages publish to each participant's personal
 	// stream, because a conversation has no server to announce to.
 	ListConversationMemberIDs(ctx context.Context, channelID pgtype.UUID) ([]pgtype.UUID, error)
+	// The participant list carries ids only: internal/profile fills in the public
+	// part in one query, so this module never reads auth's table.
 	ListConversationMembers(ctx context.Context, channelID pgtype.UUID) ([]ListConversationMembersRow, error)
+	// Everyone who shares a conversation with this account: the audience of a
+	// user.updated event. A secret chat counts too: the peer already knows the
+	// account, and the event travels on the personal stream, not in the chat.
+	ListConversationPeers(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
 	// Files of secret chats carry their own deadline: the server must forget them
 	// when the message expires, not only the sender's screen.
 	ListExpiredAttachments(ctx context.Context, limit int32) ([]Attachment, error)
@@ -181,11 +199,17 @@ type Querier interface {
 	// reads like a messenger's.
 	ListUserConversations(ctx context.Context, userID pgtype.UUID) ([]ListUserConversationsRow, error)
 	ListUserDevices(ctx context.Context, userID pgtype.UUID) ([]Device, error)
+	// One query for a whole member list or message page: a reader must never ask
+	// per author, or a page of history costs one query per message.
+	ListUserProfiles(ctx context.Context, ids []pgtype.UUID) ([]ListUserProfilesRow, error)
 	ListUserSecretChats(ctx context.Context, arg ListUserSecretChatsParams) ([]ListUserSecretChatsRow, error)
 	ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListUserWorkspacesRow, error)
+	// Same as the member list: ids only, the public part comes from internal/profile.
 	ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error)
 	ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.UUID) ([]Channel, error)
 	ListWorkspaceInvites(ctx context.Context, workspaceID pgtype.UUID) ([]Invite, error)
+	// The member list carries ids only: internal/profile fills in the public part
+	// of every account in one query, so this module never reads auth's table.
 	ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error)
 	// The cursor only moves forward: a stale device cannot mark messages unread again.
 	MarkChannelRead(ctx context.Context, arg MarkChannelReadParams) (ChannelRead, error)
@@ -202,6 +226,10 @@ type Querier interface {
 	SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error
 	SetFriendRequestPolicy(ctx context.Context, arg SetFriendRequestPolicyParams) error
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
+	// A status replaces the old one entirely: clearing one of its two parts must
+	// not leave the other behind. An expiry is part of the status, not a separate
+	// setting.
+	SetUserStatus(ctx context.Context, arg SetUserStatusParams) (SetUserStatusRow, error)
 	// Swaps the icon and reports the key it replaced, so the caller can drop the old
 	// object. The row lock keeps two uploads at once from losing track of one.
 	SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconParams) (SetWorkspaceIconRow, error)
@@ -211,6 +239,10 @@ type Querier interface {
 	UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMemberParams) (int64, error)
 	UnblockUser(ctx context.Context, arg UnblockUserParams) error
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)
+	// Only the fields the caller sent change. An empty display_name or bio clears
+	// it; the display name then falls back to the nickname. An accent color is a
+	// complete replacement, never a partial one.
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	// Only what the caller sent changes: a NULL name keeps the old one, and the
 	// description is touched only when set_description is true (NULL then clears it).
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
