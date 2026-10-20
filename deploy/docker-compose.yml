@@ -54,6 +54,8 @@ services:
     image: livekit/livekit-server:latest
     # --dev: fixed API key devkey/secret, single UDP port 7882 for media.
     command: --dev --bind 0.0.0.0 --node-ip 127.0.0.1 --config /etc/livekit.yaml
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:

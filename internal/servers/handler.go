@@ -16,13 +16,25 @@ import (
 
 // Handler serves the generated workspace operations. It only maps HTTP to the
 // service and back: every permission rule lives in Service.
+// VoicePresence is who is in each voice channel of a server; the voice module
+// owns the state, the server response carries a snapshot of it.
+type VoicePresence interface {
+	ForWorkspace(ctx context.Context, workspaceID uuid.UUID) []api.VoicePresence
+}
+
 type Handler struct {
-	svc *Service
-	log *slog.Logger
+	svc   *Service
+	log   *slog.Logger
+	voice VoicePresence
 }
 
 func NewHandler(svc *Service, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, log: log}
+}
+
+// SetVoicePresence wires the voice module in after both exist.
+func (h *Handler) SetVoicePresence(presence VoicePresence) {
+	h.voice = presence
 }
 
 // caller returns the account of the session, or false when there is none.
@@ -91,7 +103,12 @@ func (h *Handler) GetWorkspace(ctx context.Context, req api.GetWorkspaceRequestO
 		h.log.ErrorContext(ctx, "get workspace", slog.Any("error", err))
 		return api.GetWorkspace500JSONResponse(internal("could not read the server")), nil
 	}
-	return api.GetWorkspace200JSONResponse(toAPIMembership(membership)), nil
+	response := toAPIMembership(membership)
+	if h.voice != nil {
+		voice := h.voice.ForWorkspace(ctx, req.WorkspaceId)
+		response.Voice = &voice
+	}
+	return api.GetWorkspace200JSONResponse(response), nil
 }
 
 func (h *Handler) UpdateWorkspace(ctx context.Context, req api.UpdateWorkspaceRequestObject) (api.UpdateWorkspaceResponseObject, error) {
