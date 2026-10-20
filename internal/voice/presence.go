@@ -20,6 +20,11 @@ import (
 // first read after a restart.
 const presenceStaleAfter = 30 * time.Second
 
+// How often an occupied room is read again. Webhooks carry joins and leaves at
+// once; mute and screen-share toggles have no webhook, so a small poll keeps
+// their icons honest without asking about empty channels at all.
+const presencePollEvery = 3 * time.Second
+
 // ChannelLookup is the part of internal/channels presence needs: it turns a
 // channel id into its server and finds the voice channels of a server.
 type ChannelLookup interface {
@@ -54,6 +59,7 @@ type Presence struct {
 	log    *slog.Logger
 	now    func() time.Time
 	stale  time.Duration
+	poll   time.Duration
 }
 
 func NewPresence(lookup ChannelLookup, live RoomReader, publisher Publisher, log *slog.Logger) *Presence {
@@ -65,6 +71,41 @@ func NewPresence(lookup ChannelLookup, live RoomReader, publisher Publisher, log
 		log:    log,
 		now:    time.Now,
 		stale:  presenceStaleAfter,
+		poll:   presencePollEvery,
+	}
+}
+
+// Run keeps mute and screen-share flags fresh for the rooms people are in.
+// It stops with the server context.
+func (p *Presence) Run(ctx context.Context) {
+	ticker := time.NewTicker(p.poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.refreshOccupied(ctx)
+		}
+	}
+}
+
+func (p *Presence) refreshOccupied(ctx context.Context) {
+	p.mu.Lock()
+	channels := make([]uuid.UUID, 0, len(p.rooms))
+	for channelID, entry := range p.rooms {
+		if len(entry.participants) > 0 {
+			channels = append(channels, channelID)
+		}
+	}
+	p.mu.Unlock()
+
+	for _, channelID := range channels {
+		channel, err := p.lookup.Lookup(ctx, channelID)
+		if err != nil {
+			continue
+		}
+		p.update(ctx, channel, true)
 	}
 }
 

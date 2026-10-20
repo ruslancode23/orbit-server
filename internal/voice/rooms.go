@@ -25,7 +25,9 @@ type Participant struct {
 // protocol module already carries the generated client; the only thing added
 // here is the server-signed JWT LiveKit wants on every call.
 type Rooms struct {
-	client livekit.RoomService
+	base      string
+	apiKey    string
+	apiSecret string
 }
 
 func NewRooms(livekitURL, apiKey, apiSecret string) (*Rooms, error) {
@@ -33,12 +35,18 @@ func NewRooms(livekitURL, apiKey, apiSecret string) (*Rooms, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := livekit.NewRoomServiceProtobufClient(base, &signedClient{key: apiKey, secret: apiSecret})
-	return &Rooms{client: client}, nil
+	return &Rooms{base: base, apiKey: apiKey, apiSecret: apiSecret}, nil
+}
+
+// clientFor signs a token bound to one room: LiveKit's RoomService checks that
+// the caller may join the room it asks about, even for an administrative read.
+func (r *Rooms) clientFor(room string) livekit.RoomService {
+	return livekit.NewRoomServiceProtobufClient(r.base,
+		&signedClient{key: r.apiKey, secret: r.apiSecret, room: room})
 }
 
 func (r *Rooms) List(ctx context.Context, room string) ([]Participant, error) {
-	response, err := r.client.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
+	response, err := r.clientFor(room).ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
 	if err != nil {
 		return nil, fmt.Errorf("list participants: %w", err)
 	}
@@ -53,7 +61,7 @@ func (r *Rooms) List(ctx context.Context, room string) ([]Participant, error) {
 }
 
 func (r *Rooms) Delete(ctx context.Context, room string) error {
-	if _, err := r.client.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
+	if _, err := r.clientFor(room).DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
 		return fmt.Errorf("delete room: %w", err)
 	}
 	return nil
@@ -115,12 +123,14 @@ func apiURL(raw string) (string, error) {
 type signedClient struct {
 	key    string
 	secret string
+	room   string
 }
 
 func (c *signedClient) Do(request *http.Request) (*http.Response, error) {
 	token, err := auth.NewAccessToken(c.key, c.secret).
+		SetIdentity("orbit-server").
 		SetValidFor(time.Minute).
-		SetVideoGrant(&auth.VideoGrant{RoomAdmin: true}).
+		SetVideoGrant(&auth.VideoGrant{RoomAdmin: true, RoomJoin: true, Room: c.room}).
 		ToJWT()
 	if err != nil {
 		return nil, fmt.Errorf("sign LiveKit admin token: %w", err)

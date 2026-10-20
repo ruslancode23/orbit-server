@@ -84,11 +84,12 @@ func run() error {
 
 	workspaceHandler := servers.NewHandler(workspaces, log)
 	var voiceWebhook http.Handler
+	var presence *voice.Presence
 	roomClient, err := voice.NewRooms(cfg.LiveKit.URL, cfg.LiveKit.APIKey, cfg.LiveKit.APISecret)
 	if err != nil {
 		log.Warn("voice presence disabled: could not build LiveKit room client", slog.Any("error", err))
 	} else {
-		presence := voice.NewPresence(channelService, roomClient, hub, log)
+		presence = voice.NewPresence(channelService, roomClient, hub, log)
 		workspaceHandler.SetVoicePresence(presence)
 		voiceWebhook = voice.NewWebhook(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, presence, log)
 	}
@@ -120,6 +121,9 @@ func run() error {
 
 	// Files whose message never arrived are swept in the background.
 	go files.NewSweeper(fileService, cfg.Storage.OrphanAge, log).Run(ctx)
+	if presence != nil {
+		go presence.Run(ctx)
+	}
 
 	router, err := httpserver.NewRouter(deps)
 	if err != nil {
