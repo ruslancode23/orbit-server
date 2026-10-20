@@ -27,6 +27,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/objectstore"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/presence"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -92,6 +93,14 @@ func run() error {
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
 
 	workspaceHandler := servers.NewHandler(workspaces, log)
+
+	// Who is online in text. Like voice presence it lives in this process: a
+	// restart costs one reconnect, and the clients announce themselves again.
+	userPresence := presence.NewService(presence.NewMemoryStore(), workspaces, hub, log)
+	workspaceHandler.SetPresence(userPresence)
+	gatewayHandler := gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log)
+	gatewayHandler.SetPresence(userPresence)
+
 	var voiceWebhook http.Handler
 	var presence *voice.Presence
 	roomClient, err := voice.NewRooms(cfg.LiveKit.URL, cfg.LiveKit.APIKey, cfg.LiveKit.APISecret)
@@ -119,7 +128,7 @@ func run() error {
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,
 		Workspaces: workspaceHandler,
-		Gateway:    gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log),
+		Gateway:    gatewayHandler,
 		Channels:   channels.NewHandler(channelService, log),
 		Messages: messages.NewHandler(
 			messageService, log),
@@ -136,6 +145,9 @@ func run() error {
 	if presence != nil {
 		go presence.Run(ctx)
 	}
+	// Statuses are published from this loop: the debounce and the offline grace
+	// need a clock that is not a request.
+	go userPresence.Run(ctx)
 
 	router, err := httpserver.NewRouter(deps)
 	if err != nil {

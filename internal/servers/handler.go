@@ -22,10 +22,17 @@ type VoicePresence interface {
 	ForWorkspace(ctx context.Context, workspaceID uuid.UUID) []api.VoicePresence
 }
 
+// UserPresence is where an account is, as other people may know it. The
+// presence module owns the state; the member list carries a snapshot of it.
+type UserPresence interface {
+	Statuses(userIDs []uuid.UUID) map[uuid.UUID]api.PresenceStatus
+}
+
 type Handler struct {
-	svc   *Service
-	log   *slog.Logger
-	voice VoicePresence
+	svc      *Service
+	log      *slog.Logger
+	voice    VoicePresence
+	presence UserPresence
 }
 
 func NewHandler(svc *Service, log *slog.Logger) *Handler {
@@ -35,6 +42,11 @@ func NewHandler(svc *Service, log *slog.Logger) *Handler {
 // SetVoicePresence wires the voice module in after both exist.
 func (h *Handler) SetVoicePresence(presence VoicePresence) {
 	h.voice = presence
+}
+
+// SetPresence wires the presence module in after both exist.
+func (h *Handler) SetPresence(presence UserPresence) {
+	h.presence = presence
 }
 
 // caller returns the account of the session, or false when there is none.
@@ -230,10 +242,30 @@ func (h *Handler) ListWorkspaceMembers(ctx context.Context, req api.ListWorkspac
 	}
 
 	out := make(api.ListWorkspaceMembers200JSONResponse, 0, len(members))
+	statuses := h.statuses(members)
 	for _, m := range members {
-		out = append(out, toAPIMember(m))
+		member := toAPIMember(m)
+		if status, ok := statuses[m.User.ID]; ok {
+			member.Presence = &status
+		}
+		out = append(out, member)
 	}
 	return out, nil
+}
+
+// statuses is where every member is right now, or nothing when the presence
+// module is not wired in. Only members of the server ever get this list, so
+// nothing has to be hidden from a stranger here: presence itself reports an
+// invisible account as offline.
+func (h *Handler) statuses(members []Member) map[uuid.UUID]api.PresenceStatus {
+	if h.presence == nil {
+		return nil
+	}
+	userIDs := make([]uuid.UUID, 0, len(members))
+	for _, m := range members {
+		userIDs = append(userIDs, m.User.ID)
+	}
+	return h.presence.Statuses(userIDs)
 }
 
 func (h *Handler) SetWorkspaceMemberRole(ctx context.Context, req api.SetWorkspaceMemberRoleRequestObject) (api.SetWorkspaceMemberRoleResponseObject, error) {

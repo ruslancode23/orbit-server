@@ -293,6 +293,20 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID) ([]Membership, err
 	return list, nil
 }
 
+// Servers lists the ids of the servers an account is on. Presence announces to
+// them, so it needs the ids and nothing else: no icons are signed, unlike List.
+func (s *Service) Servers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	memberships, err := s.store.ListMemberships(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, 0, len(memberships))
+	for _, membership := range memberships {
+		out = append(out, membership.Workspace.ID)
+	}
+	return out, nil
+}
+
 func (s *Service) Get(ctx context.Context, workspaceID, callerID uuid.UUID) (Membership, error) {
 	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleMember)
 	if err != nil {

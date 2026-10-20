@@ -17,6 +17,11 @@ const (
 	KindChannelDeleted  Kind = "channel.deleted"
 	KindMemberChanged   Kind = "member.changed"
 	KindVoicePresence   Kind = "voice.presence"
+	// KindPresenceUpdated says an account went online, idle, do-not-disturb or
+	// offline. It goes to the servers the account is on and to its friends, and
+	// the payload is the same `PresenceState` the member list carries. An account
+	// that chose to be invisible arrives here as offline.
+	KindPresenceUpdated Kind = "presence.updated"
 	// KindWorkspaceUpdated says the server itself changed: its name, description,
 	// icon or what members may do. The payload is the server in its API shape.
 	KindWorkspaceUpdated Kind = "workspace.updated"
