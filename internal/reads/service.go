@@ -50,7 +50,7 @@ type Members interface {
 // Watchers tells the other devices of the same account that its cursor moved.
 // Optional: with nil, the counters still work, they just arrive on refresh.
 type Watchers interface {
-	PublishTo(userID uuid.UUID, event events.Event)
+	PublishToUser(userID uuid.UUID, event events.Event)
 }
 
 type Service struct {
@@ -71,6 +71,10 @@ func (s *Service) Mark(ctx context.Context, channelID, userID uuid.UUID, seq int
 	if err != nil {
 		return Unread{}, mapAccessError(err)
 	}
+	if view.Channel.Kind == channels.KindSecret {
+		// A secret chat has no read counters: the server does not know what was read.
+		return Unread{}, ErrNotFound
+	}
 	if seq < 0 {
 		seq = 0
 	}
@@ -82,7 +86,7 @@ func (s *Service) Mark(ctx context.Context, channelID, userID uuid.UUID, seq int
 
 	// The other devices of this account hear it at once; nobody else does.
 	if s.watchers != nil {
-		s.watchers.PublishTo(userID, events.Event{
+		s.watchers.PublishToUser(userID, events.Event{
 			Kind:        events.KindReadChanged,
 			WorkspaceID: view.Channel.WorkspaceID,
 			ChannelID:   channelID,
@@ -100,8 +104,12 @@ func (s *Service) Mark(ctx context.Context, channelID, userID uuid.UUID, seq int
 
 // Channel is where one channel stands for this account.
 func (s *Service) Channel(ctx context.Context, channelID, userID uuid.UUID) (Unread, error) {
-	if _, err := s.channels.Get(ctx, channelID, userID); err != nil {
+	view, err := s.channels.Get(ctx, channelID, userID)
+	if err != nil {
 		return Unread{}, mapAccessError(err)
+	}
+	if view.Channel.Kind == channels.KindSecret {
+		return Unread{}, ErrNotFound
 	}
 	return s.store.Channel(ctx, channelID, userID)
 }

@@ -1,6 +1,6 @@
 -- name: CreateAttachment :one
-INSERT INTO attachments (uploader_id, storage_key, file_name, mime_type, size_bytes, width, height)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO attachments (uploader_id, channel_id, storage_key, file_name, mime_type, size_bytes, width, height, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- An attachment is bound to its message only by the user that uploaded it.
@@ -30,3 +30,15 @@ DELETE FROM attachments WHERE id = $1;
 
 -- name: DetachOrphanedAttachment :exec
 DELETE FROM attachments WHERE id = $1 AND message_id IS NULL;
+
+-- Files of secret chats carry their own deadline: the server must forget them
+-- when the message expires, not only the sender's screen.
+-- name: ListExpiredAttachments :many
+SELECT * FROM attachments
+WHERE expires_at IS NOT NULL AND expires_at <= now()
+ORDER BY expires_at
+LIMIT $1;
+
+-- name: DeleteExpiredAttachment :exec
+DELETE FROM attachments
+WHERE id = $1 AND expires_at IS NOT NULL AND expires_at <= now();

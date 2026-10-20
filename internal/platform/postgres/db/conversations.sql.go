@@ -70,11 +70,33 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 }
 
 const getDirectConversation = `-- name: GetDirectConversation :one
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE direct_key = $1
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE direct_key = $1 AND kind = 'direct'
 `
 
 func (q *Queries) GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error) {
 	row := q.db.QueryRow(ctx, getDirectConversation, directKey)
+	var i Channel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Kind,
+		&i.Name,
+		&i.Topic,
+		&i.Position,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsReadOnly,
+		&i.DirectKey,
+	)
+	return i, err
+}
+
+const getSecretConversation = `-- name: GetSecretConversation :one
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE direct_key = $1 AND kind = 'secret'
+`
+
+func (q *Queries) GetSecretConversation(ctx context.Context, directKey pgtype.Text) (Channel, error) {
+	row := q.db.QueryRow(ctx, getSecretConversation, directKey)
 	var i Channel
 	err := row.Scan(
 		&i.ID,
@@ -107,6 +129,32 @@ func (q *Queries) IsChannelMember(ctx context.Context, arg IsChannelMemberParams
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listConversationMemberIDs = `-- name: ListConversationMemberIDs :many
+SELECT user_id FROM channel_members WHERE channel_id = $1 ORDER BY joined_at
+`
+
+// Who belongs to a conversation. Messages publish to each participant's personal
+// stream, because a conversation has no server to announce to.
+func (q *Queries) ListConversationMemberIDs(ctx context.Context, channelID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listConversationMemberIDs, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listConversationMembers = `-- name: ListConversationMembers :many
@@ -156,7 +204,11 @@ SELECT channels.id, channels.workspace_id, channels.kind, channels.name, channel
 FROM channel_members
     JOIN channels ON channels.id = channel_members.channel_id
     LEFT JOIN messages ON messages.channel_id = channels.id
-WHERE channel_members.user_id = $1 AND channels.workspace_id IS NULL
+WHERE channel_members.user_id = $1
+  AND channels.workspace_id IS NULL
+  -- A secret chat is not a dialogue in the ordinary sense: it lives on one
+  -- device and has its own endpoints, so the conversation list leaves it out.
+  AND channels.kind IN ('direct', 'group')
 GROUP BY channels.id
 ORDER BY last_seq DESC, channels.created_at DESC
 `

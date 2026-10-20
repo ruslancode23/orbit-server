@@ -48,7 +48,7 @@ func (h *Handler) UploadAttachment(ctx context.Context, req api.UploadAttachment
 		return api.UploadAttachment400JSONResponse{ErrorJSONResponse: badRequest(`the form field must be named "file"`)}, nil
 	}
 
-	attachment, err := h.svc.Upload(ctx, req.ChannelId, userID, part.FileName(), part)
+	attachment, err := h.svc.Upload(ctx, req.ChannelId, userID, part.FileName(), part, req.Params.ExpiresAt)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return api.UploadAttachment404JSONResponse(api.Error(notFound())), nil
@@ -100,6 +100,7 @@ func APIAttachment(a Attachment) api.Attachment {
 		MimeType:  a.MimeType,
 		SizeBytes: a.SizeBytes,
 		CreatedAt: a.CreatedAt,
+		ExpiresAt: a.ExpiresAt,
 	}
 	if a.Width != nil {
 		width := *a.Width

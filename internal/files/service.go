@@ -46,6 +46,9 @@ type Attachment struct {
 	ID         uuid.UUID
 	MessageID  *uuid.UUID
 	UploaderID uuid.UUID
+	// ChannelID is where the file was uploaded. A secret chat file has no
+	// message: its recipients reach it through the channel.
+	ChannelID  *uuid.UUID
 	StorageKey string
 	FileName   string
 	MimeType   string
@@ -53,6 +56,9 @@ type Attachment struct {
 	Width      *int
 	Height     *int
 	CreatedAt  time.Time
+	// ExpiresAt is when the server forgets the file. Only secret chat files
+	// have one.
+	ExpiresAt *time.Time
 }
 
 // Link is a download: where to get the file and until when.
@@ -71,6 +77,10 @@ type Store interface {
 	// Orphans are files whose message never arrived.
 	Orphans(ctx context.Context, olderThan time.Time, limit int) ([]Attachment, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	// Expired are files whose deadline has passed, attached or not.
+	Expired(ctx context.Context, limit int) ([]Attachment, error)
+	// DeleteExpired removes a file only if its deadline has passed.
+	DeleteExpired(ctx context.Context, id uuid.UUID) error
 }
 
 // Storage is the object store behind the files.
@@ -140,12 +150,24 @@ func (s *Service) MayAttach(ctx context.Context, channel channels.Channel, calle
 // MaxBytes is this instance's upload limit, so the API can say it plainly.
 func (s *Service) MaxBytes() int64 { return s.maxBytes }
 
+// maxSecretFileTTL is the longest a secret chat file may outlive its upload:
+// the same week a self-destruct timer can have.
+const maxSecretFileTTL = 7 * 24 * time.Hour
+
 // Upload stores one file for a channel the caller may write in. The file
-// belongs to no message yet: a message names it when it is sent.
-func (s *Service) Upload(ctx context.Context, channelID, uploaderID uuid.UUID, fileName string, body io.Reader) (Attachment, error) {
-	channel, err := s.channels.MayWrite(ctx, channelID, uploaderID)
+// belongs to no message yet: a message names it when it is sent. A secret chat
+// has no plaintext messages, so its files are bound to the channel and carry a
+// deadline instead.
+func (s *Service) Upload(ctx context.Context, channelID, uploaderID uuid.UUID, fileName string, body io.Reader, expiresAt *time.Time) (Attachment, error) {
+	view, err := s.channels.Get(ctx, channelID, uploaderID)
 	if err != nil {
 		return Attachment{}, mapAccessError(err)
+	}
+	channel := view.Channel
+	// A secret chat allows only ciphertext files; a message channel is written
+	// the ordinary way.
+	if channel.Kind != channels.KindSecret && !view.CanWrite {
+		return Attachment{}, ErrForbidden
 	}
 	if err := s.MayAttach(ctx, channel, uploaderID); err != nil {
 		return Attachment{}, err
@@ -183,13 +205,19 @@ func (s *Service) Upload(ctx context.Context, channelID, uploaderID uuid.UUID, f
 		return Attachment{}, err
 	}
 
-	stored, err := s.store.Create(ctx, Attachment{
+	attachment := Attachment{
 		UploaderID: uploaderID,
+		ChannelID:  &channel.ID,
 		StorageKey: key,
 		FileName:   cleanFileName(fileName),
 		MimeType:   mimeType,
 		SizeBytes:  int64(len(buffered)),
-	})
+	}
+	if channel.Kind == channels.KindSecret {
+		attachment.ExpiresAt = secretFileExpiry(expiresAt)
+	}
+
+	stored, err := s.store.Create(ctx, attachment)
 	if err != nil {
 		// The row is what makes the file findable; without it, drop the object.
 		_ = s.storage.Delete(ctx, key)
@@ -199,16 +227,30 @@ func (s *Service) Upload(ctx context.Context, channelID, uploaderID uuid.UUID, f
 }
 
 // Link issues a short-lived download for someone who may read the channel the
-// file lives in. A file not yet attached is visible only to its uploader.
+// file lives in. A file not yet attached is visible only to its uploader, and
+// to the other participant of a secret chat, who has no message to point at.
 func (s *Service) Link(ctx context.Context, attachmentID, callerID uuid.UUID) (Link, error) {
 	attachment, err := s.store.Attachment(ctx, attachmentID)
 	if err != nil {
 		return Link{}, err
 	}
+	if attachment.ExpiresAt != nil && !time.Now().Before(*attachment.ExpiresAt) {
+		// The server has not swept it yet, but it is already gone.
+		return Link{}, ErrNotFound
+	}
 
 	if attachment.MessageID == nil {
 		if attachment.UploaderID != callerID {
-			return Link{}, ErrNotFound
+			if attachment.ChannelID == nil {
+				return Link{}, ErrNotFound
+			}
+			view, err := s.channels.Get(ctx, *attachment.ChannelID, callerID)
+			if err != nil {
+				return Link{}, mapAccessError(err)
+			}
+			if view.Channel.Kind != channels.KindSecret {
+				return Link{}, ErrNotFound
+			}
 		}
 	} else {
 		channelID, err := s.messages.ChannelOf(ctx, *attachment.MessageID)
@@ -251,6 +293,27 @@ func (s *Service) ByMessages(ctx context.Context, messageIDs []uuid.UUID) ([]Att
 		return nil, nil
 	}
 	return s.store.ByMessages(ctx, messageIDs)
+}
+
+// SweepExpired deletes secret chat files whose deadline has passed, object
+// first, row second. A message timer deletes on the device; this is what makes
+// the server forget too.
+func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
+	expired, err := s.store.Expired(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, attachment := range expired {
+		if err := s.storage.Delete(ctx, attachment.StorageKey); err != nil {
+			return removed, err
+		}
+		if err := s.store.DeleteExpired(ctx, attachment.ID); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // SweepOrphans deletes files whose message never arrived, object first, row
@@ -339,4 +402,15 @@ func (c *countingReader) Read(p []byte) (int, error) {
 		return n, fmt.Errorf("read file: %w", err)
 	}
 	return n, err //nolint:wrapcheck // io.EOF must reach the caller unwrapped
+}
+
+// secretFileExpiry is the file's deadline: what the client asked for, never
+// longer than a week, and a week by default. A past date becomes a week: a
+// client cannot make the server delete a file before it could be delivered.
+func secretFileExpiry(requested *time.Time) *time.Time {
+	deadline := time.Now().Add(maxSecretFileTTL)
+	if requested != nil && requested.After(time.Now()) && requested.Before(deadline) {
+		deadline = *requested
+	}
+	return &deadline
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
 var (
@@ -30,6 +32,10 @@ type Kind string
 const (
 	KindDirect Kind = "direct"
 	KindGroup  Kind = "group"
+	// KindSecret is a pair of devices whose messages only they can read. It is a
+	// channel so that it has an id and participants, but the messages endpoints
+	// refuse it: neither text nor keys ever reach the server.
+	KindSecret Kind = "secret"
 )
 
 type Conversation struct {
@@ -51,22 +57,39 @@ type Store interface {
 	Create(ctx context.Context, kind Kind, directKey string, memberIDs []uuid.UUID) (Conversation, error)
 	// Direct finds the pair's conversation, or ErrNotFound.
 	Direct(ctx context.Context, directKey string) (Conversation, error)
+	// Secret finds the secret chat of a pair of devices, or ErrNotFound.
+	Secret(ctx context.Context, key string) (Conversation, error)
 	Conversation(ctx context.Context, id uuid.UUID) (Conversation, error)
 	List(ctx context.Context, userID uuid.UUID) ([]Conversation, error)
 	IsParticipant(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
+	// MemberIDs is who belongs to a conversation: messages go to each of them
+	// personally, because a conversation has no server to announce to.
+	MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 	// KnownUsers reports which of the ids are real accounts.
 	KnownUsers(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
+}
+
+// Publisher tells a person's other connections what happened. Optional: with
+// nil, everything is stored and nothing arrives live.
+type Publisher interface {
+	PublishToUser(userID uuid.UUID, event events.Event)
 }
 
 type Service struct {
 	store Store
 	// maxMembers caps a group chat; a pair is always two.
 	maxMembers int
+	// publisher is optional; see Publisher.
+	publisher Publisher
 }
 
 func NewService(store Store, maxMembers int) *Service {
 	return &Service{store: store, maxMembers: maxMembers}
 }
+
+// SetPublisher wires the live stream in after construction; conversations and
+// the gateway do not depend on each other's packages.
+func (s *Service) SetPublisher(p Publisher) { s.publisher = p }
 
 // Start opens a conversation with the named people, or returns the one that
 // already exists for a pair: two people have one dialogue, not a new one per
@@ -105,7 +128,57 @@ func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.
 		}
 	}
 
-	return s.store.Create(ctx, kind, directKey, members)
+	created, err := s.store.Create(ctx, kind, directKey, members)
+	if err != nil {
+		return Conversation{}, err
+	}
+	s.publish(events.KindConversationCreated, created)
+	return created, nil
+}
+
+// EnsureSecret returns the secret chat of a pair of devices, creating it when it
+// is the first time. The key names the pair of devices, so the same two devices
+// always land in one chat, whichever side starts it.
+func (s *Service) EnsureSecret(ctx context.Context, key string, memberIDs []uuid.UUID) (Conversation, bool, error) {
+	members := unique(memberIDs)
+	if len(members) != 2 {
+		return Conversation{}, false, ErrNoMembers
+	}
+
+	// A secret chat is looked up by its own key; the direct one is not it.
+	existing, err := s.store.Secret(ctx, key)
+	switch {
+	case err == nil:
+		return existing, false, nil
+	case !errors.Is(err, ErrNotFound):
+		return Conversation{}, false, err
+	}
+
+	created, err := s.store.Create(ctx, KindSecret, key, members)
+	if err != nil {
+		return Conversation{}, false, err
+	}
+	return created, true, nil
+}
+
+// MemberIDs is who is in a conversation, for publishing personal events.
+func (s *Service) MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.MemberIDs(ctx, channelID)
+}
+
+// publish tells each participant's own connections about a new conversation.
+func (s *Service) publish(kind events.Kind, conversation Conversation) {
+	if s.publisher == nil {
+		return
+	}
+	payload := toAPIConversation(conversation)
+	for _, member := range conversation.Members {
+		s.publisher.PublishToUser(member.ID, events.Event{
+			Kind:      kind,
+			ChannelID: conversation.ID,
+			Payload:   payload,
+		})
+	}
 }
 
 // Get is one conversation the caller is in.
@@ -117,7 +190,16 @@ func (s *Service) Get(ctx context.Context, id, callerID uuid.UUID) (Conversation
 	if !inside {
 		return Conversation{}, ErrNotFound
 	}
-	return s.store.Conversation(ctx, id)
+	conversation, err := s.store.Conversation(ctx, id)
+	if err != nil {
+		return Conversation{}, err
+	}
+	// A secret chat is reached through its own endpoints, which check that the
+	// caller's device takes part in it.
+	if conversation.Kind == KindSecret {
+		return Conversation{}, ErrNotFound
+	}
+	return conversation, nil
 }
 
 // List is the caller's conversations, the liveliest first.

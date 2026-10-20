@@ -132,6 +132,15 @@ type ChannelAccess interface {
 // publisher is allowed: the HTTP API works the same, nobody is just told live.
 type Publisher interface {
 	Publish(event events.Event)
+	// PublishToUser reaches one account's connections, wherever they are: a
+	// conversation has no server to announce to.
+	PublishToUser(userID uuid.UUID, event events.Event)
+}
+
+// Conversations tells who is in a conversation. Optional: without it, a
+// conversation message is stored and simply not announced live.
+type Conversations interface {
+	MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 }
 
 // Files binds uploaded files to the message that names them and loads the
@@ -158,6 +167,8 @@ type Service struct {
 	files Files
 	// publisher is optional; see Publisher.
 	publisher Publisher
+	// conversations is optional; see Conversations.
+	conversations Conversations
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -168,6 +179,10 @@ func NewService(store Store, access ChannelAccess, members Members, files Files,
 // files, and a file asks which channel its message is in, so one of the two
 // has to be told about the other once both exist.
 func (s *Service) SetFiles(f Files) { s.files = f }
+
+// SetConversations wires the conversations module in after construction: a
+// message in a conversation is published to its people, not to a server.
+func (s *Service) SetConversations(c Conversations) { s.conversations = c }
 
 // withAttachments fills in the files of one message.
 func (s *Service) withAttachments(ctx context.Context, m Message) (Message, error) {
@@ -203,8 +218,12 @@ func (s *Service) withAttachmentsPage(ctx context.Context, list []Message) ([]Me
 
 // Since returns what a reconnecting client missed in one channel, oldest first.
 func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afterSeq int64, limit int) ([]Message, error) {
-	if _, err := s.channels.Get(ctx, channelID, callerID); err != nil {
+	view, err := s.channels.Get(ctx, channelID, callerID)
+	if err != nil {
 		return nil, mapAccessError(err)
+	}
+	if view.Channel.Kind == channels.KindSecret {
+		return nil, ErrNotFound
 	}
 	switch {
 	case limit <= 0:
@@ -244,24 +263,46 @@ func (s *Service) SinceEvents(ctx context.Context, channelID, callerID uuid.UUID
 	return out, nil
 }
 
-// publish tells the watchers of this channel's server what happened.
-func (s *Service) publish(kind events.Kind, workspaceID uuid.UUID, m Message) {
+// publish tells the watchers what happened: a server's connections for a
+// channel, each participant's own connections for a conversation. A secret chat
+// never reaches this code — it has no plaintext messages at all.
+func (s *Service) publish(ctx context.Context, kind events.Kind, workspaceID uuid.UUID, m Message) {
 	if s.publisher == nil {
 		return
 	}
-	s.publisher.Publish(events.Event{
+	event := events.Event{
 		Kind:        kind,
 		WorkspaceID: workspaceID,
 		ChannelID:   m.ChannelID,
 		Seq:         m.Seq,
 		Payload:     APIMessage(m),
-	})
+	}
+	if workspaceID != uuid.Nil {
+		s.publisher.Publish(event)
+		return
+	}
+	if s.conversations == nil {
+		return
+	}
+	members, err := s.conversations.MemberIDs(ctx, m.ChannelID)
+	if err != nil {
+		// The message is stored; a failed fan-out must not fail the send.
+		return
+	}
+	for _, memberID := range members {
+		s.publisher.PublishToUser(memberID, event)
+	}
 }
 
 func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (Message, bool, error) {
 	channel, err := s.channels.MayWrite(ctx, m.ChannelID, callerID)
 	if err != nil {
 		return Message{}, false, mapAccessError(err)
+	}
+	// A secret chat carries ciphertext envelopes, not messages: plaintext must
+	// never be stored for it.
+	if channel.Kind == channels.KindSecret {
+		return Message{}, false, ErrNotFound
 	}
 
 	content, err := cleanContent(m.Content)
@@ -327,14 +368,18 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	}
 	// A resend is not news: the watchers already saw this message.
 	if !existed {
-		s.publish(events.KindMessageCreated, channel.WorkspaceID, loaded)
+		s.publish(ctx, events.KindMessageCreated, channel.WorkspaceID, loaded)
 	}
 	return loaded, existed, nil
 }
 
 func (s *Service) History(ctx context.Context, channelID, callerID uuid.UUID, before *int64, limit int) (Page, error) {
-	if _, err := s.channels.Get(ctx, channelID, callerID); err != nil {
+	view, err := s.channels.Get(ctx, channelID, callerID)
+	if err != nil {
 		return Page{}, mapAccessError(err)
+	}
+	if view.Channel.Kind == channels.KindSecret {
+		return Page{}, ErrNotFound
 	}
 
 	switch {
@@ -390,7 +435,7 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 	if err != nil {
 		return Message{}, err
 	}
-	s.publish(events.KindMessageUpdated, channel.WorkspaceID, loaded)
+	s.publish(ctx, events.KindMessageUpdated, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
 
@@ -415,7 +460,7 @@ func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Me
 	if err != nil {
 		return Message{}, err
 	}
-	s.publish(events.KindMessageDeleted, channel.WorkspaceID, loaded)
+	s.publish(ctx, events.KindMessageDeleted, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
 
@@ -429,6 +474,9 @@ func (s *Service) React(ctx context.Context, messageID, callerID uuid.UUID, emoj
 	channel, err := s.channels.MayWrite(ctx, message.ChannelID, callerID)
 	if err != nil {
 		return Message{}, mapAccessError(err)
+	}
+	if channel.Kind == channels.KindSecret {
+		return Message{}, ErrNotFound
 	}
 
 	emoji, err = cleanEmoji(emoji)
@@ -450,7 +498,7 @@ func (s *Service) React(ctx context.Context, messageID, callerID uuid.UUID, emoj
 	if err != nil {
 		return Message{}, err
 	}
-	s.publish(events.KindReactionChanged, channel.WorkspaceID, loaded)
+	s.publish(ctx, events.KindReactionChanged, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
 
@@ -477,7 +525,7 @@ func (s *Service) Unreact(ctx context.Context, messageID, callerID uuid.UUID, em
 	if err != nil {
 		return Message{}, err
 	}
-	s.publish(events.KindReactionChanged, channel.WorkspaceID, loaded)
+	s.publish(ctx, events.KindReactionChanged, channel.WorkspaceID, loaded)
 	return loaded, nil
 }
 
@@ -490,6 +538,9 @@ func (s *Service) readable(ctx context.Context, messageID, callerID uuid.UUID) (
 	view, err := s.channels.Get(ctx, message.ChannelID, callerID)
 	if err != nil {
 		return Message{}, channels.Channel{}, mapAccessError(err)
+	}
+	if view.Channel.Kind == channels.KindSecret {
+		return Message{}, channels.Channel{}, ErrNotFound
 	}
 	return message, view.Channel, nil
 }

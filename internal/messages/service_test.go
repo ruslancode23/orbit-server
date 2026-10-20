@@ -210,9 +210,27 @@ func (m *fakeMembers) IsMember(_ context.Context, workspaceID, userID uuid.UUID)
 }
 
 // recorder keeps what the service published, so a test can read it back.
-type recorder struct{ published []events.Event }
+type recorder struct {
+	published []events.Event
+	personal  []uuid.UUID
+}
 
 func (r *recorder) Publish(event events.Event) { r.published = append(r.published, event) }
+
+func (r *recorder) PublishToUser(userID uuid.UUID, event events.Event) {
+	r.personal = append(r.personal, userID)
+	r.published = append(r.published, event)
+}
+
+// fakeConversations answers who is in a conversation, so messages can fan out
+// to their own streams instead of a server's.
+type fakeConversations struct {
+	members map[uuid.UUID][]uuid.UUID
+}
+
+func (c *fakeConversations) MemberIDs(_ context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	return c.members[channelID], nil
+}
 
 func (r *recorder) kinds() []events.Kind {
 	out := make([]events.Kind, 0, len(r.published))
@@ -229,6 +247,7 @@ type world struct {
 	workspace uuid.UUID
 	channel   uuid.UUID
 	readOnly  uuid.UUID
+	direct    uuid.UUID
 	anna      uuid.UUID
 	bob       uuid.UUID
 	admin     uuid.UUID
@@ -239,7 +258,7 @@ type world struct {
 func newWorld(t *testing.T) world {
 	t.Helper()
 	w := world{
-		workspace: uuid.New(), channel: uuid.New(), readOnly: uuid.New(),
+		workspace: uuid.New(), channel: uuid.New(), readOnly: uuid.New(), direct: uuid.New(),
 		anna: uuid.New(), bob: uuid.New(), admin: uuid.New(), outsider: uuid.New(),
 		store: newFakeStore(),
 	}
@@ -247,14 +266,18 @@ func newWorld(t *testing.T) world {
 		channels: map[uuid.UUID]channels.Channel{
 			w.channel:  {ID: w.channel, WorkspaceID: w.workspace, Name: "общий"},
 			w.readOnly: {ID: w.readOnly, WorkspaceID: w.workspace, Name: "объявления", IsReadOnly: true},
+			// A conversation is a channel without a server, and it is not secret.
+			w.direct: {ID: w.direct, Kind: channels.KindText, Name: "личный"},
 		},
 		readers: map[uuid.UUID]map[uuid.UUID]bool{
 			w.channel:  {w.anna: true, w.bob: true, w.admin: true},
 			w.readOnly: {w.anna: true, w.bob: true, w.admin: true},
+			w.direct:   {w.anna: true, w.bob: true},
 		},
 		writers: map[uuid.UUID]map[uuid.UUID]bool{
 			w.channel:  {w.anna: true, w.bob: true, w.admin: true},
 			w.readOnly: {w.admin: true},
+			w.direct:   {w.anna: true, w.bob: true},
 		},
 	}
 	members := &fakeMembers{members: map[uuid.UUID]map[uuid.UUID]bool{
@@ -262,6 +285,9 @@ func newWorld(t *testing.T) world {
 	}}
 	w.published = &recorder{}
 	w.svc = NewService(w.store, w.access, members, nil, w.published)
+	w.svc.SetConversations(&fakeConversations{members: map[uuid.UUID][]uuid.UUID{
+		w.direct: {w.anna, w.bob},
+	}})
 	return w
 }
 
@@ -708,5 +734,53 @@ func TestSinceEventsHidesChannelsTheCallerCannotRead(t *testing.T) {
 
 	if _, err := w.svc.SinceEvents(t.Context(), w.channel, w.outsider, 0, 100); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// A message in a conversation goes to each participant's own stream: there is
+// no server to publish to, and an outsider must not receive it.
+func TestConversationMessageIsPublishedPersonally(t *testing.T) {
+	w := newWorld(t)
+
+	if _, _, err := w.svc.Send(t.Context(), w.anna, NewMessage{
+		ChannelID: w.direct, ClientMessageID: "c-1", Content: "привет",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// One event per participant, because each has its own stream.
+	if len(w.published.published) != 2 {
+		t.Fatalf("published %d events, want one per participant", len(w.published.published))
+	}
+	for _, event := range w.published.published {
+		if event.WorkspaceID != uuid.Nil {
+			t.Errorf("a conversation event named a workspace: %+v", event)
+		}
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, id := range w.published.personal {
+		seen[id] = true
+	}
+	if len(seen) != 2 || !seen[w.anna] || !seen[w.bob] || seen[w.outsider] {
+		t.Errorf("published to %v, want both participants and nobody else", w.published.personal)
+	}
+}
+
+// A secret chat carries ciphertext envelopes, not messages: the messages API
+// refuses it, so plaintext can never be stored there by accident.
+func TestSecretChannelRefusesMessages(t *testing.T) {
+	w := newWorld(t)
+	secret := uuid.New()
+	w.access.channels[secret] = channels.Channel{ID: secret, Kind: channels.KindSecret}
+	w.access.readers[secret] = map[uuid.UUID]bool{w.anna: true, w.bob: true}
+	w.access.writers[secret] = map[uuid.UUID]bool{w.anna: true, w.bob: true}
+
+	if _, _, err := w.svc.Send(t.Context(), w.anna, NewMessage{
+		ChannelID: secret, ClientMessageID: "c-1", Content: "не должно сохраниться",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Send: err = %v, want ErrNotFound", err)
+	}
+	if _, err := w.svc.History(t.Context(), secret, w.anna, nil, 10); !errors.Is(err, ErrNotFound) {
+		t.Errorf("History: err = %v, want ErrNotFound", err)
 	}
 }

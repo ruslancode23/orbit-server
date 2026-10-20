@@ -13,14 +13,22 @@ import (
 type Querier interface {
 	AddChannelMember(ctx context.Context, arg AddChannelMemberParams) error
 	AddMessageMention(ctx context.Context, arg AddMessageMentionParams) error
+	// One-time keys are claimed, never listed: a key is handed out once, and the
+	// delete is what makes it atomic.
+	AddOneTimeKey(ctx context.Context, arg AddOneTimeKeyParams) error
 	AddReaction(ctx context.Context, arg AddReactionParams) error
+	// A secret chat is a pair of devices; this table is the binding.
+	AddSecretChatDevice(ctx context.Context, arg AddSecretChatDeviceParams) error
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
+	ClaimOneTimeKey(ctx context.Context, deviceID pgtype.UUID) (ClaimOneTimeKeyRow, error)
 	CountChannelMembers(ctx context.Context, channelID pgtype.UUID) (int64, error)
 	// The counts of one channel, for the answer after the cursor moved.
 	CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error)
+	CountOneTimeKeys(ctx context.Context, deviceID pgtype.UUID) (int64, error)
+	CountUserDevices(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// A server always keeps exactly one owner; the count guards the last one.
 	CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	// Unread and mention counts for every channel of one workspace in a single query (task 2.8).
@@ -31,25 +39,38 @@ type Querier interface {
 	// A conversation is a channel without a server: the same messages, attachments
 	// and read cursors work for it (ADR in migration 00003).
 	CreateConversation(ctx context.Context, arg CreateConversationParams) (Channel, error)
+	// Devices are a person's browsers and apps. Only public keys live here: the
+	// private halves never leave the device, so the server cannot read a chat.
+	CreateDevice(ctx context.Context, arg CreateDeviceParams) (Device, error)
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (Invite, error)
 	// A resend with the same client id returns the message already stored
 	// instead of creating a second one (FR-04).
 	// xmax = 0 on a row this statement inserted; anything else means the resend
 	// found the message already stored.
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (CreateMessageRow, error)
+	// Envelopes are opaque bytes in, opaque bytes out.
+	CreateSecretEnvelope(ctx context.Context, arg CreateSecretEnvelopeParams) (SecretEnvelope, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteAttachment(ctx context.Context, id pgtype.UUID) error
 	DeleteChannel(ctx context.Context, id pgtype.UUID) error
+	DeleteDeviceEnvelopes(ctx context.Context, senderDeviceID pgtype.UUID) error
+	DeleteDeviceSecretChatBindings(ctx context.Context, deviceID pgtype.UUID) error
+	DeleteExpiredAttachment(ctx context.Context, id pgtype.UUID) error
+	DeleteExpiredSecretEnvelopes(ctx context.Context) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
+	DeleteSecretChatChannel(ctx context.Context, id pgtype.UUID) error
+	DeleteSecretEnvelope(ctx context.Context, id pgtype.UUID) error
 	DeleteWorkspace(ctx context.Context, id pgtype.UUID) error
 	DetachOrphanedAttachment(ctx context.Context, id pgtype.UUID) error
+	DeviceSecretChatIDs(ctx context.Context, deviceID pgtype.UUID) ([]pgtype.UUID, error)
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
+	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 	GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
 	// Only a usable invite comes back: expiry, revocation and the use limit are checked here.
@@ -58,11 +79,17 @@ type Querier interface {
 	// not by the caller.
 	GetLiveSessionUser(ctx context.Context, tokenHash []byte) (GetLiveSessionUserRow, error)
 	GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow, error)
+	GetSecretConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
+	GetSecretEnvelope(ctx context.Context, id pgtype.UUID) (SecretEnvelope, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserByEmail(ctx context.Context, lower string) (User, error)
 	// Sign-in accepts either a nickname or an email, in any case.
 	GetUserByLogin(ctx context.Context, lower string) (User, error)
 	GetUserByNickname(ctx context.Context, lower string) (User, error)
+	GetUserDeviceByKeys(ctx context.Context, arg GetUserDeviceByKeysParams) (Device, error)
+	// The peer of a secret chat, as this device sees it: the other device, its
+	// person and its public keys.
+	GetUserSecretChat(ctx context.Context, arg GetUserSecretChatParams) (GetUserSecretChatRow, error)
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error)
 	// The role and what the server lets members do, in one read, for actions a
 	// server may open to members.
@@ -70,13 +97,20 @@ type Querier interface {
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
 	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)
+	IsSecretChatDevice(ctx context.Context, arg IsSecretChatDeviceParams) (bool, error)
 	IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMemberBannedParams) (bool, error)
 	// One page of history, newest first: the caller passes the seq it already has
 	// (NULL for the first page) and gets the next portion.
 	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)
 	// What a reconnecting client missed in one channel, oldest first (task 2.6).
 	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]ListChannelMessagesAfterRow, error)
+	// Who belongs to a conversation. Messages publish to each participant's personal
+	// stream, because a conversation has no server to announce to.
+	ListConversationMemberIDs(ctx context.Context, channelID pgtype.UUID) ([]pgtype.UUID, error)
 	ListConversationMembers(ctx context.Context, channelID pgtype.UUID) ([]ListConversationMembersRow, error)
+	// Files of secret chats carry their own deadline: the server must forget them
+	// when the message expires, not only the sender's screen.
+	ListExpiredAttachments(ctx context.Context, limit int32) ([]Attachment, error)
 	// Which of these ids are real accounts (task 2.10 checks before it opens a chat).
 	ListKnownUsers(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
 	ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.UUID) ([]Attachment, error)
@@ -85,9 +119,13 @@ type Querier interface {
 	ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error)
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)
+	ListPendingSecretEnvelopes(ctx context.Context, arg ListPendingSecretEnvelopesParams) ([]SecretEnvelope, error)
+	ListSecretChatDevices(ctx context.Context, channelID pgtype.UUID) ([]SecretChatDevice, error)
 	// The conversations of one account, most recently used first, so the list
 	// reads like a messenger's.
 	ListUserConversations(ctx context.Context, userID pgtype.UUID) ([]ListUserConversationsRow, error)
+	ListUserDevices(ctx context.Context, userID pgtype.UUID) ([]Device, error)
+	ListUserSecretChats(ctx context.Context, arg ListUserSecretChatsParams) ([]ListUserSecretChatsRow, error)
 	ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListUserWorkspacesRow, error)
 	ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error)
 	ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.UUID) ([]Channel, error)
@@ -99,6 +137,7 @@ type Querier interface {
 	PromoteGuest(ctx context.Context, arg PromoteGuestParams) (User, error)
 	RemoveReaction(ctx context.Context, arg RemoveReactionParams) (int64, error)
 	RemoveWorkspaceMember(ctx context.Context, arg RemoveWorkspaceMemberParams) (int64, error)
+	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) (int64, error)
 	RevokeInvite(ctx context.Context, id pgtype.UUID) (int64, error)
 	RevokeSession(ctx context.Context, id pgtype.UUID) error
 	RevokeUserSessions(ctx context.Context, userID pgtype.UUID) error
@@ -109,6 +148,7 @@ type Querier interface {
 	// object. The row lock keeps two uploads at once from losing track of one.
 	SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconParams) (SetWorkspaceIconRow, error)
 	SetWorkspaceRole(ctx context.Context, arg SetWorkspaceRoleParams) (WorkspaceMember, error)
+	TouchDevice(ctx context.Context, id pgtype.UUID) error
 	TouchSession(ctx context.Context, id pgtype.UUID) error
 	UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMemberParams) (int64, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)

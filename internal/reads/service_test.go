@@ -111,7 +111,7 @@ type recorder struct {
 	events []events.Event
 }
 
-func (r *recorder) PublishTo(userID uuid.UUID, event events.Event) {
+func (r *recorder) PublishToUser(userID uuid.UUID, event events.Event) {
 	r.to = append(r.to, userID)
 	r.events = append(r.events, event)
 }

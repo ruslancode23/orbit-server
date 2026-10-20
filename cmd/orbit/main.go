@@ -28,6 +28,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 	"github.com/ruslancode23/orbit-server/internal/reads"
+	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
@@ -68,6 +69,8 @@ func run() error {
 	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
 
 	conversationService := conversations.NewService(conversations.NewPostgresStore(pool), cfg.MaxGroupMembers)
+	// A new dialogue is announced on each participant's own stream.
+	conversationService.SetPublisher(hub)
 	// A conversation is a channel without a server, so the channels module asks
 	// this one who may read it.
 	channelService.SetParticipants(conversationService)
@@ -77,6 +80,12 @@ func run() error {
 		workspaces, cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
 	// The two know each other: a message carries files, a file needs its channel.
 	messageService.SetFiles(files.NewForMessages(fileService))
+	// Messages in a conversation go to its participants, not to a server.
+	messageService.SetConversations(conversationService)
+
+	// Secret chats: public keys and ciphertext only. The server never has the
+	// key to open an envelope.
+	secretService := secrets.NewService(secrets.NewPostgresStore(pool), conversationService, hub)
 	sessions := auth.NewService(auth.NewPostgresStore(queries), cfg.SessionTTL)
 
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
@@ -103,6 +112,7 @@ func run() error {
 		Invites:        invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
 		Files:          files.NewHandler(fileService, log),
 		Conversations:  conversations.NewHandler(conversationService, log),
+		Secrets:        secrets.NewHandler(secretService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		MaxIconBytes:   cfg.Storage.MaxIconBytes,
 		Reads: reads.NewHandler(
@@ -121,6 +131,8 @@ func run() error {
 
 	// Files whose message never arrived are swept in the background.
 	go files.NewSweeper(fileService, cfg.Storage.OrphanAge, log).Run(ctx)
+	// Envelopes nobody picked up before their deadline are dropped.
+	go secrets.NewSweeper(secretService, log).Run(ctx)
 	if presence != nil {
 		go presence.Run(ctx)
 	}

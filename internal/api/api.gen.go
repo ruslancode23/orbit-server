@@ -130,6 +130,42 @@ func (e ReadinessStatus) Valid() bool {
 	}
 }
 
+// Defines values for SecretEnvelopeType.
+const (
+	SecretEnvelopeTypeN0 SecretEnvelopeType = 0
+	SecretEnvelopeTypeN1 SecretEnvelopeType = 1
+)
+
+// Valid indicates whether the value is a known member of the SecretEnvelopeType enum.
+func (e SecretEnvelopeType) Valid() bool {
+	switch e {
+	case SecretEnvelopeTypeN0:
+		return true
+	case SecretEnvelopeTypeN1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecretEnvelopeCreateType.
+const (
+	SecretEnvelopeCreateTypeN0 SecretEnvelopeCreateType = 0
+	SecretEnvelopeCreateTypeN1 SecretEnvelopeCreateType = 1
+)
+
+// Valid indicates whether the value is a known member of the SecretEnvelopeCreateType enum.
+func (e SecretEnvelopeCreateType) Valid() bool {
+	switch e {
+	case SecretEnvelopeCreateTypeN0:
+		return true
+	case SecretEnvelopeCreateTypeN1:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WorkspaceRole.
 const (
 	Admin  WorkspaceRole = "admin"
@@ -154,7 +190,10 @@ func (e WorkspaceRole) Valid() bool {
 // Attachment defines model for Attachment.
 type Attachment struct {
 	CreatedAt time.Time `json:"createdAt"`
-	FileName  string    `json:"fileName"`
+
+	// ExpiresAt When a secret chat file is deleted from the server. Absent for ordinary files.
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	FileName  string     `json:"fileName"`
 
 	// Height For an image, its height in pixels.
 	Height *int               `json:"height,omitempty"`
@@ -275,6 +314,35 @@ type ConversationStartRequest struct {
 	UserIds []openapi_types.UUID `json:"userIds"`
 }
 
+// Device defines model for Device.
+type Device struct {
+	CreatedAt time.Time          `json:"createdAt"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// IdentityKey Olm curve25519 public key, base64. The server cannot read with it.
+	IdentityKey string `json:"identityKey"`
+
+	// Name What the person sees in settings, for example "Chrome on macOS".
+	Name string `json:"name"`
+
+	// SigningKey Ed25519 public key, base64; signs the registration and the safety number.
+	SigningKey string             `json:"signingKey"`
+	UserId     openapi_types.UUID `json:"userId"`
+}
+
+// DeviceRegistration defines model for DeviceRegistration.
+type DeviceRegistration struct {
+	IdentityKey string `json:"identityKey"`
+
+	// Name Free-form device name; shown only to its owner.
+	Name *string `json:"name,omitempty"`
+
+	// Signature Ed25519 signature, base64, of `orbit-device-v1|<userId>|<identityKey>|<signingKey>`.
+	// It proves the device holds the private key it is registering.
+	Signature  string `json:"signature"`
+	SigningKey string `json:"signingKey"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error ErrorDetail `json:"error"`
@@ -337,6 +405,12 @@ type InvitePreview struct {
 	MemberCount   int                `json:"memberCount"`
 	WorkspaceId   openapi_types.UUID `json:"workspaceId"`
 	WorkspaceName string             `json:"workspaceName"`
+}
+
+// KeyBundle defines model for KeyBundle.
+type KeyBundle struct {
+	Device     Device     `json:"device"`
+	OneTimeKey OneTimeKey `json:"oneTimeKey"`
 }
 
 // Liveness defines model for Liveness.
@@ -412,6 +486,22 @@ type MessageUpdateRequest struct {
 	Content string `json:"content"`
 }
 
+// OneTimeKey defines model for OneTimeKey.
+type OneTimeKey struct {
+	Key   string `json:"key"`
+	KeyId string `json:"keyId"`
+}
+
+// OneTimeKeyCount defines model for OneTimeKeyCount.
+type OneTimeKeyCount struct {
+	Count int `json:"count"`
+}
+
+// OneTimeKeyUpload defines model for OneTimeKeyUpload.
+type OneTimeKeyUpload struct {
+	Keys []OneTimeKey `json:"keys"`
+}
+
 // PasswordChangeRequest defines model for PasswordChangeRequest.
 type PasswordChangeRequest struct {
 	CurrentPassword string `json:"currentPassword"`
@@ -461,6 +551,64 @@ type RegisterRequest struct {
 	// Password Stored only as an argon2id hash.
 	Password string `json:"password"`
 }
+
+// SecretChat defines model for SecretChat.
+type SecretChat struct {
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Id Also the channel id: encrypted files of this chat are uploaded there.
+	Id   openapi_types.UUID `json:"id"`
+	Peer SecretChatPeer     `json:"peer"`
+}
+
+// SecretChatPeer defines model for SecretChatPeer.
+type SecretChatPeer struct {
+	DeviceId    openapi_types.UUID `json:"deviceId"`
+	IdentityKey string             `json:"identityKey"`
+	IsGuest     bool               `json:"isGuest"`
+	Nickname    string             `json:"nickname"`
+	SigningKey  string             `json:"signingKey"`
+	UserId      openapi_types.UUID `json:"userId"`
+}
+
+// SecretChatStartRequest defines model for SecretChatStartRequest.
+type SecretChatStartRequest struct {
+	// PeerDeviceId Which of their devices. Required when they have more than one.
+	PeerDeviceId *openapi_types.UUID `json:"peerDeviceId,omitempty"`
+
+	// UserId Whom to talk to.
+	UserId openapi_types.UUID `json:"userId"`
+}
+
+// SecretEnvelope defines model for SecretEnvelope.
+type SecretEnvelope struct {
+	// Body Base64 ciphertext. The server never decodes it.
+	Body              string             `json:"body"`
+	CreatedAt         time.Time          `json:"createdAt"`
+	ExpiresAt         time.Time          `json:"expiresAt"`
+	Id                openapi_types.UUID `json:"id"`
+	RecipientDeviceId openapi_types.UUID `json:"recipientDeviceId"`
+	SecretChatId      openapi_types.UUID `json:"secretChatId"`
+	SenderDeviceId    openapi_types.UUID `json:"senderDeviceId"`
+
+	// Type 0 is the first message of an Olm session, 1 a message of a session already established.
+	Type SecretEnvelopeType `json:"type"`
+}
+
+// SecretEnvelopeType 0 is the first message of an Olm session, 1 a message of a session already established.
+type SecretEnvelopeType int
+
+// SecretEnvelopeCreate defines model for SecretEnvelopeCreate.
+type SecretEnvelopeCreate struct {
+	// Body Base64 ciphertext, at most 64 KiB decoded.
+	Body              string                   `json:"body"`
+	ExpiresAt         time.Time                `json:"expiresAt"`
+	RecipientDeviceId openapi_types.UUID       `json:"recipientDeviceId"`
+	Type              SecretEnvelopeCreateType `json:"type"`
+}
+
+// SecretEnvelopeCreateType defines model for SecretEnvelopeCreate.Type.
+type SecretEnvelopeCreateType int
 
 // User defines model for User.
 type User struct {
@@ -633,6 +781,12 @@ type WorkspaceUpdateRequest struct {
 // ChannelId defines model for ChannelId.
 type ChannelId = openapi_types.UUID
 
+// DeviceHeader defines model for DeviceHeader.
+type DeviceHeader = openapi_types.UUID
+
+// DeviceIdPath defines model for DeviceIdPath.
+type DeviceIdPath = openapi_types.UUID
+
 // InviteCode defines model for InviteCode.
 type InviteCode = string
 
@@ -650,6 +804,13 @@ type UploadAttachmentMultipartBody struct {
 	File openapi_types.File `json:"file"`
 }
 
+// UploadAttachmentParams defines parameters for UploadAttachment.
+type UploadAttachmentParams struct {
+	// ExpiresAt When the server should forget the file. Only a secret chat honours it, and
+	// it is capped at one week; elsewhere the value is ignored.
+	ExpiresAt *time.Time `form:"expiresAt,omitempty" json:"expiresAt,omitempty"`
+}
+
 // ListMessagesParams defines parameters for ListMessages.
 type ListMessagesParams struct {
 	// Before Return messages older than this `seq`. Omit for the newest page.
@@ -657,6 +818,48 @@ type ListMessagesParams struct {
 
 	// Limit How many messages to return.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// AcknowledgeSecretEnvelopeParams defines parameters for AcknowledgeSecretEnvelope.
+type AcknowledgeSecretEnvelopeParams struct {
+	// XOrbitDevice The device that holds the keys of this chat. A secret chat is bound to one
+	// device; another device of the same person has its own chats and no history.
+	XOrbitDevice DeviceHeader `json:"X-Orbit-Device"`
+}
+
+// ListSecretChatsParams defines parameters for ListSecretChats.
+type ListSecretChatsParams struct {
+	// XOrbitDevice The device that holds the keys of this chat. A secret chat is bound to one
+	// device; another device of the same person has its own chats and no history.
+	XOrbitDevice DeviceHeader `json:"X-Orbit-Device"`
+}
+
+// StartSecretChatParams defines parameters for StartSecretChat.
+type StartSecretChatParams struct {
+	// XOrbitDevice The device that holds the keys of this chat. A secret chat is bound to one
+	// device; another device of the same person has its own chats and no history.
+	XOrbitDevice DeviceHeader `json:"X-Orbit-Device"`
+}
+
+// GetSecretChatParams defines parameters for GetSecretChat.
+type GetSecretChatParams struct {
+	// XOrbitDevice The device that holds the keys of this chat. A secret chat is bound to one
+	// device; another device of the same person has its own chats and no history.
+	XOrbitDevice DeviceHeader `json:"X-Orbit-Device"`
+}
+
+// ListSecretEnvelopesParams defines parameters for ListSecretEnvelopes.
+type ListSecretEnvelopesParams struct {
+	// XOrbitDevice The device that holds the keys of this chat. A secret chat is bound to one
+	// device; another device of the same person has its own chats and no history.
+	XOrbitDevice DeviceHeader `json:"X-Orbit-Device"`
+}
+
+// SendSecretEnvelopeParams defines parameters for SendSecretEnvelope.
+type SendSecretEnvelopeParams struct {
+	// XOrbitDevice The device that holds the keys of this chat. A secret chat is bound to one
+	// device; another device of the same person has its own chats and no history.
+	XOrbitDevice DeviceHeader `json:"X-Orbit-Device"`
 }
 
 // UploadWorkspaceIconMultipartBody defines parameters for UploadWorkspaceIcon.
@@ -691,11 +894,23 @@ type MarkChannelReadJSONRequestBody = ReadCursorRequest
 // StartConversationJSONRequestBody defines body for StartConversation for application/json ContentType.
 type StartConversationJSONRequestBody = ConversationStartRequest
 
+// RegisterDeviceJSONRequestBody defines body for RegisterDevice for application/json ContentType.
+type RegisterDeviceJSONRequestBody = DeviceRegistration
+
+// UploadOneTimeKeysJSONRequestBody defines body for UploadOneTimeKeys for application/json ContentType.
+type UploadOneTimeKeysJSONRequestBody = OneTimeKeyUpload
+
 // JoinAsGuestJSONRequestBody defines body for JoinAsGuest for application/json ContentType.
 type JoinAsGuestJSONRequestBody = GuestJoinRequest
 
 // EditMessageJSONRequestBody defines body for EditMessage for application/json ContentType.
 type EditMessageJSONRequestBody = MessageUpdateRequest
+
+// StartSecretChatJSONRequestBody defines body for StartSecretChat for application/json ContentType.
+type StartSecretChatJSONRequestBody = SecretChatStartRequest
+
+// SendSecretEnvelopeJSONRequestBody defines body for SendSecretEnvelope for application/json ContentType.
+type SendSecretEnvelopeJSONRequestBody = SecretEnvelopeCreate
 
 // CreateWorkspaceJSONRequestBody defines body for CreateWorkspace for application/json ContentType.
 type CreateWorkspaceJSONRequestBody = WorkspaceCreateRequest
@@ -755,7 +970,7 @@ type ServerInterface interface {
 	UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
 	// UploadAttachment Upload a file for a message in this channel. Needs the right to write and to attach files.
 	// (POST /api/v1/channels/{channelId}/attachments)
-	UploadAttachment(w http.ResponseWriter, r *http.Request, channelId ChannelId)
+	UploadAttachment(w http.ResponseWriter, r *http.Request, channelId ChannelId, params UploadAttachmentParams)
 	// ListMessages A page of history, newest first. Needs membership in the server.
 	// (GET /api/v1/channels/{channelId}/messages)
 	ListMessages(w http.ResponseWriter, r *http.Request, channelId ChannelId, params ListMessagesParams)
@@ -777,6 +992,27 @@ type ServerInterface interface {
 	// GetConversation One conversation you are in.
 	// (GET /api/v1/conversations/{conversationId})
 	GetConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
+	// ListDevices The devices of this account. Needs a session.
+	// (GET /api/v1/devices)
+	ListDevices(w http.ResponseWriter, r *http.Request)
+	// RegisterDevice Register this device and its public keys. Needs a session.
+	// (POST /api/v1/devices)
+	RegisterDevice(w http.ResponseWriter, r *http.Request)
+	// RevokeDevice Forget one of your devices and its pending keys. Needs a session.
+	// (DELETE /api/v1/devices/{deviceId})
+	RevokeDevice(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath)
+	// GetKeyBundle The keys to start a session with this device. Needs a session.
+	// (GET /api/v1/devices/{deviceId}/key-bundle)
+	GetKeyBundle(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath)
+	// UploadOneTimeKeys Add one-time keys to your device. Needs a session.
+	// (POST /api/v1/devices/{deviceId}/one-time-keys)
+	UploadOneTimeKeys(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath)
+	// CountOneTimeKeys How many one-time keys your device still has. Needs a session.
+	// (GET /api/v1/devices/{deviceId}/one-time-keys/count)
+	CountOneTimeKeys(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath)
+	// AcknowledgeSecretEnvelope Delete a delivered envelope. Only its recipient may.
+	// (DELETE /api/v1/envelopes/{envelopeId})
+	AcknowledgeSecretEnvelope(w http.ResponseWriter, r *http.Request, envelopeId openapi_types.UUID, params AcknowledgeSecretEnvelopeParams)
 	// AcceptInvite Join the server behind the link. Needs a session.
 	// (POST /api/v1/invites/{code}/accept)
 	AcceptInvite(w http.ResponseWriter, r *http.Request, code InviteCode)
@@ -801,6 +1037,24 @@ type ServerInterface interface {
 	// AddReaction React to a message. Needs the right to write in the channel.
 	// (PUT /api/v1/messages/{messageId}/reactions/{emoji})
 	AddReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string)
+	// ListSecretChats The secret chats of this device. Needs a session.
+	// (GET /api/v1/secret-chats)
+	ListSecretChats(w http.ResponseWriter, r *http.Request, params ListSecretChatsParams)
+	// StartSecretChat Open a secret chat with one device of one person. Needs a session.
+	// (POST /api/v1/secret-chats)
+	StartSecretChat(w http.ResponseWriter, r *http.Request, params StartSecretChatParams)
+	// GetSecretChat One secret chat this device takes part in.
+	// (GET /api/v1/secret-chats/{secretChatId})
+	GetSecretChat(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params GetSecretChatParams)
+	// ListSecretEnvelopes Ciphertext waiting for this device, oldest first.
+	// (GET /api/v1/secret-chats/{secretChatId}/envelopes)
+	ListSecretEnvelopes(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params ListSecretEnvelopesParams)
+	// SendSecretEnvelope Hand one ciphertext envelope to the server.
+	// (POST /api/v1/secret-chats/{secretChatId}/envelopes)
+	SendSecretEnvelope(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params SendSecretEnvelopeParams)
+	// ListUserDevices The public keys of another person's devices. Needs a session.
+	// (GET /api/v1/users/{userId}/devices)
+	ListUserDevices(w http.ResponseWriter, r *http.Request, userId UserId)
 	// ListWorkspaces The servers this account belongs to, with its role in each. Needs a session.
 	// (GET /api/v1/workspaces)
 	ListWorkspaces(w http.ResponseWriter, r *http.Request)
@@ -932,7 +1186,7 @@ func (_ Unimplemented) UpdateChannel(w http.ResponseWriter, r *http.Request, cha
 
 // UploadAttachment Upload a file for a message in this channel. Needs the right to write and to attach files.
 // (POST /api/v1/channels/{channelId}/attachments)
-func (_ Unimplemented) UploadAttachment(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+func (_ Unimplemented) UploadAttachment(w http.ResponseWriter, r *http.Request, channelId ChannelId, params UploadAttachmentParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -975,6 +1229,48 @@ func (_ Unimplemented) StartConversation(w http.ResponseWriter, r *http.Request)
 // GetConversation One conversation you are in.
 // (GET /api/v1/conversations/{conversationId})
 func (_ Unimplemented) GetConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListDevices The devices of this account. Needs a session.
+// (GET /api/v1/devices)
+func (_ Unimplemented) ListDevices(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RegisterDevice Register this device and its public keys. Needs a session.
+// (POST /api/v1/devices)
+func (_ Unimplemented) RegisterDevice(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeDevice Forget one of your devices and its pending keys. Needs a session.
+// (DELETE /api/v1/devices/{deviceId})
+func (_ Unimplemented) RevokeDevice(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetKeyBundle The keys to start a session with this device. Needs a session.
+// (GET /api/v1/devices/{deviceId}/key-bundle)
+func (_ Unimplemented) GetKeyBundle(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UploadOneTimeKeys Add one-time keys to your device. Needs a session.
+// (POST /api/v1/devices/{deviceId}/one-time-keys)
+func (_ Unimplemented) UploadOneTimeKeys(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CountOneTimeKeys How many one-time keys your device still has. Needs a session.
+// (GET /api/v1/devices/{deviceId}/one-time-keys/count)
+func (_ Unimplemented) CountOneTimeKeys(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AcknowledgeSecretEnvelope Delete a delivered envelope. Only its recipient may.
+// (DELETE /api/v1/envelopes/{envelopeId})
+func (_ Unimplemented) AcknowledgeSecretEnvelope(w http.ResponseWriter, r *http.Request, envelopeId openapi_types.UUID, params AcknowledgeSecretEnvelopeParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1023,6 +1319,42 @@ func (_ Unimplemented) RemoveReaction(w http.ResponseWriter, r *http.Request, me
 // AddReaction React to a message. Needs the right to write in the channel.
 // (PUT /api/v1/messages/{messageId}/reactions/{emoji})
 func (_ Unimplemented) AddReaction(w http.ResponseWriter, r *http.Request, messageId MessageId, emoji string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListSecretChats The secret chats of this device. Needs a session.
+// (GET /api/v1/secret-chats)
+func (_ Unimplemented) ListSecretChats(w http.ResponseWriter, r *http.Request, params ListSecretChatsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// StartSecretChat Open a secret chat with one device of one person. Needs a session.
+// (POST /api/v1/secret-chats)
+func (_ Unimplemented) StartSecretChat(w http.ResponseWriter, r *http.Request, params StartSecretChatParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetSecretChat One secret chat this device takes part in.
+// (GET /api/v1/secret-chats/{secretChatId})
+func (_ Unimplemented) GetSecretChat(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params GetSecretChatParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListSecretEnvelopes Ciphertext waiting for this device, oldest first.
+// (GET /api/v1/secret-chats/{secretChatId}/envelopes)
+func (_ Unimplemented) ListSecretEnvelopes(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params ListSecretEnvelopesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SendSecretEnvelope Hand one ciphertext envelope to the server.
+// (POST /api/v1/secret-chats/{secretChatId}/envelopes)
+func (_ Unimplemented) SendSecretEnvelope(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params SendSecretEnvelopeParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListUserDevices The public keys of another person's devices. Needs a session.
+// (GET /api/v1/users/{userId}/devices)
+func (_ Unimplemented) ListUserDevices(w http.ResponseWriter, r *http.Request, userId UserId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1364,8 +1696,24 @@ func (siw *ServerInterfaceWrapper) UploadAttachment(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UploadAttachmentParams
+
+	// ------------- Optional query parameter "expiresAt" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "expiresAt", r.URL.Query(), &params.ExpiresAt, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "expiresAt"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "expiresAt", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UploadAttachment(w, r, channelId)
+		siw.Handler.UploadAttachment(w, r, channelId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1553,6 +1901,192 @@ func (siw *ServerInterfaceWrapper) GetConversation(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetConversation(w, r, conversationId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDevices operation middleware
+func (siw *ServerInterfaceWrapper) ListDevices(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDevices(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RegisterDevice operation middleware
+func (siw *ServerInterfaceWrapper) RegisterDevice(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RegisterDevice(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeDevice operation middleware
+func (siw *ServerInterfaceWrapper) RevokeDevice(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId DeviceIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", chi.URLParam(r, "deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "deviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeDevice(w, r, deviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetKeyBundle operation middleware
+func (siw *ServerInterfaceWrapper) GetKeyBundle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId DeviceIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", chi.URLParam(r, "deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "deviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetKeyBundle(w, r, deviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UploadOneTimeKeys operation middleware
+func (siw *ServerInterfaceWrapper) UploadOneTimeKeys(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId DeviceIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", chi.URLParam(r, "deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "deviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadOneTimeKeys(w, r, deviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CountOneTimeKeys operation middleware
+func (siw *ServerInterfaceWrapper) CountOneTimeKeys(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId DeviceIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", chi.URLParam(r, "deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "deviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CountOneTimeKeys(w, r, deviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcknowledgeSecretEnvelope operation middleware
+func (siw *ServerInterfaceWrapper) AcknowledgeSecretEnvelope(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "envelopeId" -------------
+	var envelopeId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "envelopeId", chi.URLParam(r, "envelopeId"), &envelopeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "envelopeId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AcknowledgeSecretEnvelopeParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-Orbit-Device" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Orbit-Device")]; found {
+		var XOrbitDevice DeviceHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Orbit-Device", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Orbit-Device", valueList[0], &XOrbitDevice, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: "uuid"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Orbit-Device", Err: err})
+			return
+		}
+
+		params.XOrbitDevice = XOrbitDevice
+
+	} else {
+		err := fmt.Errorf("Header parameter X-Orbit-Device is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-Orbit-Device", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcknowledgeSecretEnvelope(w, r, envelopeId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1779,6 +2313,284 @@ func (siw *ServerInterfaceWrapper) AddReaction(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AddReaction(w, r, messageId, emoji)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSecretChats operation middleware
+func (siw *ServerInterfaceWrapper) ListSecretChats(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSecretChatsParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-Orbit-Device" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Orbit-Device")]; found {
+		var XOrbitDevice DeviceHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Orbit-Device", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Orbit-Device", valueList[0], &XOrbitDevice, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: "uuid"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Orbit-Device", Err: err})
+			return
+		}
+
+		params.XOrbitDevice = XOrbitDevice
+
+	} else {
+		err := fmt.Errorf("Header parameter X-Orbit-Device is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-Orbit-Device", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSecretChats(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartSecretChat operation middleware
+func (siw *ServerInterfaceWrapper) StartSecretChat(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params StartSecretChatParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-Orbit-Device" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Orbit-Device")]; found {
+		var XOrbitDevice DeviceHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Orbit-Device", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Orbit-Device", valueList[0], &XOrbitDevice, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: "uuid"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Orbit-Device", Err: err})
+			return
+		}
+
+		params.XOrbitDevice = XOrbitDevice
+
+	} else {
+		err := fmt.Errorf("Header parameter X-Orbit-Device is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-Orbit-Device", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartSecretChat(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSecretChat operation middleware
+func (siw *ServerInterfaceWrapper) GetSecretChat(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "secretChatId" -------------
+	var secretChatId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "secretChatId", chi.URLParam(r, "secretChatId"), &secretChatId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "secretChatId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetSecretChatParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-Orbit-Device" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Orbit-Device")]; found {
+		var XOrbitDevice DeviceHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Orbit-Device", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Orbit-Device", valueList[0], &XOrbitDevice, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: "uuid"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Orbit-Device", Err: err})
+			return
+		}
+
+		params.XOrbitDevice = XOrbitDevice
+
+	} else {
+		err := fmt.Errorf("Header parameter X-Orbit-Device is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-Orbit-Device", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSecretChat(w, r, secretChatId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSecretEnvelopes operation middleware
+func (siw *ServerInterfaceWrapper) ListSecretEnvelopes(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "secretChatId" -------------
+	var secretChatId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "secretChatId", chi.URLParam(r, "secretChatId"), &secretChatId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "secretChatId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSecretEnvelopesParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-Orbit-Device" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Orbit-Device")]; found {
+		var XOrbitDevice DeviceHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Orbit-Device", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Orbit-Device", valueList[0], &XOrbitDevice, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: "uuid"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Orbit-Device", Err: err})
+			return
+		}
+
+		params.XOrbitDevice = XOrbitDevice
+
+	} else {
+		err := fmt.Errorf("Header parameter X-Orbit-Device is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-Orbit-Device", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSecretEnvelopes(w, r, secretChatId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SendSecretEnvelope operation middleware
+func (siw *ServerInterfaceWrapper) SendSecretEnvelope(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "secretChatId" -------------
+	var secretChatId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "secretChatId", chi.URLParam(r, "secretChatId"), &secretChatId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "secretChatId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SendSecretEnvelopeParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-Orbit-Device" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Orbit-Device")]; found {
+		var XOrbitDevice DeviceHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Orbit-Device", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Orbit-Device", valueList[0], &XOrbitDevice, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: "uuid"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Orbit-Device", Err: err})
+			return
+		}
+
+		params.XOrbitDevice = XOrbitDevice
+
+	} else {
+		err := fmt.Errorf("Header parameter X-Orbit-Device is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-Orbit-Device", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SendSecretEnvelope(w, r, secretChatId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListUserDevices operation middleware
+func (siw *ServerInterfaceWrapper) ListUserDevices(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", chi.URLParam(r, "userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListUserDevices(w, r, userId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2566,6 +3378,45 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/attachments/{attachmentId}", wrapper.GetAttachmentLink)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/devices", wrapper.ListDevices)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/devices", wrapper.RegisterDevice)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/devices/{deviceId}", wrapper.RevokeDevice)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/users/{userId}/devices", wrapper.ListUserDevices)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/devices/{deviceId}/one-time-keys", wrapper.UploadOneTimeKeys)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/devices/{deviceId}/one-time-keys/count", wrapper.CountOneTimeKeys)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/devices/{deviceId}/key-bundle", wrapper.GetKeyBundle)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/secret-chats", wrapper.ListSecretChats)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/secret-chats", wrapper.StartSecretChat)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/secret-chats/{secretChatId}", wrapper.GetSecretChat)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/secret-chats/{secretChatId}/envelopes", wrapper.ListSecretEnvelopes)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/secret-chats/{secretChatId}/envelopes", wrapper.SendSecretEnvelope)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/envelopes/{envelopeId}", wrapper.AcknowledgeSecretEnvelope)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/conversations", wrapper.ListConversations)
@@ -3367,6 +4218,7 @@ func (response UpdateChannel500JSONResponse) VisitUpdateChannelResponse(w http.R
 
 type UploadAttachmentRequestObject struct {
 	ChannelId ChannelId `json:"channelId"`
+	Params    UploadAttachmentParams
 	Body      *multipart.Reader
 }
 
@@ -4048,6 +4900,513 @@ func (response GetConversation500JSONResponse) VisitGetConversationResponse(w ht
 	return err
 }
 
+type ListDevicesRequestObject struct {
+}
+
+type ListDevicesResponseObject interface {
+	VisitListDevicesResponse(w http.ResponseWriter) error
+}
+
+type ListDevices200JSONResponse []Device
+
+func (response ListDevices200JSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDevices401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListDevices401JSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDevices500JSONResponse Error
+
+func (response ListDevices500JSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDeviceRequestObject struct {
+	Body *RegisterDeviceJSONRequestBody
+}
+
+type RegisterDeviceResponseObject interface {
+	VisitRegisterDeviceResponse(w http.ResponseWriter) error
+}
+
+type RegisterDevice200JSONResponse Device
+
+func (response RegisterDevice200JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDevice201JSONResponse Device
+
+func (response RegisterDevice201JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDevice400JSONResponse struct{ ErrorJSONResponse }
+
+func (response RegisterDevice400JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDevice401JSONResponse Error
+
+func (response RegisterDevice401JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDevice409JSONResponse Error
+
+func (response RegisterDevice409JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDevice413JSONResponse Error
+
+func (response RegisterDevice413JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegisterDevice500JSONResponse Error
+
+func (response RegisterDevice500JSONResponse) VisitRegisterDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDeviceRequestObject struct {
+	DeviceId DeviceIdPath `json:"deviceId"`
+}
+
+type RevokeDeviceResponseObject interface {
+	VisitRevokeDeviceResponse(w http.ResponseWriter) error
+}
+
+type RevokeDevice204Response struct {
+}
+
+func (response RevokeDevice204Response) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokeDevice401JSONResponse struct{ ErrorJSONResponse }
+
+func (response RevokeDevice401JSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDevice404JSONResponse Error
+
+func (response RevokeDevice404JSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDevice500JSONResponse Error
+
+func (response RevokeDevice500JSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetKeyBundleRequestObject struct {
+	DeviceId DeviceIdPath `json:"deviceId"`
+}
+
+type GetKeyBundleResponseObject interface {
+	VisitGetKeyBundleResponse(w http.ResponseWriter) error
+}
+
+type GetKeyBundle200JSONResponse KeyBundle
+
+func (response GetKeyBundle200JSONResponse) VisitGetKeyBundleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetKeyBundle401JSONResponse struct{ ErrorJSONResponse }
+
+func (response GetKeyBundle401JSONResponse) VisitGetKeyBundleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetKeyBundle404JSONResponse Error
+
+func (response GetKeyBundle404JSONResponse) VisitGetKeyBundleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetKeyBundle500JSONResponse Error
+
+func (response GetKeyBundle500JSONResponse) VisitGetKeyBundleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadOneTimeKeysRequestObject struct {
+	DeviceId DeviceIdPath `json:"deviceId"`
+	Body     *UploadOneTimeKeysJSONRequestBody
+}
+
+type UploadOneTimeKeysResponseObject interface {
+	VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error
+}
+
+type UploadOneTimeKeys200JSONResponse OneTimeKeyCount
+
+func (response UploadOneTimeKeys200JSONResponse) VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadOneTimeKeys400JSONResponse struct{ ErrorJSONResponse }
+
+func (response UploadOneTimeKeys400JSONResponse) VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadOneTimeKeys401JSONResponse Error
+
+func (response UploadOneTimeKeys401JSONResponse) VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadOneTimeKeys404JSONResponse Error
+
+func (response UploadOneTimeKeys404JSONResponse) VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadOneTimeKeys413JSONResponse Error
+
+func (response UploadOneTimeKeys413JSONResponse) VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadOneTimeKeys500JSONResponse Error
+
+func (response UploadOneTimeKeys500JSONResponse) VisitUploadOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CountOneTimeKeysRequestObject struct {
+	DeviceId DeviceIdPath `json:"deviceId"`
+}
+
+type CountOneTimeKeysResponseObject interface {
+	VisitCountOneTimeKeysResponse(w http.ResponseWriter) error
+}
+
+type CountOneTimeKeys200JSONResponse OneTimeKeyCount
+
+func (response CountOneTimeKeys200JSONResponse) VisitCountOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CountOneTimeKeys401JSONResponse struct{ ErrorJSONResponse }
+
+func (response CountOneTimeKeys401JSONResponse) VisitCountOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CountOneTimeKeys404JSONResponse Error
+
+func (response CountOneTimeKeys404JSONResponse) VisitCountOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CountOneTimeKeys500JSONResponse Error
+
+func (response CountOneTimeKeys500JSONResponse) VisitCountOneTimeKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcknowledgeSecretEnvelopeRequestObject struct {
+	EnvelopeId openapi_types.UUID `json:"envelopeId"`
+	Params     AcknowledgeSecretEnvelopeParams
+}
+
+type AcknowledgeSecretEnvelopeResponseObject interface {
+	VisitAcknowledgeSecretEnvelopeResponse(w http.ResponseWriter) error
+}
+
+type AcknowledgeSecretEnvelope204Response struct {
+}
+
+func (response AcknowledgeSecretEnvelope204Response) VisitAcknowledgeSecretEnvelopeResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type AcknowledgeSecretEnvelope400JSONResponse struct{ ErrorJSONResponse }
+
+func (response AcknowledgeSecretEnvelope400JSONResponse) VisitAcknowledgeSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcknowledgeSecretEnvelope401JSONResponse Error
+
+func (response AcknowledgeSecretEnvelope401JSONResponse) VisitAcknowledgeSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcknowledgeSecretEnvelope404JSONResponse Error
+
+func (response AcknowledgeSecretEnvelope404JSONResponse) VisitAcknowledgeSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcknowledgeSecretEnvelope500JSONResponse Error
+
+func (response AcknowledgeSecretEnvelope500JSONResponse) VisitAcknowledgeSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type AcceptInviteRequestObject struct {
 	Code InviteCode `json:"code"`
 }
@@ -4683,6 +6042,549 @@ func (response AddReaction404JSONResponse) VisitAddReactionResponse(w http.Respo
 type AddReaction500JSONResponse Error
 
 func (response AddReaction500JSONResponse) VisitAddReactionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretChatsRequestObject struct {
+	Params ListSecretChatsParams
+}
+
+type ListSecretChatsResponseObject interface {
+	VisitListSecretChatsResponse(w http.ResponseWriter) error
+}
+
+type ListSecretChats200JSONResponse []SecretChat
+
+func (response ListSecretChats200JSONResponse) VisitListSecretChatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretChats400JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListSecretChats400JSONResponse) VisitListSecretChatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretChats401JSONResponse Error
+
+func (response ListSecretChats401JSONResponse) VisitListSecretChatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretChats404JSONResponse Error
+
+func (response ListSecretChats404JSONResponse) VisitListSecretChatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretChats500JSONResponse Error
+
+func (response ListSecretChats500JSONResponse) VisitListSecretChatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChatRequestObject struct {
+	Params StartSecretChatParams
+	Body   *StartSecretChatJSONRequestBody
+}
+
+type StartSecretChatResponseObject interface {
+	VisitStartSecretChatResponse(w http.ResponseWriter) error
+}
+
+type StartSecretChat200JSONResponse SecretChat
+
+func (response StartSecretChat200JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat201JSONResponse SecretChat
+
+func (response StartSecretChat201JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat400JSONResponse struct{ ErrorJSONResponse }
+
+func (response StartSecretChat400JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat401JSONResponse Error
+
+func (response StartSecretChat401JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat403JSONResponse Error
+
+func (response StartSecretChat403JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat404JSONResponse Error
+
+func (response StartSecretChat404JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat409JSONResponse Error
+
+func (response StartSecretChat409JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat413JSONResponse Error
+
+func (response StartSecretChat413JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartSecretChat500JSONResponse Error
+
+func (response StartSecretChat500JSONResponse) VisitStartSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSecretChatRequestObject struct {
+	SecretChatId openapi_types.UUID `json:"secretChatId"`
+	Params       GetSecretChatParams
+}
+
+type GetSecretChatResponseObject interface {
+	VisitGetSecretChatResponse(w http.ResponseWriter) error
+}
+
+type GetSecretChat200JSONResponse SecretChat
+
+func (response GetSecretChat200JSONResponse) VisitGetSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSecretChat400JSONResponse struct{ ErrorJSONResponse }
+
+func (response GetSecretChat400JSONResponse) VisitGetSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSecretChat401JSONResponse Error
+
+func (response GetSecretChat401JSONResponse) VisitGetSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSecretChat404JSONResponse Error
+
+func (response GetSecretChat404JSONResponse) VisitGetSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSecretChat500JSONResponse Error
+
+func (response GetSecretChat500JSONResponse) VisitGetSecretChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretEnvelopesRequestObject struct {
+	SecretChatId openapi_types.UUID `json:"secretChatId"`
+	Params       ListSecretEnvelopesParams
+}
+
+type ListSecretEnvelopesResponseObject interface {
+	VisitListSecretEnvelopesResponse(w http.ResponseWriter) error
+}
+
+type ListSecretEnvelopes200JSONResponse []SecretEnvelope
+
+func (response ListSecretEnvelopes200JSONResponse) VisitListSecretEnvelopesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretEnvelopes400JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListSecretEnvelopes400JSONResponse) VisitListSecretEnvelopesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretEnvelopes401JSONResponse Error
+
+func (response ListSecretEnvelopes401JSONResponse) VisitListSecretEnvelopesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretEnvelopes404JSONResponse Error
+
+func (response ListSecretEnvelopes404JSONResponse) VisitListSecretEnvelopesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSecretEnvelopes500JSONResponse Error
+
+func (response ListSecretEnvelopes500JSONResponse) VisitListSecretEnvelopesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelopeRequestObject struct {
+	SecretChatId openapi_types.UUID `json:"secretChatId"`
+	Params       SendSecretEnvelopeParams
+	Body         *SendSecretEnvelopeJSONRequestBody
+}
+
+type SendSecretEnvelopeResponseObject interface {
+	VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error
+}
+
+type SendSecretEnvelope201JSONResponse SecretEnvelope
+
+func (response SendSecretEnvelope201JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelope400JSONResponse struct{ ErrorJSONResponse }
+
+func (response SendSecretEnvelope400JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelope401JSONResponse Error
+
+func (response SendSecretEnvelope401JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelope403JSONResponse Error
+
+func (response SendSecretEnvelope403JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelope404JSONResponse Error
+
+func (response SendSecretEnvelope404JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelope413JSONResponse Error
+
+func (response SendSecretEnvelope413JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendSecretEnvelope500JSONResponse Error
+
+func (response SendSecretEnvelope500JSONResponse) VisitSendSecretEnvelopeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListUserDevicesRequestObject struct {
+	UserId UserId `json:"userId"`
+}
+
+type ListUserDevicesResponseObject interface {
+	VisitListUserDevicesResponse(w http.ResponseWriter) error
+}
+
+type ListUserDevices200JSONResponse []Device
+
+func (response ListUserDevices200JSONResponse) VisitListUserDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListUserDevices401JSONResponse struct{ ErrorJSONResponse }
+
+func (response ListUserDevices401JSONResponse) VisitListUserDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListUserDevices404JSONResponse Error
+
+func (response ListUserDevices404JSONResponse) VisitListUserDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListUserDevices500JSONResponse Error
+
+func (response ListUserDevices500JSONResponse) VisitListUserDevicesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -6420,6 +8322,27 @@ type StrictServerInterface interface {
 	// GetConversation One conversation you are in.
 	// (GET /api/v1/conversations/{conversationId})
 	GetConversation(ctx context.Context, request GetConversationRequestObject) (GetConversationResponseObject, error)
+	// ListDevices The devices of this account. Needs a session.
+	// (GET /api/v1/devices)
+	ListDevices(ctx context.Context, request ListDevicesRequestObject) (ListDevicesResponseObject, error)
+	// RegisterDevice Register this device and its public keys. Needs a session.
+	// (POST /api/v1/devices)
+	RegisterDevice(ctx context.Context, request RegisterDeviceRequestObject) (RegisterDeviceResponseObject, error)
+	// RevokeDevice Forget one of your devices and its pending keys. Needs a session.
+	// (DELETE /api/v1/devices/{deviceId})
+	RevokeDevice(ctx context.Context, request RevokeDeviceRequestObject) (RevokeDeviceResponseObject, error)
+	// GetKeyBundle The keys to start a session with this device. Needs a session.
+	// (GET /api/v1/devices/{deviceId}/key-bundle)
+	GetKeyBundle(ctx context.Context, request GetKeyBundleRequestObject) (GetKeyBundleResponseObject, error)
+	// UploadOneTimeKeys Add one-time keys to your device. Needs a session.
+	// (POST /api/v1/devices/{deviceId}/one-time-keys)
+	UploadOneTimeKeys(ctx context.Context, request UploadOneTimeKeysRequestObject) (UploadOneTimeKeysResponseObject, error)
+	// CountOneTimeKeys How many one-time keys your device still has. Needs a session.
+	// (GET /api/v1/devices/{deviceId}/one-time-keys/count)
+	CountOneTimeKeys(ctx context.Context, request CountOneTimeKeysRequestObject) (CountOneTimeKeysResponseObject, error)
+	// AcknowledgeSecretEnvelope Delete a delivered envelope. Only its recipient may.
+	// (DELETE /api/v1/envelopes/{envelopeId})
+	AcknowledgeSecretEnvelope(ctx context.Context, request AcknowledgeSecretEnvelopeRequestObject) (AcknowledgeSecretEnvelopeResponseObject, error)
 	// AcceptInvite Join the server behind the link. Needs a session.
 	// (POST /api/v1/invites/{code}/accept)
 	AcceptInvite(ctx context.Context, request AcceptInviteRequestObject) (AcceptInviteResponseObject, error)
@@ -6444,6 +8367,24 @@ type StrictServerInterface interface {
 	// AddReaction React to a message. Needs the right to write in the channel.
 	// (PUT /api/v1/messages/{messageId}/reactions/{emoji})
 	AddReaction(ctx context.Context, request AddReactionRequestObject) (AddReactionResponseObject, error)
+	// ListSecretChats The secret chats of this device. Needs a session.
+	// (GET /api/v1/secret-chats)
+	ListSecretChats(ctx context.Context, request ListSecretChatsRequestObject) (ListSecretChatsResponseObject, error)
+	// StartSecretChat Open a secret chat with one device of one person. Needs a session.
+	// (POST /api/v1/secret-chats)
+	StartSecretChat(ctx context.Context, request StartSecretChatRequestObject) (StartSecretChatResponseObject, error)
+	// GetSecretChat One secret chat this device takes part in.
+	// (GET /api/v1/secret-chats/{secretChatId})
+	GetSecretChat(ctx context.Context, request GetSecretChatRequestObject) (GetSecretChatResponseObject, error)
+	// ListSecretEnvelopes Ciphertext waiting for this device, oldest first.
+	// (GET /api/v1/secret-chats/{secretChatId}/envelopes)
+	ListSecretEnvelopes(ctx context.Context, request ListSecretEnvelopesRequestObject) (ListSecretEnvelopesResponseObject, error)
+	// SendSecretEnvelope Hand one ciphertext envelope to the server.
+	// (POST /api/v1/secret-chats/{secretChatId}/envelopes)
+	SendSecretEnvelope(ctx context.Context, request SendSecretEnvelopeRequestObject) (SendSecretEnvelopeResponseObject, error)
+	// ListUserDevices The public keys of another person's devices. Needs a session.
+	// (GET /api/v1/users/{userId}/devices)
+	ListUserDevices(ctx context.Context, request ListUserDevicesRequestObject) (ListUserDevicesResponseObject, error)
 	// ListWorkspaces The servers this account belongs to, with its role in each. Needs a session.
 	// (GET /api/v1/workspaces)
 	ListWorkspaces(ctx context.Context, request ListWorkspacesRequestObject) (ListWorkspacesResponseObject, error)
@@ -6832,10 +8773,11 @@ func (sh *strictHandler) UpdateChannel(w http.ResponseWriter, r *http.Request, c
 }
 
 // UploadAttachment operation middleware
-func (sh *strictHandler) UploadAttachment(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+func (sh *strictHandler) UploadAttachment(w http.ResponseWriter, r *http.Request, channelId ChannelId, params UploadAttachmentParams) {
 	var request UploadAttachmentRequestObject
 
 	request.ChannelId = channelId
+	request.Params = params
 
 	if reader, err := r.MultipartReader(); err != nil {
 		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode multipart body: %w", err))
@@ -7064,6 +9006,199 @@ func (sh *strictHandler) GetConversation(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// ListDevices operation middleware
+func (sh *strictHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
+	var request ListDevicesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListDevices(ctx, request.(ListDevicesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListDevices")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListDevicesResponseObject); ok {
+		if err := validResponse.VisitListDevicesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RegisterDevice operation middleware
+func (sh *strictHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
+	var request RegisterDeviceRequestObject
+
+	var body RegisterDeviceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RegisterDevice(ctx, request.(RegisterDeviceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RegisterDevice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RegisterDeviceResponseObject); ok {
+		if err := validResponse.VisitRegisterDeviceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeDevice operation middleware
+func (sh *strictHandler) RevokeDevice(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	var request RevokeDeviceRequestObject
+
+	request.DeviceId = deviceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeDevice(ctx, request.(RevokeDeviceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeDevice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeDeviceResponseObject); ok {
+		if err := validResponse.VisitRevokeDeviceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetKeyBundle operation middleware
+func (sh *strictHandler) GetKeyBundle(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	var request GetKeyBundleRequestObject
+
+	request.DeviceId = deviceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetKeyBundle(ctx, request.(GetKeyBundleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetKeyBundle")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetKeyBundleResponseObject); ok {
+		if err := validResponse.VisitGetKeyBundleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UploadOneTimeKeys operation middleware
+func (sh *strictHandler) UploadOneTimeKeys(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	var request UploadOneTimeKeysRequestObject
+
+	request.DeviceId = deviceId
+
+	var body UploadOneTimeKeysJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UploadOneTimeKeys(ctx, request.(UploadOneTimeKeysRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UploadOneTimeKeys")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UploadOneTimeKeysResponseObject); ok {
+		if err := validResponse.VisitUploadOneTimeKeysResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CountOneTimeKeys operation middleware
+func (sh *strictHandler) CountOneTimeKeys(w http.ResponseWriter, r *http.Request, deviceId DeviceIdPath) {
+	var request CountOneTimeKeysRequestObject
+
+	request.DeviceId = deviceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CountOneTimeKeys(ctx, request.(CountOneTimeKeysRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CountOneTimeKeys")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CountOneTimeKeysResponseObject); ok {
+		if err := validResponse.VisitCountOneTimeKeysResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AcknowledgeSecretEnvelope operation middleware
+func (sh *strictHandler) AcknowledgeSecretEnvelope(w http.ResponseWriter, r *http.Request, envelopeId openapi_types.UUID, params AcknowledgeSecretEnvelopeParams) {
+	var request AcknowledgeSecretEnvelopeRequestObject
+
+	request.EnvelopeId = envelopeId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AcknowledgeSecretEnvelope(ctx, request.(AcknowledgeSecretEnvelopeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AcknowledgeSecretEnvelope")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AcknowledgeSecretEnvelopeResponseObject); ok {
+		if err := validResponse.VisitAcknowledgeSecretEnvelopeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // AcceptInvite operation middleware
 func (sh *strictHandler) AcceptInvite(w http.ResponseWriter, r *http.Request, code InviteCode) {
 	var request AcceptInviteRequestObject
@@ -7281,6 +9416,179 @@ func (sh *strictHandler) AddReaction(w http.ResponseWriter, r *http.Request, mes
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(AddReactionResponseObject); ok {
 		if err := validResponse.VisitAddReactionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSecretChats operation middleware
+func (sh *strictHandler) ListSecretChats(w http.ResponseWriter, r *http.Request, params ListSecretChatsParams) {
+	var request ListSecretChatsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSecretChats(ctx, request.(ListSecretChatsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSecretChats")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSecretChatsResponseObject); ok {
+		if err := validResponse.VisitListSecretChatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartSecretChat operation middleware
+func (sh *strictHandler) StartSecretChat(w http.ResponseWriter, r *http.Request, params StartSecretChatParams) {
+	var request StartSecretChatRequestObject
+
+	request.Params = params
+
+	var body StartSecretChatJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartSecretChat(ctx, request.(StartSecretChatRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartSecretChat")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartSecretChatResponseObject); ok {
+		if err := validResponse.VisitStartSecretChatResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSecretChat operation middleware
+func (sh *strictHandler) GetSecretChat(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params GetSecretChatParams) {
+	var request GetSecretChatRequestObject
+
+	request.SecretChatId = secretChatId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSecretChat(ctx, request.(GetSecretChatRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSecretChat")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSecretChatResponseObject); ok {
+		if err := validResponse.VisitGetSecretChatResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSecretEnvelopes operation middleware
+func (sh *strictHandler) ListSecretEnvelopes(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params ListSecretEnvelopesParams) {
+	var request ListSecretEnvelopesRequestObject
+
+	request.SecretChatId = secretChatId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSecretEnvelopes(ctx, request.(ListSecretEnvelopesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSecretEnvelopes")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSecretEnvelopesResponseObject); ok {
+		if err := validResponse.VisitListSecretEnvelopesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SendSecretEnvelope operation middleware
+func (sh *strictHandler) SendSecretEnvelope(w http.ResponseWriter, r *http.Request, secretChatId openapi_types.UUID, params SendSecretEnvelopeParams) {
+	var request SendSecretEnvelopeRequestObject
+
+	request.SecretChatId = secretChatId
+	request.Params = params
+
+	var body SendSecretEnvelopeJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SendSecretEnvelope(ctx, request.(SendSecretEnvelopeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SendSecretEnvelope")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SendSecretEnvelopeResponseObject); ok {
+		if err := validResponse.VisitSendSecretEnvelopeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListUserDevices operation middleware
+func (sh *strictHandler) ListUserDevices(w http.ResponseWriter, r *http.Request, userId UserId) {
+	var request ListUserDevicesRequestObject
+
+	request.UserId = userId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListUserDevices(ctx, request.(ListUserDevicesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListUserDevices")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListUserDevicesResponseObject); ok {
+		if err := validResponse.VisitListUserDevicesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -7897,167 +10205,210 @@ func (sh *strictHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"f/X91f8LAAD//w==",
+	"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",
+	"3U/v/l8AAAD//w==",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

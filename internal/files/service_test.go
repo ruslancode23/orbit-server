@@ -72,6 +72,24 @@ func (s *fakeStore) Orphans(_ context.Context, olderThan time.Time, limit int) (
 	return out, nil
 }
 
+func (s *fakeStore) Expired(_ context.Context, limit int) ([]Attachment, error) {
+	var out []Attachment
+	for _, a := range s.attachments {
+		if a.ExpiresAt != nil && !time.Now().Before(*a.ExpiresAt) {
+			out = append(out, *a)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) DeleteExpired(_ context.Context, id uuid.UUID) error {
+	delete(s.attachments, id)
+	return nil
+}
+
 func (s *fakeStore) Delete(_ context.Context, id uuid.UUID) error {
 	if a, ok := s.attachments[id]; ok && a.MessageID == nil {
 		delete(s.attachments, id)
@@ -208,7 +226,7 @@ func TestUploadStoresTheFileAndReadsItsRealType(t *testing.T) {
 	w := newWorld(t)
 
 	// The name says .txt, the bytes say PNG. The bytes win.
-	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "картинка.txt", bytes.NewReader(pngBytes))
+	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "картинка.txt", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -238,7 +256,7 @@ func TestUploadRefusesWhatABrowserWouldRun(t *testing.T) {
 		{"svg", `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := w.svc.Upload(t.Context(), w.channel, w.anna, "harmless.png", strings.NewReader(tc.body))
+			_, err := w.svc.Upload(t.Context(), w.channel, w.anna, "harmless.png", strings.NewReader(tc.body), nil)
 			if !errors.Is(err, ErrUnsupportedType) {
 				t.Errorf("err = %v, want ErrUnsupportedType", err)
 			}
@@ -254,7 +272,7 @@ func TestUploadRefusesTooLargeAndEmpty(t *testing.T) {
 
 	t.Run("too large", func(t *testing.T) {
 		big := append(append([]byte{}, pngBytes...), bytes.Repeat([]byte{1}, maxBytes)...)
-		if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "big.png", bytes.NewReader(big)); !errors.Is(err, ErrTooLarge) {
+		if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "big.png", bytes.NewReader(big), nil); !errors.Is(err, ErrTooLarge) {
 			t.Errorf("err = %v, want ErrTooLarge", err)
 		}
 		if len(w.storage.objects) != 0 {
@@ -263,7 +281,7 @@ func TestUploadRefusesTooLargeAndEmpty(t *testing.T) {
 	})
 
 	t.Run("empty", func(t *testing.T) {
-		if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "empty.txt", strings.NewReader("")); !errors.Is(err, ErrEmpty) {
+		if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "empty.txt", strings.NewReader(""), nil); !errors.Is(err, ErrEmpty) {
 			t.Errorf("err = %v, want ErrEmpty", err)
 		}
 	})
@@ -272,10 +290,10 @@ func TestUploadRefusesTooLargeAndEmpty(t *testing.T) {
 func TestUploadNeedsTheRightToWrite(t *testing.T) {
 	w := newWorld(t)
 
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.reader, "f.png", bytes.NewReader(pngBytes)); !errors.Is(err, ErrForbidden) {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.reader, "f.png", bytes.NewReader(pngBytes), nil); !errors.Is(err, ErrForbidden) {
 		t.Errorf("as a reader: err = %v, want ErrForbidden", err)
 	}
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.outsider, "f.png", bytes.NewReader(pngBytes)); !errors.Is(err, ErrNotFound) {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.outsider, "f.png", bytes.NewReader(pngBytes), nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("as an outsider: err = %v, want ErrNotFound", err)
 	}
 }
@@ -286,7 +304,7 @@ func TestUploadCleansUpAfterItself(t *testing.T) {
 	w := newWorld(t)
 	w.storage.putErr = errors.New("store is down")
 
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes)); err == nil {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil); err == nil {
 		t.Fatal("err = nil, want the store's error")
 	}
 	if len(w.store.attachments) != 0 {
@@ -297,7 +315,7 @@ func TestUploadCleansUpAfterItself(t *testing.T) {
 // Only someone who may read the channel gets a link, and only for a while.
 func TestLinkIsIssuedOnlyToTheChannelsReaders(t *testing.T) {
 	w := newWorld(t)
-	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes))
+	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -323,7 +341,7 @@ func TestLinkIsIssuedOnlyToTheChannelsReaders(t *testing.T) {
 // A file not yet on a message is nobody's business but its uploader's.
 func TestUnattachedFileIsVisibleOnlyToItsUploader(t *testing.T) {
 	w := newWorld(t)
-	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes))
+	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -338,7 +356,7 @@ func TestUnattachedFileIsVisibleOnlyToItsUploader(t *testing.T) {
 
 func TestAttachAllTakesOnlyYourOwnFreeFiles(t *testing.T) {
 	w := newWorld(t)
-	mine, err := w.svc.Upload(t.Context(), w.channel, w.anna, "mine.png", bytes.NewReader(pngBytes))
+	mine, err := w.svc.Upload(t.Context(), w.channel, w.anna, "mine.png", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -347,7 +365,7 @@ func TestAttachAllTakesOnlyYourOwnFreeFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	used, err := w.svc.Upload(t.Context(), w.channel, w.anna, "used.png", bytes.NewReader(pngBytes))
+	used, err := w.svc.Upload(t.Context(), w.channel, w.anna, "used.png", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -367,11 +385,11 @@ func TestAttachAllTakesOnlyYourOwnFreeFiles(t *testing.T) {
 // Files whose message never arrived go away, bytes first, row second.
 func TestSweepRemovesOrphansOnly(t *testing.T) {
 	w := newWorld(t)
-	orphan, err := w.svc.Upload(t.Context(), w.channel, w.anna, "orphan.png", bytes.NewReader(pngBytes))
+	orphan, err := w.svc.Upload(t.Context(), w.channel, w.anna, "orphan.png", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	kept, err := w.svc.Upload(t.Context(), w.channel, w.anna, "kept.png", bytes.NewReader(pngBytes))
+	kept, err := w.svc.Upload(t.Context(), w.channel, w.anna, "kept.png", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -404,7 +422,7 @@ func TestSweepRemovesOrphansOnly(t *testing.T) {
 // A file uploaded a minute ago is not swept: its message may still be coming.
 func TestSweepLeavesFreshUploadsAlone(t *testing.T) {
 	w := newWorld(t)
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "fresh.png", bytes.NewReader(pngBytes)); err != nil {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "fresh.png", bytes.NewReader(pngBytes), nil); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -420,7 +438,7 @@ func TestSweepLeavesFreshUploadsAlone(t *testing.T) {
 func TestFileNameIsKeptSaneAndTheKeyIsNot(t *testing.T) {
 	w := newWorld(t)
 
-	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "../../etc/passwd", bytes.NewReader(pngBytes))
+	attachment, err := w.svc.Upload(t.Context(), w.channel, w.anna, "../../etc/passwd", bytes.NewReader(pngBytes), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -429,5 +447,57 @@ func TestFileNameIsKeptSaneAndTheKeyIsNot(t *testing.T) {
 	}
 	if strings.Contains(attachment.StorageKey, "..") {
 		t.Errorf("storageKey = %q, want no path tricks", attachment.StorageKey)
+	}
+}
+
+// A secret chat file is ciphertext bound to the channel, not to a message: the
+// other participant must be able to fetch it, and its deadline deletes it.
+func TestSecretChatFileIsSharedWithThePeerAndExpires(t *testing.T) {
+	w := newWorld(t)
+	secret := uuid.New()
+	w.access.channel = channels.Channel{ID: secret, Kind: channels.KindSecret}
+	w.access.readers = map[uuid.UUID]bool{w.anna: true, w.reader: true}
+	w.access.writers = map[uuid.UUID]bool{w.anna: true, w.reader: true}
+
+	deadline := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	attachment, err := w.svc.Upload(t.Context(), secret, w.anna, "blob.bin", bytes.NewReader(pngBytes), &deadline)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if attachment.ExpiresAt == nil || !attachment.ExpiresAt.Equal(deadline) {
+		t.Errorf("expiresAt = %v, want %v", attachment.ExpiresAt, deadline)
+	}
+	if attachment.MessageID != nil {
+		t.Error("a secret chat file was bound to a message")
+	}
+
+	// The sender and the other participant of the chat may download it.
+	for name, caller := range map[string]uuid.UUID{"sender": w.anna, "peer": w.reader} {
+		if _, err := w.svc.Link(t.Context(), attachment.ID, caller); err != nil {
+			t.Errorf("%s: Link: %v", name, err)
+		}
+	}
+	// Somebody outside the chat may not.
+	if _, err := w.svc.Link(t.Context(), attachment.ID, w.outsider); !errors.Is(err, ErrNotFound) {
+		t.Errorf("outsider: err = %v, want ErrNotFound", err)
+	}
+
+	// Once the deadline passes, the file is gone even before the sweep.
+	past := time.Now().Add(-time.Minute)
+	attachment.ExpiresAt = &past
+	w.store.attachments[attachment.ID] = &attachment
+	if _, err := w.svc.Link(t.Context(), attachment.ID, w.reader); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired file: err = %v, want ErrNotFound", err)
+	}
+
+	removed, err := w.svc.SweepExpired(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("SweepExpired: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1", removed)
+	}
+	if _, ok := w.storage.objects[attachment.StorageKey]; ok {
+		t.Error("the object outlived its deadline")
 	}
 }

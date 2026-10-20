@@ -103,7 +103,13 @@ docs/adr/               архитектурные решения
 Сессия берётся из cookie `orbit_session`, без неё — 401. Кадры — JSON.
 
 От клиента: `{"type":"subscribe","workspaceId":"…","cursors":{"<channelId>":<seq>}}` (курсоры
-необязательны — это то, на чём клиент остановился), `{"type":"unsubscribe"}`, `{"type":"ping"}`.
+необязательны — это то, на чём клиент остановился), `{"type":"resume","conversations":{"<conversationId>":<seq>}}`
+для личных бесед (у них нет сервера), `{"type":"unsubscribe"}`, `{"type":"ping"}`.
+
+У соединения два потока: поток выбранного сервера и личный поток аккаунта. Второй открывается сразу
+после авторизации и приносит `conversation.created`, события сообщений и прочтения в беседах, а также
+`secret.envelope` — непрозрачный конверт секретного чата. Права на событие беседы проверяются по её
+участникам, поэтому вышедший из группы перестаёт получать их сразу.
 
 От сервера: `subscribed`, `unsubscribed`, `pong`, события `message.created`, `message.updated`,
 `message.deleted`, `message.reaction`, `member.changed`, `workspace.updated` (поля `workspaceId`, `channelId`, `seq`,
@@ -123,3 +129,18 @@ docs/adr/               архитектурные решения
 | LiveKit | ws://localhost:7880 | devkey / secret (dev mode), настройки поверх — `deploy/livekit.yaml` |
 
 Все значения — только для локальной разработки.
+
+## Секретные чаты
+
+Секретный чат — это `channels.kind = 'secret'` с двумя участниками и привязкой к конкретным устройствам
+(`secret_chat_devices`). Сервер хранит публичные ключи устройств (`devices`), одноразовые pre-keys
+(`device_one_time_keys`, выдача — `DELETE … RETURNING`) и шифротекст конвертов (`secret_envelopes`).
+Текста, ключей и имён файлов у сервера нет; обычные эндпоинты сообщений секретный канал отвергают 404.
+
+Устройство регистрируется подписью ed25519 над `orbit-device-v1|<userId>|<identityKey>|<signingKey>`,
+дальше секретные операции требуют заголовок `X-Orbit-Device`. Конверт живёт до недели и удаляется
+подтверждением получателя; вложения секретного чата — шифротекст с `expiresAt`, который убирает sweeper.
+
+Подробности: [ADR-0005](docs/adr/0005-secret-chats-olm.md) и
+[модель угроз](docs/threat-model-secret-chats.md). Security-ревью —
+[docs/security-review-secret-chats.md](docs/security-review-secret-chats.md).

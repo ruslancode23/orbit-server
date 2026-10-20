@@ -24,12 +24,14 @@ var _ Store = (*PostgresStore)(nil)
 func (s *PostgresStore) Create(ctx context.Context, a Attachment) (Attachment, error) {
 	row, err := s.q.CreateAttachment(ctx, db.CreateAttachmentParams{
 		UploaderID: pgUUID(a.UploaderID),
+		ChannelID:  pgUUIDPtr(a.ChannelID),
 		StorageKey: a.StorageKey,
 		FileName:   a.FileName,
 		MimeType:   a.MimeType,
 		SizeBytes:  a.SizeBytes,
 		Width:      pgInt4(a.Width),
 		Height:     pgInt4(a.Height),
+		ExpiresAt:  pgTimestamptz(a.ExpiresAt),
 	})
 	if err != nil {
 		return Attachment{}, fmt.Errorf("create attachment: %w", err)
@@ -105,6 +107,25 @@ func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (s *PostgresStore) Expired(ctx context.Context, limit int) ([]Attachment, error) {
+	rows, err := s.q.ListExpiredAttachments(ctx, int32(limit)) //nolint:gosec // a batch size the caller picks
+	if err != nil {
+		return nil, fmt.Errorf("list expired attachments: %w", err)
+	}
+	out := make([]Attachment, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAttachment(row))
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) DeleteExpired(ctx context.Context, id uuid.UUID) error {
+	if err := s.q.DeleteExpiredAttachment(ctx, pgUUID(id)); err != nil {
+		return fmt.Errorf("delete expired attachment: %w", err)
+	}
+	return nil
+}
+
 func toAttachment(row db.Attachment) Attachment {
 	attachment := Attachment{
 		ID:         uuid.UUID(row.ID.Bytes),
@@ -119,6 +140,14 @@ func toAttachment(row db.Attachment) Attachment {
 		messageID := uuid.UUID(row.MessageID.Bytes)
 		attachment.MessageID = &messageID
 	}
+	if row.ChannelID.Valid {
+		channelID := uuid.UUID(row.ChannelID.Bytes)
+		attachment.ChannelID = &channelID
+	}
+	if row.ExpiresAt.Valid {
+		expiresAt := row.ExpiresAt.Time
+		attachment.ExpiresAt = &expiresAt
+	}
 	if row.Width.Valid {
 		width := int(row.Width.Int32)
 		attachment.Width = &width
@@ -132,6 +161,20 @@ func toAttachment(row db.Attachment) Attachment {
 
 func pgUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+func pgUUIDPtr(id *uuid.UUID) pgtype.UUID {
+	if id == nil {
+		return pgtype.UUID{}
+	}
+	return pgUUID(*id)
+}
+
+func pgTimestamptz(value *time.Time) pgtype.Timestamptz {
+	if value == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *value, Valid: true}
 }
 
 func pgInt4(v *int) pgtype.Int4 {

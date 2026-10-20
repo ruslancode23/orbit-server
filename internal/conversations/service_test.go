@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
 // fakeStore keeps conversations in memory with the rule the database keeps:
@@ -14,6 +16,7 @@ import (
 type fakeStore struct {
 	conversations map[uuid.UUID]*Conversation
 	directKeys    map[string]uuid.UUID
+	secretKeys    map[string]uuid.UUID
 	known         map[uuid.UUID]bool
 	creates       int
 }
@@ -22,6 +25,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{
 		conversations: map[uuid.UUID]*Conversation{},
 		directKeys:    map[string]uuid.UUID{},
+		secretKeys:    map[string]uuid.UUID{},
 		known:         map[uuid.UUID]bool{},
 	}
 }
@@ -34,9 +38,33 @@ func (s *fakeStore) Create(_ context.Context, kind Kind, directKey string, membe
 	}
 	s.conversations[conversation.ID] = &conversation
 	if directKey != "" {
-		s.directKeys[directKey] = conversation.ID
+		if kind == KindSecret {
+			s.secretKeys[directKey] = conversation.ID
+		} else {
+			s.directKeys[directKey] = conversation.ID
+		}
 	}
 	return conversation, nil
+}
+
+func (s *fakeStore) Secret(_ context.Context, key string) (Conversation, error) {
+	id, ok := s.secretKeys[key]
+	if !ok {
+		return Conversation{}, ErrNotFound
+	}
+	return *s.conversations[id], nil
+}
+
+func (s *fakeStore) MemberIDs(_ context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	conversation, ok := s.conversations[channelID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]uuid.UUID, 0, len(conversation.Members))
+	for _, member := range conversation.Members {
+		out = append(out, member.ID)
+	}
+	return out, nil
 }
 
 func (s *fakeStore) Direct(_ context.Context, directKey string) (Conversation, error) {
@@ -58,6 +86,10 @@ func (s *fakeStore) Conversation(_ context.Context, id uuid.UUID) (Conversation,
 func (s *fakeStore) List(_ context.Context, userID uuid.UUID) ([]Conversation, error) {
 	var out []Conversation
 	for _, conversation := range s.conversations {
+		// The SQL list leaves secret chats out: they have their own endpoint.
+		if conversation.Kind == KindSecret {
+			continue
+		}
 		for _, member := range conversation.Members {
 			if member.ID == userID {
 				out = append(out, *conversation)
@@ -255,5 +287,90 @@ func TestDuplicateNamesAreCollapsed(t *testing.T) {
 	}
 	if conversation.Kind != KindDirect || len(conversation.Members) != 2 {
 		t.Errorf("conversation = %+v, want a direct one with two people", conversation)
+	}
+}
+
+// eventRecorder keeps the personal events a conversation publishes.
+type eventRecorder struct {
+	users  []uuid.UUID
+	events []events.Event
+}
+
+func (r *eventRecorder) PublishToUser(userID uuid.UUID, event events.Event) {
+	r.users = append(r.users, userID)
+	r.events = append(r.events, event)
+}
+
+// A new dialogue is announced to each participant's own stream: a conversation
+// has no server to announce to.
+func TestNewConversationIsAnnouncedPersonally(t *testing.T) {
+	w := newWorld(t)
+	recorder := &eventRecorder{}
+	w.svc.SetPublisher(recorder)
+
+	conversation, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(recorder.events) != 2 {
+		t.Fatalf("published %d events, want one per participant", len(recorder.events))
+	}
+	for i, event := range recorder.events {
+		if event.Kind != events.KindConversationCreated {
+			t.Errorf("event %d = %v, want %v", i, event.Kind, events.KindConversationCreated)
+		}
+		if event.ChannelID != conversation.ID {
+			t.Errorf("event %d channel = %v, want %v", i, event.ChannelID, conversation.ID)
+		}
+	}
+	seen := map[uuid.UUID]bool{recorder.users[0]: true, recorder.users[1]: true}
+	if !seen[w.anna] || !seen[w.bob] {
+		t.Errorf("published to %v, want both participants", recorder.users)
+	}
+
+	// Reopening the same dialogue is not news.
+	recorder.events = nil
+	if _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna}); err != nil {
+		t.Fatalf("Start again: %v", err)
+	}
+	if len(recorder.events) != 0 {
+		t.Errorf("reopening published %d events, want none", len(recorder.events))
+	}
+}
+
+// A secret chat is one chat per pair of devices, whichever side starts it, and
+// it never appears among ordinary conversations.
+func TestSecretChatIsPerDevicePair(t *testing.T) {
+	w := newWorld(t)
+	key := "secret:" + uuid.NewString()
+
+	first, created, err := w.svc.EnsureSecret(t.Context(), key, []uuid.UUID{w.anna, w.bob})
+	if err != nil {
+		t.Fatalf("EnsureSecret: %v", err)
+	}
+	if !created || first.Kind != KindSecret {
+		t.Errorf("chat = %+v created=%v, want a new secret chat", first, created)
+	}
+
+	again, created, err := w.svc.EnsureSecret(t.Context(), key, []uuid.UUID{w.bob, w.anna})
+	if err != nil {
+		t.Fatalf("EnsureSecret again: %v", err)
+	}
+	if created || again.ID != first.ID {
+		t.Errorf("second call = %+v created=%v, want the same chat", again, created)
+	}
+
+	// It is reached through its own endpoints: the ordinary one says not found.
+	if _, err := w.svc.Get(t.Context(), first.ID, w.anna); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get on a secret chat: err = %v, want ErrNotFound", err)
+	}
+	list, err := w.svc.List(t.Context(), w.anna)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, conversation := range list {
+		if conversation.Kind == KindSecret {
+			t.Errorf("a secret chat appeared in the conversation list: %+v", conversation)
+		}
 	}
 }

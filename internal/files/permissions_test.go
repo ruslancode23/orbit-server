@@ -16,12 +16,12 @@ func TestUploadFollowsTheAttachFlag(t *testing.T) {
 	w := newWorld(t)
 	workspaceID := w.access.channel.WorkspaceID
 
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes)); err != nil {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil); err != nil {
 		t.Fatalf("default: %v", err)
 	}
 
 	w.perms.perms[workspaceID] = servers.Permissions{AttachFiles: false}
-	_, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes))
+	_, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil)
 	if !errors.Is(err, ErrAttachNotAllowed) || !errors.Is(err, ErrForbidden) {
 		t.Errorf("flag off: err = %v, want ErrAttachNotAllowed", err)
 	}
@@ -30,7 +30,7 @@ func TestUploadFollowsTheAttachFlag(t *testing.T) {
 	}
 
 	w.perms.roles[workspaceID][w.anna] = servers.RoleAdmin
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes)); err != nil {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil); err != nil {
 		t.Errorf("admin with the flag off: %v", err)
 	}
 }
@@ -44,7 +44,7 @@ func TestAttachFlagIsPerServer(t *testing.T) {
 	w.perms.perms[other] = servers.Permissions{AttachFiles: false}
 	w.perms.roles[other] = map[uuid.UUID]servers.Role{w.anna: servers.RoleMember}
 
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes)); err != nil {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil); err != nil {
 		t.Errorf("own server unaffected by the other: %v", err)
 	}
 	if err := w.svc.MayAttach(t.Context(), channels.Channel{ID: uuid.New(), WorkspaceID: other}, w.anna); !errors.Is(err, ErrAttachNotAllowed) {
@@ -56,7 +56,7 @@ func TestAttachFlagIsPerServer(t *testing.T) {
 
 	w.perms.perms[workspaceID] = servers.Permissions{}
 	w.access.channel.WorkspaceID = uuid.Nil // the same channel as a conversation
-	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes)); err != nil {
+	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil); err != nil {
 		t.Errorf("conversation: %v", err)
 	}
 }

@@ -18,10 +18,16 @@ type Hub struct {
 	// subscriptions are grouped by server, then by subscription, so that
 	// publishing to a server and revoking one person are both cheap.
 	byWorkspace map[uuid.UUID]map[*Subscription]struct{}
+	// personal subscriptions follow an account, not a server: conversations and
+	// secret envelopes have no server to publish to.
+	byUser map[uuid.UUID]map[*Subscription]struct{}
 }
 
 func NewHub() *Hub {
-	return &Hub{byWorkspace: map[uuid.UUID]map[*Subscription]struct{}{}}
+	return &Hub{
+		byWorkspace: map[uuid.UUID]map[*Subscription]struct{}{},
+		byUser:      map[uuid.UUID]map[*Subscription]struct{}{},
+	}
 }
 
 // Subscription is one connection watching one server.
@@ -29,6 +35,9 @@ type Subscription struct {
 	hub         *Hub
 	userID      uuid.UUID
 	workspaceID uuid.UUID
+	// personal marks the account stream: it is not registered under a server,
+	// and every event that reaches it belongs to one person.
+	personal bool
 
 	events chan Event
 	// done is closed when the subscription ends, whatever ends it.
@@ -57,6 +66,55 @@ func (h *Hub) Subscribe(userID, workspaceID uuid.UUID) *Subscription {
 	}
 	h.byWorkspace[workspaceID][sub] = struct{}{}
 	return sub
+}
+
+// SubscribeUser starts watching everything addressed to one account: new and
+// changed conversations, messages in them, read cursors and secret envelopes.
+// It lives as long as the connection, whatever server it currently watches.
+func (h *Hub) SubscribeUser(userID uuid.UUID) *Subscription {
+	sub := &Subscription{
+		hub:      h,
+		userID:   userID,
+		personal: true,
+		events:   make(chan Event, queueSize),
+		done:     make(chan struct{}),
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.byUser[userID] == nil {
+		h.byUser[userID] = map[*Subscription]struct{}{}
+	}
+	h.byUser[userID][sub] = struct{}{}
+	return sub
+}
+
+// PublishToUser delivers an event to every connection of one account, whatever
+// server each connection is watching.
+func (h *Hub) PublishToUser(userID uuid.UUID, event Event) {
+	event.Personal = true
+
+	h.mu.RLock()
+	subs := make([]*Subscription, 0, len(h.byUser[userID]))
+	for sub := range h.byUser[userID] {
+		subs = append(subs, sub)
+	}
+	h.mu.RUnlock()
+
+	for _, sub := range subs {
+		select {
+		case sub.events <- event:
+		default:
+			sub.closeSlow()
+		}
+	}
+}
+
+// PersonalSubscribers reports how many connections an account has. For tests.
+func (h *Hub) PersonalSubscribers(userID uuid.UUID) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.byUser[userID])
 }
 
 // Publish delivers an event to everyone watching that server. It never blocks:
@@ -158,6 +216,14 @@ func (s *Subscription) closeSlow() {
 func (h *Hub) remove(sub *Subscription) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if sub.personal {
+		subs := h.byUser[sub.userID]
+		delete(subs, sub)
+		if len(subs) == 0 {
+			delete(h.byUser, sub.userID)
+		}
+		return
+	}
 	subs := h.byWorkspace[sub.workspaceID]
 	delete(subs, sub)
 	if len(subs) == 0 {
