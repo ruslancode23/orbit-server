@@ -330,3 +330,73 @@ func TestHandlerReturnsVoicePresence(t *testing.T) {
 		t.Errorf("participants = %+v, want Anna", (*membership.Voice)[0].Participants)
 	}
 }
+
+type fixedUserPresence struct {
+	statuses map[uuid.UUID]api.PresenceStatus
+}
+
+func (f fixedUserPresence) Statuses(userIDs []uuid.UUID) map[uuid.UUID]api.PresenceStatus {
+	out := map[uuid.UUID]api.PresenceStatus{}
+	for _, userID := range userIDs {
+		if status, ok := f.statuses[userID]; ok {
+			out[userID] = status
+		}
+	}
+	return out
+}
+
+// The member list is the second place a status shows up: it is what the sidebar
+// and the friends list are built from.
+func TestHandlerReturnsUserPresence(t *testing.T) {
+	h, w := newTestHandler(t)
+	h.SetPresence(fixedUserPresence{statuses: map[uuid.UUID]api.PresenceStatus{
+		w.member: api.Dnd,
+	}})
+
+	resp, err := h.ListWorkspaceMembers(sessionFor(context.Background(), w.member),
+		api.ListWorkspaceMembersRequestObject{WorkspaceId: w.workspace})
+	if err != nil {
+		t.Fatalf("ListWorkspaceMembers: %v", err)
+	}
+	members, ok := resp.(api.ListWorkspaceMembers200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+
+	seen := map[uuid.UUID]*api.PresenceStatus{}
+	for _, member := range members {
+		seen[member.User.Id] = member.Presence
+	}
+	status, ok := seen[w.member]
+	if !ok {
+		t.Fatalf("the caller is not in the member list: %+v", members)
+	}
+	if status == nil || *status != api.Dnd {
+		t.Fatalf("presence of the caller = %v, want dnd", status)
+	}
+	// An account presence knows nothing about is still a member, just offline.
+	if owner := seen[w.owner]; owner != nil {
+		t.Errorf("presence of the owner = %v, want nil", *owner)
+	}
+}
+
+// Without the presence module the member list still answers: presence is a
+// decoration, not a requirement.
+func TestHandlerMemberListWithoutPresence(t *testing.T) {
+	h, w := newTestHandler(t)
+
+	resp, err := h.ListWorkspaceMembers(sessionFor(context.Background(), w.member),
+		api.ListWorkspaceMembersRequestObject{WorkspaceId: w.workspace})
+	if err != nil {
+		t.Fatalf("ListWorkspaceMembers: %v", err)
+	}
+	members, ok := resp.(api.ListWorkspaceMembers200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	for _, member := range members {
+		if member.Presence != nil {
+			t.Fatalf("presence = %v, want nil without the module", *member.Presence)
+		}
+	}
+}
