@@ -244,6 +244,22 @@ func (h *Handler) GetSecretChat(ctx context.Context, req api.GetSecretChatReques
 	return api.GetSecretChat200JSONResponse(toAPISecretChat(chat)), nil
 }
 
+func (h *Handler) LeaveSecretChat(ctx context.Context, req api.LeaveSecretChatRequestObject) (api.LeaveSecretChatResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.LeaveSecretChat401JSONResponse(api.Error(unauthorized())), nil
+	}
+	err := h.svc.LeaveChat(ctx, userID, req.Params.XOrbitDevice, req.SecretChatId)
+	switch {
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrForbidden):
+		return api.LeaveSecretChat404JSONResponse(api.Error(notFound())), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "leave secret chat", slog.Any("error", err))
+		return api.LeaveSecretChat500JSONResponse(internal("could not delete the secret chat")), nil
+	}
+	return api.LeaveSecretChat204Response{}, nil
+}
+
 func (h *Handler) ListSecretEnvelopes(ctx context.Context, req api.ListSecretEnvelopesRequestObject) (api.ListSecretEnvelopesResponseObject, error) {
 	userID, ok := caller(ctx)
 	if !ok {

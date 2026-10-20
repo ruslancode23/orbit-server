@@ -99,6 +99,9 @@ type Querier interface {
 	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)
 	IsSecretChatDevice(ctx context.Context, arg IsSecretChatDeviceParams) (bool, error)
 	IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMemberBannedParams) (bool, error)
+	// Deleting a secret chat deletes the pair: the channel cascades to bindings,
+	// envelopes and files. Only a device in the chat may do it.
+	LeaveSecretChat(ctx context.Context, arg LeaveSecretChatParams) (int64, error)
 	// One page of history, newest first: the caller passes the seq it already has
 	// (NULL for the first page) and gets the next portion.
 	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]ListChannelMessagesRow, error)

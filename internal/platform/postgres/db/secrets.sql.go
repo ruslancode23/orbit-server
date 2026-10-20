@@ -386,6 +386,32 @@ func (q *Queries) IsSecretChatDevice(ctx context.Context, arg IsSecretChatDevice
 	return exists, err
 }
 
+const leaveSecretChat = `-- name: LeaveSecretChat :execrows
+DELETE FROM channels
+WHERE id = $1
+  AND kind = 'secret'
+  AND EXISTS (
+    SELECT 1 FROM secret_chat_devices
+    WHERE channel_id = $1 AND device_id = $2 AND user_id = $3
+  )
+`
+
+type LeaveSecretChatParams struct {
+	ID       pgtype.UUID `json:"id"`
+	DeviceID pgtype.UUID `json:"device_id"`
+	UserID   pgtype.UUID `json:"user_id"`
+}
+
+// Deleting a secret chat deletes the pair: the channel cascades to bindings,
+// envelopes and files. Only a device in the chat may do it.
+func (q *Queries) LeaveSecretChat(ctx context.Context, arg LeaveSecretChatParams) (int64, error) {
+	result, err := q.db.Exec(ctx, leaveSecretChat, arg.ID, arg.DeviceID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listPendingSecretEnvelopes = `-- name: ListPendingSecretEnvelopes :many
 SELECT id, channel_id, sender_device_id, recipient_device_id, type, body, created_at, expires_at FROM secret_envelopes
 WHERE channel_id = $1

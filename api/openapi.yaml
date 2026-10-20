@@ -1270,6 +1270,22 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: leaveSecretChat
+      tags: [secret-chats]
+      summary: Delete this secret chat for this device and forget it on the server.
+      description: |
+        The chat is a pair of devices, so deleting it deletes it for both: the
+        server drops the binding, the undelivered envelopes and the channel. The
+        local history of the caller is wiped by the client; the peer's own copy
+        disappears from its list and stops opening.
+      responses:
+        "204":
+          description: The secret chat is gone from the server.
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/secret-chats/{secretChatId}/envelopes:
     parameters:
       - name: secretChatId

@@ -30,6 +30,8 @@ const (
 	// KindSecretEnvelope is one ciphertext waiting for a device. It goes to the
 	// recipient's personal stream and nowhere else.
 	KindSecretEnvelope Kind = "secret.envelope"
+	// KindSecretChatDeleted says a secret chat was deleted for both devices.
+	KindSecretChatDeleted Kind = "secret.chat.deleted"
 )
 
 // Event is one thing that happened on one server.

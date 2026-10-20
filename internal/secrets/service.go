@@ -151,6 +151,9 @@ type Store interface {
 	SecretChatDevice(ctx context.Context, chatID, deviceID uuid.UUID) (bool, error)
 	SecretChat(ctx context.Context, chatID, deviceID, userID uuid.UUID) (SecretChat, error)
 	SecretChats(ctx context.Context, deviceID, userID uuid.UUID) ([]SecretChat, error)
+	// LeaveSecretChat deletes the chat and everything stored for it, but only
+	// when this device takes part in it.
+	LeaveSecretChat(ctx context.Context, chatID, deviceID, userID uuid.UUID) error
 
 	CreateEnvelope(ctx context.Context, envelope Envelope) (Envelope, error)
 	Envelopes(ctx context.Context, chatID, recipientDeviceID uuid.UUID, limit int) ([]Envelope, error)
@@ -390,6 +393,30 @@ func (s *Service) Chat(ctx context.Context, userID, deviceID, chatID uuid.UUID) 
 		return SecretChat{}, err
 	}
 	return s.store.SecretChat(ctx, chatID, deviceID, userID)
+}
+
+// LeaveChat deletes a secret chat for both devices: the channel, the bindings,
+// the undelivered envelopes and the files. The caller's local history is wiped
+// by the client; the peer sees the chat disappear from its list.
+func (s *Service) LeaveChat(ctx context.Context, userID, deviceID, chatID uuid.UUID) error {
+	chat, err := s.Chat(ctx, userID, deviceID, chatID)
+	if err != nil {
+		return err
+	}
+	if err := s.store.LeaveSecretChat(ctx, chatID, deviceID, userID); err != nil {
+		return err
+	}
+	if s.publisher != nil {
+		payload := map[string]any{"id": chatID}
+		for _, recipient := range []uuid.UUID{userID, chat.Peer.UserID} {
+			s.publisher.PublishToUser(recipient, events.Event{
+				Kind:      events.KindSecretChatDeleted,
+				ChannelID: chatID,
+				Payload:   payload,
+			})
+		}
+	}
+	return nil
 }
 
 // SendEnvelope stores one ciphertext and tells the recipient's stream about it.

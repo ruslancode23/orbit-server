@@ -142,3 +142,14 @@ DELETE FROM secret_chat_devices WHERE device_id = $1;
 
 -- name: DeleteSecretChatChannel :exec
 DELETE FROM channels WHERE id = $1 AND kind = 'secret';
+
+-- Deleting a secret chat deletes the pair: the channel cascades to bindings,
+-- envelopes and files. Only a device in the chat may do it.
+-- name: LeaveSecretChat :execrows
+DELETE FROM channels
+WHERE id = $1
+  AND kind = 'secret'
+  AND EXISTS (
+    SELECT 1 FROM secret_chat_devices
+    WHERE channel_id = $1 AND device_id = $2 AND user_id = $3
+  );
