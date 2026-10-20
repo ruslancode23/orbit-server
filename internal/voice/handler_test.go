@@ -1,53 +1,101 @@
 package voice
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/auth"
+	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 )
 
-func newTestHandler() *Handler {
-	return NewHandler(NewTokenIssuer(testKey, testSecret, testURL), slog.New(slog.NewTextHandler(io.Discard, nil)))
+var testChannel = uuid.MustParse("11111111-1111-4111-8111-111111111111")
+
+type accessStub struct {
+	canSpeak bool
+	err      error
+}
+
+func (a *accessStub) VoiceAccess(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	return a.canSpeak, a.err
+}
+
+func newTestHandler(access *accessStub) *Handler {
+	return NewHandler(NewTokenIssuer(testKey, testSecret, testURL), access,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestCreateToken(t *testing.T) {
-	resp, err := newTestHandler().CreateVoiceToken(t.Context(), api.CreateVoiceTokenRequestObject{
-		Body: &api.VoiceTokenRequest{Room: "dev-room", DisplayName: "Anna"},
-	})
+	userID := uuid.New()
+	resp, err := newTestHandler(&accessStub{canSpeak: true}).CreateChannelVoiceToken(
+		auth.WithSession(t.Context(), auth.Session{User: auth.User{ID: userID, Nickname: "Anna"}}),
+		api.CreateChannelVoiceTokenRequestObject{ChannelId: testChannel},
+	)
 	if err != nil {
-		t.Fatalf("CreateVoiceToken() error = %v", err)
+		t.Fatalf("CreateChannelVoiceToken() error = %v", err)
 	}
 
-	created, ok := resp.(api.CreateVoiceToken201JSONResponse)
+	created, ok := resp.(api.CreateChannelVoiceToken201JSONResponse)
 	if !ok {
 		t.Fatalf("response = %#v, want 201", resp)
 	}
 	if created.Url != testURL || created.Identity == "" || created.ExpiresAt.IsZero() {
 		t.Errorf("incomplete response: %+v", created)
 	}
-	if g := verify(t, created.Token); g.Video.Room != "dev-room" {
-		t.Errorf("room = %q, want dev-room", g.Video.Room)
+	if created.Identity != userID.String() {
+		t.Errorf("identity = %q, want the account id %q", created.Identity, userID)
+	}
+	if g := verify(t, created.Token); g.Video.Room != testChannel.String() {
+		t.Errorf("room = %q, want %q", g.Video.Room, testChannel)
 	}
 }
 
-// The OpenAPI schema cannot express every rule (control characters), so the
-// domain validation still answers 400 on its own.
-func TestCreateTokenDomainValidation(t *testing.T) {
-	resp, err := newTestHandler().CreateVoiceToken(t.Context(), api.CreateVoiceTokenRequestObject{
-		Body: &api.VoiceTokenRequest{Room: "dev-room", DisplayName: "An\u0000na"},
-	})
+func TestCreateTokenWithoutSession(t *testing.T) {
+	resp, err := newTestHandler(&accessStub{}).CreateChannelVoiceToken(
+		t.Context(), api.CreateChannelVoiceTokenRequestObject{ChannelId: testChannel})
 	if err != nil {
-		t.Fatalf("CreateVoiceToken() error = %v", err)
+		t.Fatalf("CreateChannelVoiceToken() error = %v", err)
 	}
 
-	bad, ok := resp.(api.CreateVoiceToken400JSONResponse)
-	if !ok {
-		t.Fatalf("response = %#v, want 400", resp)
+	if _, ok := resp.(api.CreateChannelVoiceToken401JSONResponse); !ok {
+		t.Fatalf("response = %#v, want 401", resp)
 	}
-	if bad.Error.Code != httpx.CodeInvalidRequest {
-		t.Errorf("code = %q, want %q", bad.Error.Code, httpx.CodeInvalidRequest)
+}
+
+func TestCreateTokenForMissingChannel(t *testing.T) {
+	resp, err := newTestHandler(&accessStub{err: channels.ErrNotFound}).CreateChannelVoiceToken(
+		auth.WithSession(t.Context(), auth.Session{User: auth.User{ID: uuid.New(), Nickname: "Anna"}}),
+		api.CreateChannelVoiceTokenRequestObject{ChannelId: testChannel},
+	)
+	if err != nil {
+		t.Fatalf("CreateChannelVoiceToken() error = %v", err)
+	}
+
+	if _, ok := resp.(api.CreateChannelVoiceToken404JSONResponse); !ok {
+		t.Fatalf("response = %#v, want 404", resp)
+	}
+}
+
+func TestCreateTokenAccessFailure(t *testing.T) {
+	resp, err := newTestHandler(&accessStub{err: errors.New("database is down")}).CreateChannelVoiceToken(
+		auth.WithSession(t.Context(), auth.Session{User: auth.User{ID: uuid.New(), Nickname: "Anna"}}),
+		api.CreateChannelVoiceTokenRequestObject{ChannelId: testChannel},
+	)
+	if err != nil {
+		t.Fatalf("CreateChannelVoiceToken() error = %v", err)
+	}
+
+	internal, ok := resp.(api.CreateChannelVoiceToken500JSONResponse)
+	if !ok {
+		t.Fatalf("response = %#v, want 500", resp)
+	}
+	if internal.Error.Code != httpx.CodeInternal {
+		t.Errorf("code = %q, want %q", internal.Error.Code, httpx.CodeInternal)
 	}
 }

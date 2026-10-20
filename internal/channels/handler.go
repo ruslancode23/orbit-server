@@ -62,6 +62,7 @@ func (h *Handler) CreateChannel(ctx context.Context, req api.CreateChannelReques
 	}
 
 	view, err := h.svc.Create(ctx, req.WorkspaceId, userID, NewChannel{
+		Kind:       Kind(value(req.Body.Kind)),
 		Name:       req.Body.Name,
 		Topic:      value(req.Body.Topic),
 		IsReadOnly: value(req.Body.IsReadOnly),
@@ -73,7 +74,7 @@ func (h *Handler) CreateChannel(ctx context.Context, req api.CreateChannelReques
 		return api.CreateChannel403JSONResponse(api.Error(forbidden("this server does not let members create this channel"))), nil
 	case errors.Is(err, ErrNameTaken):
 		return api.CreateChannel409JSONResponse(api.Error(conflict(err.Error()))), nil
-	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidTopic):
+	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidTopic), errors.Is(err, ErrInvalidKind):
 		return api.CreateChannel400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:
 		h.log.ErrorContext(ctx, "create channel", slog.Any("error", err))
@@ -181,6 +182,7 @@ func toAPIChannel(v View) api.Channel {
 	channel := api.Channel{
 		Id:          v.Channel.ID,
 		WorkspaceId: v.Channel.WorkspaceID,
+		Kind:        api.ChannelKind(v.Channel.Kind),
 		Name:        v.Channel.Name,
 		Position:    v.Channel.Position,
 		IsReadOnly:  v.Channel.IsReadOnly,

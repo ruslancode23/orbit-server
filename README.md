@@ -23,18 +23,22 @@ make run       # API на http://localhost:8080
 в едином формате ошибки. Порядок изменения API: правишь `openapi.yaml` → `make api` → реализуешь метод
 сгенерированного интерфейса. CI падает, если сгенерированный код не совпадает со спецификацией.
 
-## API для разработки
+## Голосовые каналы
 
-В `ORBIT_ENV=development` включён `POST /api/v1/voice/token` — токен LiveKit без авторизации, для spike:
+Канал с `kind: voice` — постоянная комната LiveKit: имя комнаты — id канала, а identity
+участника — id аккаунта, поэтому вторая вкладка того же человека заменяет первую.
+`POST /api/v1/channels/{channelId}/voice-token` выдаёт токен на 10 минут по сессии:
 
 ```bash
-curl -X POST localhost:8080/api/v1/voice/token -H 'Content-Type: application/json' \
-  -d '{"room":"dev-room","displayName":"Anna"}'
-# {"token":"eyJ…","url":"ws://localhost:7880","identity":"guest-…","expiresAt":"…"}
+curl -b cookies.txt -X POST localhost:8080/api/v1/channels/$CHANNEL_ID/voice-token
+# {"token":"eyJ…","url":"ws://localhost:7880","identity":"<account id>","expiresAt":"…"}
 ```
 
-Токен даёт вход в одну комнату на 10 минут. В production маршрута нет (404). Ошибки API — в едином
-формате `{"error":{"code":"invalid_request","message":"…"}}`.
+Войти может любой участник сервера. Право публиковать микрофон и экран (`canPublish`) следует
+из роли: в обычном голосовом канале говорят все, в read-only — только админы и владелец;
+остальные получают токен с `canPublish: false` и могут слушать. Токен на текстовый канал,
+чужой канал или канал сервера, где вы не состоите, — 404. Ошибки API — в едином формате
+`{"error":{"code":"invalid_request","message":"…"}}`.
 
 ## Команды
 

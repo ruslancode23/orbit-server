@@ -37,7 +37,7 @@ var _ Store = (*PostgresStore)(nil)
 func (s *PostgresStore) Create(ctx context.Context, c NewChannel) (Channel, error) {
 	row, err := s.q.CreateChannel(ctx, db.CreateChannelParams{
 		WorkspaceID: pgUUID(c.WorkspaceID),
-		Kind:        db.ChannelKindText,
+		Kind:        db.ChannelKind(c.Kind),
 		Name:        text(c.Name),
 		Topic:       text(c.Topic),
 		IsReadOnly:  c.IsReadOnly,
@@ -145,6 +145,7 @@ func toChannel(row db.Channel) Channel {
 	return Channel{
 		ID:          uuid.UUID(row.ID.Bytes),
 		WorkspaceID: uuid.UUID(row.WorkspaceID.Bytes),
+		Kind:        Kind(row.Kind),
 		Name:        row.Name.String,
 		Topic:       row.Topic.String,
 		Position:    int(row.Position),

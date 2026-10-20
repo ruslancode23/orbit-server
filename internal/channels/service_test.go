@@ -35,7 +35,7 @@ func (s *fakeStore) Create(_ context.Context, c NewChannel) (Channel, error) {
 		}
 	}
 	channel := Channel{
-		ID: uuid.New(), WorkspaceID: c.WorkspaceID, Name: c.Name, Topic: c.Topic,
+		ID: uuid.New(), WorkspaceID: c.WorkspaceID, Kind: c.Kind, Name: c.Name, Topic: c.Topic,
 		Position: position, IsReadOnly: c.IsReadOnly, CreatedAt: time.Now(),
 	}
 	s.channels[channel.ID] = channel
