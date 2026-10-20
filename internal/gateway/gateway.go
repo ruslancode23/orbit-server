@@ -17,6 +17,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/presence"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -51,17 +52,34 @@ type Hub interface {
 	SubscribeUser(userID uuid.UUID) *events.Subscription
 }
 
+// Presence records which accounts keep a connection open and what each tab says
+// about itself. The module owns the state and what the others may see; the
+// gateway only reports what happens to the connection.
+type Presence interface {
+	Connect(userID, connectionID uuid.UUID)
+	Disconnect(userID, connectionID uuid.UUID)
+	SetActivity(userID, connectionID uuid.UUID, activity presence.Activity) error
+	SetAvailability(userID uuid.UUID, availability presence.Availability) error
+}
+
 type Handler struct {
-	hub     Hub
-	members Membership
-	history History
-	log     *slog.Logger
+	hub      Hub
+	members  Membership
+	history  History
+	presence Presence
+	log      *slog.Logger
 	// origins are the sites allowed to open a connection; same list as CORS.
 	origins []string
 }
 
 func NewHandler(hub Hub, members Membership, history History, origins []string, log *slog.Logger) *Handler {
 	return &Handler{hub: hub, members: members, history: history, origins: origins, log: log}
+}
+
+// SetPresence wires the presence module in after both exist. Optional: without
+// it the stream works the same and nobody learns who is online.
+func (h *Handler) SetPresence(tracker Presence) {
+	h.presence = tracker
 }
 
 // clientFrame is what the client sends.
@@ -72,6 +90,10 @@ type clientFrame struct {
 	// Conversations carries the per-conversation cursors of the personal
 	// stream: a dialogue is a channel, so its history is replayed the same way.
 	Conversations map[string]int64 `json:"conversations,omitempty"`
+	// Activity is what a `presence` frame says about this tab.
+	Activity string `json:"activity,omitempty"`
+	// Status is what a `status` frame says the account chose to show.
+	Status string `json:"status,omitempty"`
 }
 
 // serverFrame is what the client receives.
@@ -113,6 +135,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.UUID) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// One connection is one tab: presence counts them, so a second tab keeps the
+	// account online after the first one closes.
+	connectionID := uuid.New()
+	if h.presence != nil {
+		h.presence.Connect(userID, connectionID)
+		defer h.presence.Disconnect(userID, connectionID)
+	}
 
 	// writes serialises outgoing frames: the reader loop and both event pumps
 	// write, and a WebSocket connection takes one writer at a time.
@@ -167,6 +197,20 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.U
 
 		case "ping":
 			send(ctx, writes, serverFrame{Type: "pong"})
+
+		case "presence":
+			// The tab saying whether it is in front. It says nothing about the
+			// status the account picked, so it belongs to this connection only.
+			if h.presence == nil || h.presence.SetActivity(userID, connectionID, presence.Activity(frame.Activity)) != nil {
+				send(ctx, writes, errorFrame(errInvalid))
+			}
+
+		case "status":
+			// The status the account picked for itself, on one device and
+			// therefore on all of them.
+			if h.presence == nil || h.presence.SetAvailability(userID, presence.Availability(frame.Status)) != nil {
+				send(ctx, writes, errorFrame(errInvalid))
+			}
 
 		default:
 			send(ctx, writes, serverFrame{

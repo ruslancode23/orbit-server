@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,13 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/presence"
 	"github.com/ruslancode23/orbit-server/internal/servers"
+)
+
+var (
+	errUnknownActivity     = errors.New("unknown activity")
+	errUnknownAvailability = errors.New("unknown availability")
 )
 
 type fakeMembership struct {
@@ -38,9 +45,68 @@ type testServer struct {
 	hub       *events.Hub
 	members   *fakeMembership
 	history   *recordingHistory
+	presence  *fakePresence
 	workspace uuid.UUID
 	channel   uuid.UUID
 	user      uuid.UUID
+}
+
+// fakePresence records what the gateway reports about the connections; the real
+// module decides the statuses, so the gateway only has to pass the frames on.
+type fakePresence struct {
+	mu             sync.Mutex
+	connections    int
+	disconnections int
+	activities     []presence.Activity
+	availability   []presence.Availability
+}
+
+func (f *fakePresence) Connect(_, _ uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connections++
+}
+
+func (f *fakePresence) Disconnect(_, _ uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disconnections++
+}
+
+func (f *fakePresence) SetActivity(_ uuid.UUID, _ uuid.UUID, activity presence.Activity) error {
+	if activity != presence.ActivityActive && activity != presence.ActivityIdle {
+		return errUnknownActivity
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activities = append(f.activities, activity)
+	return nil
+}
+
+func (f *fakePresence) SetAvailability(_ uuid.UUID, availability presence.Availability) error {
+	switch availability {
+	case presence.AvailabilityAuto, presence.AvailabilityOnline, presence.AvailabilityIdle,
+		presence.AvailabilityDnd, presence.AvailabilityInvisible:
+	default:
+		return errUnknownAvailability
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.availability = append(f.availability, availability)
+	return nil
+}
+
+func (f *fakePresence) counts() (connections, disconnections int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.connections, f.disconnections
+}
+
+func (f *fakePresence) seen() (activities []presence.Activity, availability []presence.Availability) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]presence.Activity(nil), f.activities...),
+		append([]presence.Availability(nil), f.availability...)
 }
 
 type recordingHistory struct {
@@ -78,9 +144,11 @@ func newTestServer(t *testing.T) *testServer {
 	ts.members = &fakeMembership{roles: map[uuid.UUID]map[uuid.UUID]servers.Role{
 		ts.workspace: {ts.user: servers.RoleMember},
 	}}
+	ts.presence = &fakePresence{}
 
 	handler := NewHandler(ts.hub, ts.members, ts.history, []string{"*"},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler.SetPresence(ts.presence)
 
 	// The session is what auth.Middleware would have put there.
 	withSession := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -431,4 +499,48 @@ func TestPersonalStreamKeepsTheWorkspaceOfReadEvents(t *testing.T) {
 	if frame["channelId"] != ts.channel.String() {
 		t.Errorf("channelId = %v, want %v", frame["channelId"], ts.channel)
 	}
+}
+
+// A connection is a tab: opening one makes the account online, closing it takes
+// it away, and the two frames say what the tab is doing and what its owner
+// chose. The gateway only passes them to the presence module.
+func TestPresenceFrames(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+
+	waitFor(t, func() bool {
+		connections, _ := ts.presence.counts()
+		return connections == 1
+	})
+
+	write(t, conn, map[string]any{"type": "presence", "activity": "idle"})
+	waitFor(t, func() bool {
+		activities, _ := ts.presence.seen()
+		return len(activities) == 1
+	})
+
+	write(t, conn, map[string]any{"type": "status", "status": "invisible"})
+	waitFor(t, func() bool {
+		_, availability := ts.presence.seen()
+		return len(availability) == 1
+	})
+
+	write(t, conn, map[string]any{"type": "status", "status": "away"})
+	if frame := read(t, conn); frame["code"] != "invalid_request" {
+		t.Fatalf("frame = %v, want an invalid_request error", frame)
+	}
+
+	activities, availability := ts.presence.seen()
+	if activities[0] != presence.ActivityIdle {
+		t.Errorf("activity = %q, want idle", activities[0])
+	}
+	if availability[0] != presence.AvailabilityInvisible {
+		t.Errorf("availability = %q, want invisible", availability[0])
+	}
+
+	_ = conn.Close(websocket.StatusNormalClosure, "bye")
+	waitFor(t, func() bool {
+		_, disconnections := ts.presence.counts()
+		return disconnections == 1
+	})
 }

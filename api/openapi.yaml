@@ -1805,6 +1805,8 @@ components:
         user: { $ref: "#/components/schemas/User" }
         role: { $ref: "#/components/schemas/WorkspaceRole" }
         joinedAt: { type: string, format: date-time }
+        presence:
+          $ref: "#/components/schemas/PresenceStatus"
     WorkspaceBan:
       type: object
       additionalProperties: false
@@ -2332,6 +2334,17 @@ components:
           maxLength: 90000
           description: Base64 ciphertext, at most 64 KiB decoded.
         expiresAt: { type: string, format: date-time }
+    PresenceStatus:
+      type: string
+      enum: [online, idle, dnd, offline]
+      description: |
+        Where an account is, as other people may know it. `online` — a tab is open and
+        in front; `idle` — a tab is open but hidden or untouched for a few minutes;
+        `dnd` — the account chose "do not disturb"; `offline` — no tab is open, or the
+        account chose to be invisible, which is deliberately indistinguishable.
+        The `presence.updated` event carries these same values; the stream itself is
+        outside this specification, see the README.
+
     VoiceParticipant:
       type: object
       additionalProperties: false
