@@ -82,6 +82,18 @@ func run() error {
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
 
+	workspaceHandler := servers.NewHandler(workspaces, log)
+	var voiceWebhook http.Handler
+	var presence *voice.Presence
+	roomClient, err := voice.NewRooms(cfg.LiveKit.URL, cfg.LiveKit.APIKey, cfg.LiveKit.APISecret)
+	if err != nil {
+		log.Warn("voice presence disabled: could not build LiveKit room client", slog.Any("error", err))
+	} else {
+		presence = voice.NewPresence(channelService, roomClient, hub, log)
+		workspaceHandler.SetVoicePresence(presence)
+		voiceWebhook = voice.NewWebhook(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, presence, log)
+	}
+
 	deps := httpserver.Deps{
 		Logger:      log,
 		CORSOrigins: cfg.CORSOrigins,
@@ -96,7 +108,7 @@ func run() error {
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,
-		Workspaces: servers.NewHandler(workspaces, log),
+		Workspaces: workspaceHandler,
 		Gateway:    gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log),
 		Channels:   channels.NewHandler(channelService, log),
 		Messages: messages.NewHandler(
@@ -104,10 +116,14 @@ func run() error {
 		Voice: voice.NewHandler(
 			voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL),
 			channelService, log),
+		VoiceWebhook: voiceWebhook,
 	}
 
 	// Files whose message never arrived are swept in the background.
 	go files.NewSweeper(fileService, cfg.Storage.OrphanAge, log).Run(ctx)
+	if presence != nil {
+		go presence.Run(ctx)
+	}
 
 	router, err := httpserver.NewRouter(deps)
 	if err != nil {

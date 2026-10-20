@@ -40,6 +40,13 @@ curl -b cookies.txt -X POST localhost:8080/api/v1/channels/$CHANNEL_ID/voice-tok
 чужой канал или канал сервера, где вы не состоите, — 404. Ошибки API — в едином формате
 `{"error":{"code":"invalid_request","message":"…"}}`.
 
+Кто сидит в голосовых каналах, сервер держит в памяти по вебхукам LiveKit
+(`POST /api/v1/livekit/webhook`, подпись проверяется тем же API-секретом). Список отдаётся
+в `GET /api/v1/workspaces/{id}` полем `voice`, а изменения приходят событием `voice.presence`
+по WebSocket. После перезапуска состояние восстанавливается из `ListParticipants`, когда
+сервер впервые спрашивают; вебхуки только ускоряют обновление. Подпись и формат событий —
+`deploy/livekit.yaml` и `internal/voice/webhook.go`.
+
 ## Команды
 
 `make help` выводит все цели. Основные: `make test`, `make lint`, `make fmt`, `make sqlc`,

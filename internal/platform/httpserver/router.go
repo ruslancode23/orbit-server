@@ -44,6 +44,10 @@ const multipartSlack = 4 << 10
 // HTTP requests and responses, and a WebSocket is neither.
 const wsPath = "/api/v1/ws"
 
+// voiceWebhookPath is where LiveKit posts room events. Its body is signed, not
+// session-authenticated, so it sits outside the OpenAPI routes.
+const voiceWebhookPath = "/api/v1/livekit/webhook"
+
 type Deps struct {
 	Logger      *slog.Logger
 	CORSOrigins []string
@@ -75,6 +79,8 @@ type Deps struct {
 	Gateway http.Handler
 	// Voice issues LiveKit tokens for voice channels; its grants follow the caller's role.
 	Voice *voice.Handler
+	// VoiceWebhook receives LiveKit room events; nil disables presence updates.
+	VoiceWebhook http.Handler
 }
 
 // NewRouter serves the API described by api/openapi.yaml. Every request is
@@ -123,6 +129,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			ws.Use(auth.RequireSession)
 			ws.Handle(wsPath, d.Gateway)
 		})
+	}
+	if d.VoiceWebhook != nil {
+		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
 	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, voice: d.Voice}, nil, api.StrictHTTPServerOptions{

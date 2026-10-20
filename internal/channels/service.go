@@ -266,6 +266,27 @@ func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, 
 
 // MayWrite answers "can this account post in this channel" for other modules
 // (messages, the event gateway): one place for the rule.
+// Lookup returns a channel without checking who asks. Internal modules use it
+// after they have checked access themselves (a webhook has no session).
+func (s *Service) Lookup(ctx context.Context, channelID uuid.UUID) (Channel, error) {
+	return s.store.Channel(ctx, channelID)
+}
+
+// ListVoice returns the voice channels of a server, in their sidebar order.
+func (s *Service) ListVoice(ctx context.Context, workspaceID uuid.UUID) ([]Channel, error) {
+	list, err := s.store.List(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	voice := make([]Channel, 0, len(list))
+	for _, channel := range list {
+		if channel.Kind == KindVoice {
+			voice = append(voice, channel)
+		}
+	}
+	return voice, nil
+}
+
 // VoiceAccess returns whether the caller may speak in this voice channel. The
 // channel must be a voice channel of a server the caller is on: anything else
 // is ErrNotFound, the same answer as a channel that does not exist.

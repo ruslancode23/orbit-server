@@ -1307,6 +1307,12 @@ components:
       properties:
         workspace: { $ref: "#/components/schemas/Workspace" }
         role: { $ref: "#/components/schemas/WorkspaceRole" }
+        voice:
+          type: array
+          items: { $ref: "#/components/schemas/VoicePresence" }
+          description: |
+            Who is in each voice channel right now. Present on GET of one server;
+            omitted where presence is not read (the list of servers).
     WorkspaceMember:
       type: object
       additionalProperties: false
@@ -1701,6 +1707,29 @@ components:
           maxItems: 20
           items: { type: string, format: uuid }
           description: Whom to talk to, besides yourself.
+    VoiceParticipant:
+      type: object
+      additionalProperties: false
+      required: [userId, name, muted, deafened, screenSharing]
+      properties:
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        muted:
+          type: boolean
+          description: The microphone is off or not published.
+        deafened: { type: boolean }
+        screenSharing: { type: boolean }
+
+    VoicePresence:
+      type: object
+      additionalProperties: false
+      required: [channelId, participants]
+      properties:
+        channelId: { type: string, format: uuid }
+        participants:
+          type: array
+          items: { $ref: "#/components/schemas/VoiceParticipant" }
+
     VoiceToken:
       type: object
       required: [token, url, identity, expiresAt]

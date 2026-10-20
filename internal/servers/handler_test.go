@@ -297,3 +297,36 @@ func TestHandlerPermissionsRoundTrip(t *testing.T) {
 		t.Errorf("updated permissions = %+v, want everything off", updated.Workspace.MemberPermissions)
 	}
 }
+
+type fixedPresence struct {
+	voice []api.VoicePresence
+}
+
+func (f fixedPresence) ForWorkspace(context.Context, uuid.UUID) []api.VoicePresence {
+	return f.voice
+}
+
+func TestHandlerReturnsVoicePresence(t *testing.T) {
+	h, w := newTestHandler(t)
+	h.SetVoicePresence(fixedPresence{voice: []api.VoicePresence{{
+		ChannelId:    uuid.New(),
+		Participants: []api.VoiceParticipant{{UserId: uuid.New(), Name: "Anna"}},
+	}}})
+
+	resp, err := h.GetWorkspace(sessionFor(context.Background(), w.member),
+		api.GetWorkspaceRequestObject{WorkspaceId: w.workspace})
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	ok, isOK := resp.(api.GetWorkspace200JSONResponse)
+	if !isOK {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	membership := api.WorkspaceMembership(ok)
+	if membership.Voice == nil || len(*membership.Voice) != 1 {
+		t.Fatalf("voice = %+v, want one channel", membership.Voice)
+	}
+	if (*membership.Voice)[0].Participants[0].Name != "Anna" {
+		t.Errorf("participants = %+v, want Anna", (*membership.Voice)[0].Participants)
+	}
+}

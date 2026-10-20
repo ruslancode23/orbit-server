@@ -16,6 +16,7 @@ const (
 	KindChannelChanged  Kind = "channel.changed"
 	KindChannelDeleted  Kind = "channel.deleted"
 	KindMemberChanged   Kind = "member.changed"
+	KindVoicePresence   Kind = "voice.presence"
 	// KindWorkspaceUpdated says the server itself changed: its name, description,
 	// icon or what members may do. The payload is the server in its API shape.
 	KindWorkspaceUpdated Kind = "workspace.updated"

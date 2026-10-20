@@ -4,3 +4,10 @@ audio:
   # indicator must light up < 300 ms after speech starts (SCRUM-16). Use the same on the VPS stand.
   update_interval: 100
   smooth_intervals: 1
+
+# Room events go to the API running on the host. `make run` serves :8080 there;
+# the extra_hosts entry in docker-compose.yml makes this name resolve on Linux.
+webhook:
+  api_key: devkey
+  urls:
+    - http://host.docker.internal:8080/api/v1/livekit/webhook
