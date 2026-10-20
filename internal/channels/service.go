@@ -18,8 +18,9 @@ import (
 type Kind string
 
 const (
-	KindText  Kind = "text"
-	KindVoice Kind = "voice"
+	KindText   Kind = "text"
+	KindVoice  Kind = "voice"
+	KindSecret Kind = "secret"
 )
 
 var (
@@ -56,9 +57,10 @@ type Channel struct {
 
 // CanWrite reports whether a role may post in this channel. A read-only channel
 // is for announcements: members read it, admins and the owner write. A voice
-// channel has no messages at all.
+// channel has no messages at all, and a secret one carries only ciphertext
+// envelopes, which have their own endpoints.
 func (c Channel) CanWrite(role servers.Role) bool {
-	if c.Kind == KindVoice {
+	if c.Kind == KindVoice || c.Kind == KindSecret {
 		return false
 	}
 	if !c.IsReadOnly {

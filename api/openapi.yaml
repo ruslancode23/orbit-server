@@ -53,6 +53,19 @@ tags:
       Direct messages and small group chats. A conversation is a channel without a
       server, so messages, files and read cursors work for it through the same
       endpoints; only who may read it is decided differently — by being in it.
+  - name: devices
+    description: |
+      The devices of an account and their public keys. A secret chat is a pair of
+      devices: keys are generated on the device, registered here, and the private
+      halves never reach the server. One-time keys are handed out one per request,
+      so two senders cannot start a session with the same pre-key.
+  - name: secret-chats
+    description: |
+      Chats the server cannot read. Only ciphertext envelopes travel through it;
+      the decrypted history lives on the device and is never uploaded. The server
+      sees who talks to whom, when and how large — that is the whole metadata it
+      has, and the UI says so. A chat is bound to one device: another device of the
+      same person simply has no history.
   - name: voice
     description: |
       LiveKit access for voice channels. The token is issued by session; its grants
@@ -962,6 +975,13 @@ paths:
   /api/v1/channels/{channelId}/attachments:
     parameters:
       - $ref: "#/components/parameters/ChannelId"
+      - name: expiresAt
+        in: query
+        required: false
+        description: |
+          When the server should forget the file. Only a secret chat honours it, and
+          it is capped at one week; elsewhere the value is ignored.
+        schema: { type: string, format: date-time }
     post:
       operationId: uploadAttachment
       tags: [files]
@@ -1021,6 +1041,301 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AttachmentLink" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: The devices of this account. Needs a session.
+      responses:
+        "200":
+          description: The caller's devices that are not revoked.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Device" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: registerDevice
+      tags: [devices]
+      summary: Register this device and its public keys. Needs a session.
+      description: |
+        The signature proves the device holds the ed25519 private key it registers;
+        it covers the account id and both public keys. Registering the same keys
+        again returns the device already stored, so a reload does not multiply devices.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceRegistration" }
+      responses:
+        "201":
+          description: A new device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "200":
+          description: The device with these keys was already registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409":
+          description: The device limit of this instance is reached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/devices/{deviceId}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceIdPath"
+    delete:
+      operationId: revokeDevice
+      tags: [devices]
+      summary: Forget one of your devices and its pending keys. Needs a session.
+      responses:
+        "204":
+          description: The device is revoked; its pending envelopes go with it.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{userId}/devices:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: listUserDevices
+      tags: [devices]
+      summary: The public keys of another person's devices. Needs a session.
+      description: Public keys are public; the private halves are not here to leak.
+      responses:
+        "200":
+          description: The person's devices that are not revoked.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Device" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/devices/{deviceId}/one-time-keys:
+    parameters:
+      - $ref: "#/components/parameters/DeviceIdPath"
+    post:
+      operationId: uploadOneTimeKeys
+      tags: [devices]
+      summary: Add one-time keys to your device. Needs a session.
+      description: |
+        A key is used once, when someone starts a session with this device. The
+        client uploads a new batch when the server says the supply is low.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OneTimeKeyUpload" }
+      responses:
+        "200":
+          description: How many keys the device now has.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OneTimeKeyCount" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/devices/{deviceId}/one-time-keys/count:
+    parameters:
+      - $ref: "#/components/parameters/DeviceIdPath"
+    get:
+      operationId: countOneTimeKeys
+      tags: [devices]
+      summary: How many one-time keys your device still has. Needs a session.
+      description: |
+        The client reads this before a session starts and uploads a new batch when
+        the supply is low; a device nobody writes to would otherwise run dry
+        silently and refuse every new session.
+      responses:
+        "200":
+          description: The number of keys this device can still hand out.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OneTimeKeyCount" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/devices/{deviceId}/key-bundle:
+    parameters:
+      - $ref: "#/components/parameters/DeviceIdPath"
+    get:
+      operationId: getKeyBundle
+      tags: [devices]
+      summary: The keys to start a session with this device. Needs a session.
+      description: |
+        The one-time key is consumed by this request: two callers never get the
+        same one. 404 means the device is gone or its owner must upload more keys.
+      responses:
+        "200":
+          description: The identity keys and one one-time key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyBundle" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/secret-chats:
+    get:
+      operationId: listSecretChats
+      tags: [secret-chats]
+      summary: The secret chats of this device. Needs a session.
+      parameters:
+        - $ref: "#/components/parameters/DeviceHeader"
+      responses:
+        "200":
+          description: The chats this device holds keys for.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SecretChat" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: startSecretChat
+      tags: [secret-chats]
+      summary: Open a secret chat with one device of one person. Needs a session.
+      parameters:
+        - $ref: "#/components/parameters/DeviceHeader"
+      description: |
+        A device pair has one secret chat. The peer device must be named when the
+        person has more than one; without it, a person with several devices is 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecretChatStartRequest" }
+      responses:
+        "201":
+          description: A new secret chat.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretChat" }
+        "200":
+          description: The chat this pair of devices already had.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretChat" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: The session is a guest, or the device is not the caller's.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: The person has several devices and the peer device was not named.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/secret-chats/{secretChatId}:
+    parameters:
+      - name: secretChatId
+        in: path
+        required: true
+        description: Secret chat identifier; it is the channel id of the chat.
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/DeviceHeader"
+    get:
+      operationId: getSecretChat
+      tags: [secret-chats]
+      summary: One secret chat this device takes part in.
+      responses:
+        "200":
+          description: The chat and the peer device keys.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretChat" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/secret-chats/{secretChatId}/envelopes:
+    parameters:
+      - name: secretChatId
+        in: path
+        required: true
+        description: Secret chat identifier.
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/DeviceHeader"
+    get:
+      operationId: listSecretEnvelopes
+      tags: [secret-chats]
+      summary: Ciphertext waiting for this device, oldest first.
+      description: What was sent while the device was offline. Acknowledging deletes.
+      responses:
+        "200":
+          description: Undelivered envelopes of this device.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SecretEnvelope" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: sendSecretEnvelope
+      tags: [secret-chats]
+      summary: Hand one ciphertext envelope to the server.
+      description: |
+        The body is opaque bytes, base64-encoded. The server stores and forwards it,
+        and deletes it when the recipient acknowledges or when `expiresAt` passes.
+        Nothing in it is read, logged or measured beyond its size.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecretEnvelopeCreate" }
+      responses:
+        "201":
+          description: Stored and, if the recipient is connected, already on its way.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretEnvelope" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/envelopes/{envelopeId}:
+    parameters:
+      - name: envelopeId
+        in: path
+        required: true
+        description: Envelope identifier.
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/DeviceHeader"
+    delete:
+      operationId: acknowledgeSecretEnvelope
+      tags: [secret-chats]
+      summary: Delete a delivered envelope. Only its recipient may.
+      responses:
+        "204":
+          description: The envelope is gone from the server.
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -1100,6 +1415,26 @@ components:
       required: true
       description: Channel identifier.
       schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: Account identifier.
+      schema: { type: string, format: uuid }
+    DeviceIdPath:
+      name: deviceId
+      in: path
+      required: true
+      description: Device identifier.
+      schema: { type: string, format: uuid }
+    DeviceHeader:
+      name: X-Orbit-Device
+      in: header
+      required: true
+      description: |
+        The device that holds the keys of this chat. A secret chat is bound to one
+        device; another device of the same person has its own chats and no history.
+      schema: { type: string, format: uuid }
     InviteCode:
       name: code
       in: path
@@ -1111,12 +1446,6 @@ components:
       in: path
       required: true
       description: Message identifier.
-      schema: { type: string, format: uuid }
-    UserId:
-      name: userId
-      in: path
-      required: true
-      description: Account identifier.
       schema: { type: string, format: uuid }
   securitySchemes:
     # Documented here; enforced by the server's own middleware, not by schema validation.
@@ -1661,6 +1990,10 @@ components:
           type: integer
           description: For an image, its height in pixels.
         createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: When a secret chat file is deleted from the server. Absent for ordinary files.
     AttachmentLink:
       type: object
       additionalProperties: false
@@ -1707,6 +2040,136 @@ components:
           maxItems: 20
           items: { type: string, format: uuid }
           description: Whom to talk to, besides yourself.
+    Device:
+      type: object
+      additionalProperties: false
+      required: [id, userId, name, identityKey, signingKey, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        name:
+          type: string
+          maxLength: 64
+          description: What the person sees in settings, for example "Chrome on macOS".
+        identityKey:
+          type: string
+          description: Olm curve25519 public key, base64. The server cannot read with it.
+        signingKey:
+          type: string
+          description: Ed25519 public key, base64; signs the registration and the safety number.
+        createdAt: { type: string, format: date-time }
+    DeviceRegistration:
+      type: object
+      additionalProperties: false
+      required: [identityKey, signingKey, signature]
+      properties:
+        name:
+          type: string
+          maxLength: 64
+          description: Free-form device name; shown only to its owner.
+        identityKey: { type: string, minLength: 1, maxLength: 128 }
+        signingKey: { type: string, minLength: 1, maxLength: 128 }
+        signature:
+          type: string
+          maxLength: 128
+          description: |
+            Ed25519 signature, base64, of `orbit-device-v1|<userId>|<identityKey>|<signingKey>`.
+            It proves the device holds the private key it is registering.
+    OneTimeKey:
+      type: object
+      additionalProperties: false
+      required: [keyId, key]
+      properties:
+        keyId: { type: string, minLength: 1, maxLength: 64 }
+        key: { type: string, minLength: 1, maxLength: 128 }
+    OneTimeKeyUpload:
+      type: object
+      additionalProperties: false
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/OneTimeKey" }
+    OneTimeKeyCount:
+      type: object
+      additionalProperties: false
+      required: [count]
+      properties:
+        count: { type: integer, minimum: 0 }
+    KeyBundle:
+      type: object
+      additionalProperties: false
+      required: [device, oneTimeKey]
+      properties:
+        device: { $ref: "#/components/schemas/Device" }
+        oneTimeKey: { $ref: "#/components/schemas/OneTimeKey" }
+    SecretChatPeer:
+      type: object
+      additionalProperties: false
+      required: [userId, nickname, isGuest, deviceId, identityKey, signingKey]
+      properties:
+        userId: { type: string, format: uuid }
+        nickname: { type: string }
+        isGuest: { type: boolean }
+        deviceId: { type: string, format: uuid }
+        identityKey: { type: string }
+        signingKey: { type: string }
+    SecretChat:
+      type: object
+      additionalProperties: false
+      required: [id, peer, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "Also the channel id: encrypted files of this chat are uploaded there."
+        peer: { $ref: "#/components/schemas/SecretChatPeer" }
+        createdAt: { type: string, format: date-time }
+    SecretChatStartRequest:
+      type: object
+      additionalProperties: false
+      required: [userId]
+      properties:
+        userId: { type: string, format: uuid, description: Whom to talk to. }
+        peerDeviceId:
+          type: string
+          format: uuid
+          description: Which of their devices. Required when they have more than one.
+    SecretEnvelope:
+      type: object
+      additionalProperties: false
+      required: [id, secretChatId, senderDeviceId, recipientDeviceId, type, body, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        secretChatId: { type: string, format: uuid }
+        senderDeviceId: { type: string, format: uuid }
+        recipientDeviceId: { type: string, format: uuid }
+        type:
+          type: integer
+          enum: [0, 1]
+          description: 0 is the first message of an Olm session, 1 a message of a session already established.
+        body:
+          type: string
+          description: Base64 ciphertext. The server never decodes it.
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    SecretEnvelopeCreate:
+      type: object
+      additionalProperties: false
+      required: [recipientDeviceId, type, body, expiresAt]
+      properties:
+        recipientDeviceId: { type: string, format: uuid }
+        type:
+          type: integer
+          enum: [0, 1]
+        body:
+          type: string
+          minLength: 1
+          maxLength: 90000
+          description: Base64 ciphertext, at most 64 KiB decoded.
+        expiresAt: { type: string, format: date-time }
     VoiceParticipant:
       type: object
       additionalProperties: false

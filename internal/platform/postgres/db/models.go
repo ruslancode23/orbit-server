@@ -18,6 +18,7 @@ const (
 	ChannelKindDirect ChannelKind = "direct"
 	ChannelKindGroup  ChannelKind = "group"
 	ChannelKindVoice  ChannelKind = "voice"
+	ChannelKindSecret ChannelKind = "secret"
 )
 
 func (e *ChannelKind) Scan(src interface{}) error {
@@ -109,6 +110,8 @@ type Attachment struct {
 	Width      pgtype.Int4        `json:"width"`
 	Height     pgtype.Int4        `json:"height"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ChannelID  pgtype.UUID        `json:"channel_id"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Ban struct {
@@ -143,6 +146,24 @@ type ChannelRead struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	LastReadSeq int64              `json:"last_read_seq"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Device struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Name        string             `json:"name"`
+	IdentityKey string             `json:"identity_key"`
+	SigningKey  string             `json:"signing_key"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+}
+
+type DeviceOneTimeKey struct {
+	DeviceID  pgtype.UUID        `json:"device_id"`
+	KeyID     string             `json:"key_id"`
+	Key       string             `json:"key"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Invite struct {
@@ -180,6 +201,24 @@ type MessageReaction struct {
 	UserID    pgtype.UUID        `json:"user_id"`
 	Emoji     string             `json:"emoji"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SecretChatDevice struct {
+	ChannelID pgtype.UUID        `json:"channel_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	DeviceID  pgtype.UUID        `json:"device_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SecretEnvelope struct {
+	ID                pgtype.UUID        `json:"id"`
+	ChannelID         pgtype.UUID        `json:"channel_id"`
+	SenderDeviceID    pgtype.UUID        `json:"sender_device_id"`
+	RecipientDeviceID pgtype.UUID        `json:"recipient_device_id"`
+	Type              int16              `json:"type"`
+	Body              []byte             `json:"body"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Session struct {

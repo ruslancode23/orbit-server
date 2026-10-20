@@ -47,9 +47,19 @@ func (s *Sweeper) sweep(ctx context.Context) {
 	if err != nil {
 		s.log.ErrorContext(ctx, "sweep orphan attachments",
 			slog.Int("removed", removed), slog.Any("error", err))
+	} else if removed > 0 {
+		s.log.InfoContext(ctx, "swept orphan attachments", slog.Int("removed", removed))
+	}
+
+	// Secret chat files have their own deadline; the message timer deletes them
+	// on the devices, and this is what makes the server forget the bytes.
+	expiredNow, err := s.svc.SweepExpired(ctx, sweepBatch)
+	if err != nil {
+		s.log.ErrorContext(ctx, "sweep expired attachments",
+			slog.Int("removed", expiredNow), slog.Any("error", err))
 		return
 	}
-	if removed > 0 {
-		s.log.InfoContext(ctx, "swept orphan attachments", slog.Int("removed", removed))
+	if expiredNow > 0 {
+		s.log.InfoContext(ctx, "swept expired attachments", slog.Int("removed", expiredNow))
 	}
 }

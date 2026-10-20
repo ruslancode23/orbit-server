@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -42,9 +43,12 @@ type History interface {
 	SinceEvents(ctx context.Context, channelID, callerID uuid.UUID, afterSeq int64, limit int) ([]events.Event, error)
 }
 
-// Hub is the part of events.Hub the gateway uses.
+// Hub is the part of events.Hub the gateway uses. A connection holds two
+// subscriptions: one for the server it is watching, one for the account itself,
+// because conversations and secret envelopes belong to no server.
 type Hub interface {
 	Subscribe(userID, workspaceID uuid.UUID) *events.Subscription
+	SubscribeUser(userID uuid.UUID) *events.Subscription
 }
 
 type Handler struct {
@@ -65,6 +69,9 @@ type clientFrame struct {
 	Type        string           `json:"type"`
 	WorkspaceID uuid.UUID        `json:"workspaceId,omitempty"`
 	Cursors     map[string]int64 `json:"cursors,omitempty"`
+	// Conversations carries the per-conversation cursors of the personal
+	// stream: a dialogue is a channel, so its history is replayed the same way.
+	Conversations map[string]int64 `json:"conversations,omitempty"`
 }
 
 // serverFrame is what the client receives.
@@ -100,15 +107,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // serve reads client frames until the connection ends. One connection watches
-// one server at a time: switching servers replaces the subscription.
+// one server at a time: switching servers replaces the subscription. The
+// account stream is opened at once and lives as long as the connection, so a
+// dialogue arrives whether or not a server is being watched.
 func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.UUID) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// writes serialises outgoing frames: the reader loop and the event pump
-	// both write, and a WebSocket connection takes one writer at a time.
+	// writes serialises outgoing frames: the reader loop and both event pumps
+	// write, and a WebSocket connection takes one writer at a time.
 	writes := make(chan serverFrame, 32)
 	go h.pumpWrites(ctx, conn, writes)
+
+	// One skip table for both streams: a message replayed after a reconnect must
+	// not also arrive live, whichever pump sees it first.
+	tracker := newReplayTracker()
+	personal := h.hub.SubscribeUser(userID)
+	defer personal.Close()
+	go h.pumpPersonalEvents(ctx, personal, tracker, writes)
 
 	var current *events.Subscription
 	defer func() {
@@ -129,12 +145,18 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.U
 				current.Close()
 				current = nil
 			}
-			sub, err := h.subscribe(ctx, userID, frame, writes)
+			sub, err := h.subscribe(ctx, userID, frame, tracker, writes)
 			if err != nil {
 				send(ctx, writes, errorFrame(err))
 				continue
 			}
 			current = sub
+
+		case "resume":
+			// The account stream has no server to subscribe to: the client names
+			// the conversations it already has and gets what it missed.
+			h.resume(ctx, userID, frame.Conversations, tracker, writes)
+			send(ctx, writes, serverFrame{Type: "resumed"})
 
 		case "unsubscribe":
 			if current != nil {
@@ -156,7 +178,7 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.U
 
 // subscribe checks the role, replays what the client missed and starts the
 // live stream. The role is read here, so a ban between two subscribes is seen.
-func (h *Handler) subscribe(ctx context.Context, userID uuid.UUID, frame clientFrame, writes chan<- serverFrame) (*events.Subscription, error) {
+func (h *Handler) subscribe(ctx context.Context, userID uuid.UUID, frame clientFrame, tracker *replayTracker, writes chan<- serverFrame) (*events.Subscription, error) {
 	if frame.WorkspaceID == uuid.Nil {
 		return nil, errInvalid
 	}
@@ -177,16 +199,21 @@ func (h *Handler) subscribe(ctx context.Context, userID uuid.UUID, frame clientF
 	workspaceID := frame.WorkspaceID
 	send(ctx, writes, serverFrame{Type: "subscribed", WorkspaceID: &workspaceID})
 
-	highest := h.replay(ctx, userID, frame.Cursors, writes)
-	go h.pumpEvents(ctx, sub, highest, writes)
+	h.replay(ctx, userID, frame.Cursors, tracker, writes)
+	go h.pumpEvents(ctx, sub, tracker, writes)
 	return sub, nil
 }
 
+// resume replays what the client missed in the conversations it names. It does
+// not start a server subscription: a dialogue is readable from any page.
+func (h *Handler) resume(ctx context.Context, userID uuid.UUID, cursors map[string]int64, tracker *replayTracker, writes chan<- serverFrame) {
+	h.replay(ctx, userID, cursors, tracker, writes)
+}
+
 // replay sends what the client missed in each channel it named, oldest first,
-// and reports the highest seq it sent per channel so the live stream can skip
+// and records the highest seq it sent per channel so the live streams can skip
 // an event the replay already delivered.
-func (h *Handler) replay(ctx context.Context, userID uuid.UUID, cursors map[string]int64, writes chan<- serverFrame) map[uuid.UUID]int64 {
-	highest := make(map[uuid.UUID]int64, len(cursors))
+func (h *Handler) replay(ctx context.Context, userID uuid.UUID, cursors map[string]int64, tracker *replayTracker, writes chan<- serverFrame) {
 	for rawID, afterSeq := range cursors {
 		channelID, err := uuid.Parse(rawID)
 		if err != nil {
@@ -204,16 +231,13 @@ func (h *Handler) replay(ctx context.Context, userID uuid.UUID, cursors map[stri
 				Seq:       missedEvent.Seq,
 				Payload:   missedEvent.Payload,
 			})
-			if missedEvent.Seq > highest[channelID] {
-				highest[channelID] = missedEvent.Seq
-			}
+			tracker.mark(channelID, missedEvent.Seq)
 		}
 	}
-	return highest
 }
 
 // pumpEvents forwards live events until the subscription ends.
-func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, replayed map[uuid.UUID]int64, writes chan<- serverFrame) {
+func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, tracker *replayTracker, writes chan<- serverFrame) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -232,8 +256,7 @@ func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, repl
 			}
 			return
 		case event := <-sub.Events():
-			// Skip what the catch-up already sent, so a reconnect shows no duplicates.
-			if event.Seq > 0 && event.Seq <= replayed[event.ChannelID] {
+			if tracker.seen(event.ChannelID, event.Seq) {
 				continue
 			}
 			workspaceID, channelID := event.WorkspaceID, event.ChannelID
@@ -248,6 +271,80 @@ func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, repl
 			}
 			send(ctx, writes, frame)
 		}
+	}
+}
+
+// pumpPersonalEvents forwards the account stream: new dialogues, messages in
+// them, read cursors and secret envelopes. It has no server of its own, so a
+// frame carries only the channel the event happened in.
+func (h *Handler) pumpPersonalEvents(ctx context.Context, sub *events.Subscription, tracker *replayTracker, writes chan<- serverFrame) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sub.Done():
+			if sub.Dropped() {
+				send(ctx, writes, serverFrame{
+					Type: "error", Code: "behind",
+					Message: "the connection fell behind; reconnect and catch up by cursor",
+				})
+			}
+			return
+		case event := <-sub.Events():
+			if tracker.seen(event.ChannelID, event.Seq) {
+				continue
+			}
+			if event.Seq > 0 {
+				tracker.mark(event.ChannelID, event.Seq)
+			}
+			frame := serverFrame{
+				Type:    string(event.Kind),
+				Seq:     event.Seq,
+				Payload: event.Payload,
+			}
+			// A read cursor belongs to a server even though it travels on the
+			// account stream; the client needs the id to refresh its badges.
+			if event.WorkspaceID != uuid.Nil {
+				workspaceID := event.WorkspaceID
+				frame.WorkspaceID = &workspaceID
+			}
+			if event.ChannelID != uuid.Nil {
+				channelID := event.ChannelID
+				frame.ChannelID = &channelID
+			}
+			send(ctx, writes, frame)
+		}
+	}
+}
+
+// replayTracker remembers the highest seq sent on each channel, so a catch-up
+// and a live event cannot both deliver the same message.
+type replayTracker struct {
+	mu      sync.RWMutex
+	highest map[uuid.UUID]int64
+}
+
+func newReplayTracker() *replayTracker {
+	return &replayTracker{highest: map[uuid.UUID]int64{}}
+}
+
+func (t *replayTracker) seen(channelID uuid.UUID, seq int64) bool {
+	if seq <= 0 {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return seq <= t.highest[channelID]
+}
+
+func (t *replayTracker) mark(channelID uuid.UUID, seq int64) {
+	if seq <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if seq > t.highest[channelID] {
+		t.highest[channelID] = seq
 	}
 }
 

@@ -162,3 +162,38 @@ func TestPublishRacingWithClose(t *testing.T) {
 	}
 	<-done
 }
+
+// The account stream follows a person, not a server: conversations and secret
+// envelopes use it because they have no server to announce to.
+func TestPersonalStreamReachesEveryConnectionOfOneAccount(t *testing.T) {
+	hub := NewHub()
+	annaID, bobID := uuid.New(), uuid.New()
+	anna := hub.SubscribeUser(annaID)
+	annaPhone := hub.SubscribeUser(annaID)
+	bob := hub.SubscribeUser(bobID)
+	defer anna.Close()
+	defer annaPhone.Close()
+	defer bob.Close()
+
+	hub.PublishToUser(annaID, Event{Kind: KindConversationCreated, ChannelID: uuid.New()})
+
+	for name, sub := range map[string]*Subscription{"laptop": anna, "phone": annaPhone} {
+		event, ok := receive(t, sub)
+		if !ok || event.Kind != KindConversationCreated || !event.Personal {
+			t.Errorf("%s got %+v (%v), want a personal conversation event", name, event, ok)
+		}
+	}
+	select {
+	case event := <-bob.Events():
+		t.Errorf("a personal event reached another account: %+v", event)
+	default:
+	}
+
+	// A server event never leaks into the account stream of its members.
+	hub.Publish(Event{Kind: KindMessageCreated, WorkspaceID: uuid.New(), Seq: 1})
+	select {
+	case event := <-anna.Events():
+		t.Errorf("a server event reached the personal stream: %+v", event)
+	default:
+	}
+}

@@ -15,7 +15,7 @@ const attachToMessage = `-- name: AttachToMessage :one
 UPDATE attachments
 SET message_id = $2
 WHERE id = $1 AND uploader_id = $3 AND message_id IS NULL
-RETURNING id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at
+RETURNING id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at, channel_id, expires_at
 `
 
 type AttachToMessageParams struct {
@@ -39,35 +39,41 @@ func (q *Queries) AttachToMessage(ctx context.Context, arg AttachToMessageParams
 		&i.Width,
 		&i.Height,
 		&i.CreatedAt,
+		&i.ChannelID,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
 const createAttachment = `-- name: CreateAttachment :one
-INSERT INTO attachments (uploader_id, storage_key, file_name, mime_type, size_bytes, width, height)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at
+INSERT INTO attachments (uploader_id, channel_id, storage_key, file_name, mime_type, size_bytes, width, height, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at, channel_id, expires_at
 `
 
 type CreateAttachmentParams struct {
-	UploaderID pgtype.UUID `json:"uploader_id"`
-	StorageKey string      `json:"storage_key"`
-	FileName   string      `json:"file_name"`
-	MimeType   string      `json:"mime_type"`
-	SizeBytes  int64       `json:"size_bytes"`
-	Width      pgtype.Int4 `json:"width"`
-	Height     pgtype.Int4 `json:"height"`
+	UploaderID pgtype.UUID        `json:"uploader_id"`
+	ChannelID  pgtype.UUID        `json:"channel_id"`
+	StorageKey string             `json:"storage_key"`
+	FileName   string             `json:"file_name"`
+	MimeType   string             `json:"mime_type"`
+	SizeBytes  int64              `json:"size_bytes"`
+	Width      pgtype.Int4        `json:"width"`
+	Height     pgtype.Int4        `json:"height"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (Attachment, error) {
 	row := q.db.QueryRow(ctx, createAttachment,
 		arg.UploaderID,
+		arg.ChannelID,
 		arg.StorageKey,
 		arg.FileName,
 		arg.MimeType,
 		arg.SizeBytes,
 		arg.Width,
 		arg.Height,
+		arg.ExpiresAt,
 	)
 	var i Attachment
 	err := row.Scan(
@@ -81,6 +87,8 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		&i.Width,
 		&i.Height,
 		&i.CreatedAt,
+		&i.ChannelID,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -94,6 +102,16 @@ func (q *Queries) DeleteAttachment(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const deleteExpiredAttachment = `-- name: DeleteExpiredAttachment :exec
+DELETE FROM attachments
+WHERE id = $1 AND expires_at IS NOT NULL AND expires_at <= now()
+`
+
+func (q *Queries) DeleteExpiredAttachment(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteExpiredAttachment, id)
+	return err
+}
+
 const detachOrphanedAttachment = `-- name: DetachOrphanedAttachment :exec
 DELETE FROM attachments WHERE id = $1 AND message_id IS NULL
 `
@@ -104,7 +122,7 @@ func (q *Queries) DetachOrphanedAttachment(ctx context.Context, id pgtype.UUID) 
 }
 
 const getAttachment = `-- name: GetAttachment :one
-SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at FROM attachments WHERE id = $1
+SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at, channel_id, expires_at FROM attachments WHERE id = $1
 `
 
 func (q *Queries) GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error) {
@@ -121,12 +139,56 @@ func (q *Queries) GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment
 		&i.Width,
 		&i.Height,
 		&i.CreatedAt,
+		&i.ChannelID,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
+const listExpiredAttachments = `-- name: ListExpiredAttachments :many
+SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at, channel_id, expires_at FROM attachments
+WHERE expires_at IS NOT NULL AND expires_at <= now()
+ORDER BY expires_at
+LIMIT $1
+`
+
+// Files of secret chats carry their own deadline: the server must forget them
+// when the message expires, not only the sender's screen.
+func (q *Queries) ListExpiredAttachments(ctx context.Context, limit int32) ([]Attachment, error) {
+	rows, err := q.db.Query(ctx, listExpiredAttachments, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Attachment{}
+	for rows.Next() {
+		var i Attachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.MessageID,
+			&i.UploaderID,
+			&i.StorageKey,
+			&i.FileName,
+			&i.MimeType,
+			&i.SizeBytes,
+			&i.Width,
+			&i.Height,
+			&i.CreatedAt,
+			&i.ChannelID,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMessageAttachments = `-- name: ListMessageAttachments :many
-SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at FROM attachments
+SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at, channel_id, expires_at FROM attachments
 WHERE message_id = ANY($1::uuid[])
 ORDER BY created_at
 `
@@ -151,6 +213,8 @@ func (q *Queries) ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.
 			&i.Width,
 			&i.Height,
 			&i.CreatedAt,
+			&i.ChannelID,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -163,7 +227,7 @@ func (q *Queries) ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.
 }
 
 const listOrphanAttachments = `-- name: ListOrphanAttachments :many
-SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at FROM attachments
+SELECT id, message_id, uploader_id, storage_key, file_name, mime_type, size_bytes, width, height, created_at, channel_id, expires_at FROM attachments
 WHERE message_id IS NULL AND created_at < $1
 ORDER BY created_at
 LIMIT $2
@@ -195,6 +259,8 @@ func (q *Queries) ListOrphanAttachments(ctx context.Context, arg ListOrphanAttac
 			&i.Width,
 			&i.Height,
 			&i.CreatedAt,
+			&i.ChannelID,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}

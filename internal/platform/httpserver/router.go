@@ -27,6 +27,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/reads"
+	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 	"github.com/ruslancode23/orbit-server/internal/voice"
 )
@@ -34,6 +35,10 @@ import (
 // maxBodyBytes caps every JSON request body. The largest is a message of 4000
 // characters, up to four bytes each; uploads have their own limits.
 const maxBodyBytes = 16 << 10
+
+// envelopeBodyBytes caps a ciphertext envelope: 64 KiB of bytes, base64-encoded,
+// plus the JSON around it.
+const envelopeBodyBytes = 128 << 10
 
 // multipartSlack is room for the multipart headers around an icon, so an image
 // of exactly the limit is refused by the icon rule, with its own message, and
@@ -69,6 +74,8 @@ type Deps struct {
 	Files *files.Handler
 	// Conversations serves direct messages and group chats.
 	Conversations *conversations.Handler
+	// Secrets serves devices, their public keys and ciphertext envelopes.
+	Secrets *secrets.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -88,7 +95,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -105,7 +112,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   d.CORSOrigins,
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
-		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Orbit-Device"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -134,7 +141,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -177,6 +184,7 @@ type server struct {
 	reads         *reads.Handler
 	files         *files.Handler
 	conversations *conversations.Handler
+	secrets       *secrets.Handler
 	voice         *voice.Handler
 }
 
@@ -358,6 +366,58 @@ func (s *server) GetAttachmentLink(ctx context.Context, req api.GetAttachmentLin
 	return s.files.GetAttachmentLink(ctx, req)
 }
 
+func (s *server) ListDevices(ctx context.Context, req api.ListDevicesRequestObject) (api.ListDevicesResponseObject, error) {
+	return s.secrets.ListDevices(ctx, req)
+}
+
+func (s *server) RegisterDevice(ctx context.Context, req api.RegisterDeviceRequestObject) (api.RegisterDeviceResponseObject, error) {
+	return s.secrets.RegisterDevice(ctx, req)
+}
+
+func (s *server) RevokeDevice(ctx context.Context, req api.RevokeDeviceRequestObject) (api.RevokeDeviceResponseObject, error) {
+	return s.secrets.RevokeDevice(ctx, req)
+}
+
+func (s *server) ListUserDevices(ctx context.Context, req api.ListUserDevicesRequestObject) (api.ListUserDevicesResponseObject, error) {
+	return s.secrets.ListUserDevices(ctx, req)
+}
+
+func (s *server) UploadOneTimeKeys(ctx context.Context, req api.UploadOneTimeKeysRequestObject) (api.UploadOneTimeKeysResponseObject, error) {
+	return s.secrets.UploadOneTimeKeys(ctx, req)
+}
+
+func (s *server) CountOneTimeKeys(ctx context.Context, req api.CountOneTimeKeysRequestObject) (api.CountOneTimeKeysResponseObject, error) {
+	return s.secrets.CountOneTimeKeys(ctx, req)
+}
+
+func (s *server) GetKeyBundle(ctx context.Context, req api.GetKeyBundleRequestObject) (api.GetKeyBundleResponseObject, error) {
+	return s.secrets.GetKeyBundle(ctx, req)
+}
+
+func (s *server) ListSecretChats(ctx context.Context, req api.ListSecretChatsRequestObject) (api.ListSecretChatsResponseObject, error) {
+	return s.secrets.ListSecretChats(ctx, req)
+}
+
+func (s *server) StartSecretChat(ctx context.Context, req api.StartSecretChatRequestObject) (api.StartSecretChatResponseObject, error) {
+	return s.secrets.StartSecretChat(ctx, req)
+}
+
+func (s *server) GetSecretChat(ctx context.Context, req api.GetSecretChatRequestObject) (api.GetSecretChatResponseObject, error) {
+	return s.secrets.GetSecretChat(ctx, req)
+}
+
+func (s *server) ListSecretEnvelopes(ctx context.Context, req api.ListSecretEnvelopesRequestObject) (api.ListSecretEnvelopesResponseObject, error) {
+	return s.secrets.ListSecretEnvelopes(ctx, req)
+}
+
+func (s *server) SendSecretEnvelope(ctx context.Context, req api.SendSecretEnvelopeRequestObject) (api.SendSecretEnvelopeResponseObject, error) {
+	return s.secrets.SendSecretEnvelope(ctx, req)
+}
+
+func (s *server) AcknowledgeSecretEnvelope(ctx context.Context, req api.AcknowledgeSecretEnvelopeRequestObject) (api.AcknowledgeSecretEnvelopeResponseObject, error) {
+	return s.secrets.AcknowledgeSecretEnvelope(ctx, req)
+}
+
 func (s *server) ListConversations(ctx context.Context, req api.ListConversationsRequestObject) (api.ListConversationsResponseObject, error) {
 	return s.conversations.ListConversations(ctx, req)
 }
@@ -396,6 +456,9 @@ func limitBody(normal, upload, icon int64) func(http.Handler) http.Handler {
 			switch {
 			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments"):
 				limit = upload
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/envelopes"):
+				// One encrypted message, base64: never more than the envelope cap.
+				limit = envelopeBodyBytes
 			case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/icon"):
 				limit = icon + multipartSlack
 			}

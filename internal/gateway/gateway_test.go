@@ -340,3 +340,95 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 	t.Fatal("condition not met within two seconds")
 }
+
+// A conversation has no server, so its events ride the account stream: any
+// connection of that person gets them, whatever server it is watching.
+func TestPersonalStreamCarriesConversationEvents(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+	conv := uuid.New()
+	waitFor(t, func() bool { return ts.hub.PersonalSubscribers(ts.user) == 1 })
+
+	ts.hub.PublishToUser(ts.user, events.Event{
+		Kind: events.KindMessageCreated, ChannelID: conv, Seq: 1,
+		Payload: map[string]any{"content": "привет"},
+	})
+
+	frame := read(t, conn)
+	if frame["type"] != string(events.KindMessageCreated) {
+		t.Errorf("type = %v, want %v", frame["type"], events.KindMessageCreated)
+	}
+	if frame["channelId"] != conv.String() {
+		t.Errorf("channelId = %v, want %v", frame["channelId"], conv)
+	}
+	if _, ok := frame["workspaceId"]; ok {
+		t.Errorf("a conversation event named a workspace: %v", frame)
+	}
+}
+
+// An event of somebody else never reaches this connection.
+func TestPersonalStreamDoesNotLeakOtherAccounts(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+	waitFor(t, func() bool { return ts.hub.PersonalSubscribers(ts.user) == 1 })
+
+	ts.hub.PublishToUser(uuid.New(), events.Event{
+		Kind: events.KindConversationCreated, ChannelID: uuid.New(),
+	})
+	write(t, conn, map[string]any{"type": "ping"})
+	if frame := read(t, conn); frame["type"] != "pong" {
+		t.Errorf("frame = %v, want pong: an event of another account arrived", frame)
+	}
+}
+
+// Reconnecting with per-conversation cursors catches up over the account
+// stream, and the live stream does not repeat what the catch-up delivered.
+func TestConversationCatchUpByCursor(t *testing.T) {
+	ts := newTestServer(t)
+	conv := uuid.New()
+	ts.history.missed[conv] = []events.Event{
+		{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 2},
+		{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 3},
+	}
+	conn := ts.dial(t)
+
+	write(t, conn, map[string]any{
+		"type":          "resume",
+		"conversations": map[string]any{conv.String(): 1},
+	})
+	for _, wantSeq := range []float64{2, 3} {
+		if frame := read(t, conn); frame["seq"] != wantSeq {
+			t.Fatalf("seq = %v, want %v", frame["seq"], wantSeq)
+		}
+	}
+	if frame := read(t, conn); frame["type"] != "resumed" {
+		t.Fatalf("frame = %v, want resumed", frame)
+	}
+
+	waitFor(t, func() bool { return ts.hub.PersonalSubscribers(ts.user) == 1 })
+	ts.hub.PublishToUser(ts.user, events.Event{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 3})
+	ts.hub.PublishToUser(ts.user, events.Event{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 4})
+	if frame := read(t, conn); frame["seq"] != float64(4) {
+		t.Errorf("seq = %v, want 4: seq 3 came twice", frame["seq"])
+	}
+}
+
+// A personal read.changed still names its server: the client uses that id to
+// refresh the unread badges of the sidebar.
+func TestPersonalStreamKeepsTheWorkspaceOfReadEvents(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+	waitFor(t, func() bool { return ts.hub.PersonalSubscribers(ts.user) == 1 })
+
+	ts.hub.PublishToUser(ts.user, events.Event{
+		Kind: events.KindReadChanged, WorkspaceID: ts.workspace, ChannelID: ts.channel, Seq: 4,
+	})
+
+	frame := read(t, conn)
+	if frame["workspaceId"] != ts.workspace.String() {
+		t.Errorf("workspaceId = %v, want %v", frame["workspaceId"], ts.workspace)
+	}
+	if frame["channelId"] != ts.channel.String() {
+		t.Errorf("channelId = %v, want %v", frame["channelId"], ts.channel)
+	}
+}

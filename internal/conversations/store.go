@@ -73,6 +73,32 @@ func (s *PostgresStore) Direct(ctx context.Context, directKey string) (Conversat
 	return s.Conversation(ctx, uuid.UUID(row.ID.Bytes))
 }
 
+// Secret finds the secret chat of a pair of devices. It is a separate lookup
+// because the direct key belongs to ordinary dialogues only.
+func (s *PostgresStore) Secret(ctx context.Context, key string) (Conversation, error) {
+	row, err := s.q.GetSecretConversation(ctx, text(key))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Conversation{}, ErrNotFound
+		}
+		return Conversation{}, fmt.Errorf("get secret conversation: %w", err)
+	}
+	return s.Conversation(ctx, uuid.UUID(row.ID.Bytes))
+}
+
+// MemberIDs is who belongs to a conversation.
+func (s *PostgresStore) MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.q.ListConversationMemberIDs(ctx, pgUUID(channelID))
+	if err != nil {
+		return nil, fmt.Errorf("list conversation members: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, uuid.UUID(row.Bytes))
+	}
+	return out, nil
+}
+
 func (s *PostgresStore) Conversation(ctx context.Context, id uuid.UUID) (Conversation, error) {
 	row, err := s.q.GetChannel(ctx, pgUUID(id))
 	if err != nil {

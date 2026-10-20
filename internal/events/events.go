@@ -22,6 +22,14 @@ const (
 	KindWorkspaceUpdated Kind = "workspace.updated"
 	// KindReadChanged is personal: it goes only to the account whose cursor moved.
 	KindReadChanged Kind = "read.changed"
+	// KindConversationCreated is personal: a dialogue or group was opened, or a
+	// secret chat was started. It goes to each participant's own stream.
+	KindConversationCreated Kind = "conversation.created"
+	// KindConversationUpdated says the name or the people of a group changed.
+	KindConversationUpdated Kind = "conversation.updated"
+	// KindSecretEnvelope is one ciphertext waiting for a device. It goes to the
+	// recipient's personal stream and nowhere else.
+	KindSecretEnvelope Kind = "secret.envelope"
 )
 
 // Event is one thing that happened on one server.
@@ -35,6 +43,9 @@ type Event struct {
 	Seq int64
 	// Payload is what the client receives, already in its API shape.
 	Payload any
+	// Personal events travel on the account stream rather than a server's: a
+	// conversation has no server, and an envelope belongs to one device.
+	Personal bool
 }
 
 // Publisher is what a module needs to announce an event. Modules declare their
