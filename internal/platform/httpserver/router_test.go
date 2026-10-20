@@ -52,6 +52,7 @@ func newRouter(t *testing.T, dbErr error) http.Handler {
 			files.NewService(nil, nil, nil, nil, nil, 1<<20, time.Minute), log),
 		MaxUploadBytes: 1 << 20,
 		MaxIconBytes:   1 << 16,
+		MaxAvatarBytes: 1 << 15,
 		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
 		Secrets:        secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
 		Privacy:        privacy.NewHandler(privacy.NewService(nil), log),
@@ -148,10 +149,22 @@ func TestUnknownRoute(t *testing.T) {
 func TestBodyLimits(t *testing.T) {
 	h := newRouter(t, nil)
 	iconPath := "/api/v1/workspaces/7d1f3c56-9f8e-4b52-9d0c-6f2f4d1e0a11/icon"
+	avatarPath := "/api/v1/users/me/avatar"
 
 	t.Run("icon over the limit", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, iconPath, strings.NewReader(""))
 		req.ContentLength = 1<<16 + multipartSlack + 1
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", rec.Code)
+		}
+	})
+
+	t.Run("avatar over the limit", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, avatarPath, strings.NewReader(""))
+		req.ContentLength = 1<<15 + multipartSlack + 1
 		req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -206,6 +219,27 @@ func TestFriendRoutesExist(t *testing.T) {
 		}
 		if got := errorCode(t, rec); got != httpx.CodeUnauthorized {
 			t.Errorf("%s %s code = %q, want %q", route.method, route.path, got, httpx.CodeUnauthorized)
+		}
+	}
+}
+
+// The identity routes are part of the contract too: without a session they must
+// answer 401, which proves the validator accepted the body and the handler ran.
+func TestIdentityRoutesExist(t *testing.T) {
+	router := newRouter(t, nil)
+	routes := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPatch, "/api/v1/users/me/nickname", `{"nickname":"Bob","currentPassword":"secret"}`},
+		{http.MethodPatch, "/api/v1/users/me/email", `{"email":"bob@example.com","currentPassword":"secret"}`},
+		{http.MethodDelete, "/api/v1/users/me/avatar", ""},
+	}
+	for _, route := range routes {
+		rec := do(t, router, route.method, route.path, route.body)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s = %d, want 401 (route missing?), body %s", route.method, route.path, rec.Code, rec.Body)
 		}
 	}
 }

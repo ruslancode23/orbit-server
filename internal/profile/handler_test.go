@@ -1,7 +1,10 @@
 package profile
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"mime/multipart"
 	"strings"
 	"testing"
 	"time"
@@ -284,4 +287,99 @@ func TestHandlerHidesAnExpiredStatus(t *testing.T) {
 	if got.CustomStatus != nil {
 		t.Fatalf("custom status = %+v, want it hidden", got.CustomStatus)
 	}
+}
+
+func avatarRequest(t *testing.T, field string, data []byte) *multipart.Reader {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile(field, "avatar.png")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	return multipart.NewReader(bytes.NewReader(body.Bytes()), writer.Boundary())
+}
+
+func TestHandlerUploadsAvatar(t *testing.T) {
+	h, _ := newAvatarHarness(t, 8<<20)
+	user := uuid.New()
+	h.seed(user, "anna")
+	handler := NewHandler(h.svc, testLogger())
+
+	resp, err := handler.UploadMyAvatar(sessionFor(user), api.UploadMyAvatarRequestObject{
+		Body: avatarRequest(t, "file", pngAvatar(t, 40, 40)),
+	})
+	if err != nil {
+		t.Fatalf("UploadMyAvatar: %v", err)
+	}
+	updated, ok := resp.(api.UploadMyAvatar200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	if updated.AvatarUrl == nil || *updated.AvatarUrl == "" {
+		t.Error("the response has no avatar link")
+	}
+}
+
+func TestHandlerAvatarErrors(t *testing.T) {
+	h, _ := newAvatarHarness(t, 1024)
+	user := uuid.New()
+	h.seed(user, "anna")
+	handler := NewHandler(h.svc, testLogger())
+
+	tests := []struct {
+		name string
+		body *multipart.Reader
+		want any
+	}{
+		{
+			name: "wrong field",
+			body: avatarRequest(t, "image", pngAvatar(t, 10, 10)),
+			want: api.UploadMyAvatar400JSONResponse{},
+		},
+		{
+			name: "not an image",
+			body: avatarRequest(t, "file", []byte("<html>hello</html>")),
+			want: api.UploadMyAvatar415JSONResponse{},
+		},
+		{
+			name: "too large",
+			body: avatarRequest(t, "file", append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0}, 2048)...)),
+			want: api.UploadMyAvatar413JSONResponse{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := handler.UploadMyAvatar(sessionFor(user), api.UploadMyAvatarRequestObject{Body: tt.body})
+			if err != nil {
+				t.Fatalf("UploadMyAvatar: %v", err)
+			}
+			if got, want := typeName(resp), typeName(tt.want); got != want {
+				t.Errorf("response = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestHandlerDeleteAvatarNeedsASession(t *testing.T) {
+	h, _ := newAvatarHarness(t, 8<<20)
+	handler := NewHandler(h.svc, testLogger())
+
+	resp, err := handler.DeleteMyAvatar(context.Background(), api.DeleteMyAvatarRequestObject{})
+	if err != nil {
+		t.Fatalf("DeleteMyAvatar: %v", err)
+	}
+	if _, ok := resp.(api.DeleteMyAvatar401JSONResponse); !ok {
+		t.Errorf("response = %T, want 401", resp)
+	}
+}
+
+func typeName(value any) string {
+	return strings.TrimPrefix(strings.TrimPrefix(fmt.Sprintf("%T", value), "*"), "api.")
 }

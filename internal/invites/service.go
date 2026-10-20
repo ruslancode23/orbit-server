@@ -200,7 +200,7 @@ func (s *Service) JoinAsGuest(ctx context.Context, code, nickname string) (auth.
 
 	user, creds, err := s.guests.RegisterGuest(ctx, nickname)
 	if err != nil {
-		if errors.Is(err, auth.ErrTaken) {
+		if errors.Is(err, auth.ErrTaken) || errors.Is(err, auth.ErrNicknameReserved) {
 			return auth.User{}, auth.Credentials{}, servers.Membership{}, ErrNicknameTaken
 		}
 		return auth.User{}, auth.Credentials{}, servers.Membership{}, err

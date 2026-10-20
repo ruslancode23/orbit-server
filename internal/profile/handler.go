@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -95,6 +96,56 @@ func (h *Handler) ClearMyStatus(ctx context.Context, _ api.ClearMyStatusRequestO
 		return api.ClearMyStatus500JSONResponse(internal("could not remove the status")), nil
 	}
 	return api.ClearMyStatus200JSONResponse(APIProfile(profile)), nil
+}
+
+func (h *Handler) UploadMyAvatar(ctx context.Context, req api.UploadMyAvatarRequestObject) (api.UploadMyAvatarResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.UploadMyAvatar401JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeUnauthorized, "sign in first")}, nil
+	}
+	if req.Body == nil {
+		return api.UploadMyAvatar400JSONResponse(api.Error(badRequest("a file is required"))), nil
+	}
+
+	part, err := req.Body.NextPart()
+	if err != nil {
+		return api.UploadMyAvatar400JSONResponse(api.Error(badRequest("a file is required"))), nil
+	}
+	defer func() { _ = part.Close() }()
+	if part.FormName() != "file" {
+		return api.UploadMyAvatar400JSONResponse(api.Error(badRequest(`the form field must be named "file"`))), nil
+	}
+
+	profile, err := h.svc.SetAvatar(ctx, userID, part)
+	switch {
+	case errors.Is(err, ErrAvatarTooLarge):
+		return api.UploadMyAvatar413JSONResponse(api.Error(errorBody(httpx.CodeBodyTooLarge,
+			fmt.Sprintf("the image is larger than this server allows (%d bytes)", h.svc.MaxAvatarBytes())))), nil
+	case errors.Is(err, ErrAvatarType):
+		return api.UploadMyAvatar415JSONResponse(api.Error(errorBody(httpx.CodeInvalidRequest, err.Error()))), nil
+	case errors.Is(err, ErrAvatarEmpty), errors.Is(err, ErrAvatarInvalid), errors.Is(err, ErrAvatarDimensions):
+		return api.UploadMyAvatar400JSONResponse(api.Error(errorBody(httpx.CodeInvalidRequest, err.Error()))), nil
+	case errors.Is(err, ErrAvatarsUnavailable):
+		return api.UploadMyAvatar500JSONResponse(internal("avatars are not configured")), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "upload avatar", slog.Any("error", err))
+		return api.UploadMyAvatar500JSONResponse(internal("could not store the avatar")), nil
+	}
+	return api.UploadMyAvatar200JSONResponse(APIProfile(profile)), nil
+}
+
+func (h *Handler) DeleteMyAvatar(ctx context.Context, _ api.DeleteMyAvatarRequestObject) (api.DeleteMyAvatarResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.DeleteMyAvatar401JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeUnauthorized, "sign in first")}, nil
+	}
+
+	profile, err := h.svc.ClearAvatar(ctx, userID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "delete avatar", slog.Any("error", err))
+		return api.DeleteMyAvatar500JSONResponse(internal("could not remove the avatar")), nil
+	}
+	return api.DeleteMyAvatar200JSONResponse(APIProfile(profile)), nil
 }
 
 func (h *Handler) GetUserProfile(ctx context.Context, req api.GetUserProfileRequestObject) (api.GetUserProfileResponseObject, error) {

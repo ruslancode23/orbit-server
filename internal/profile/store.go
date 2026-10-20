@@ -87,6 +87,25 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, userID uuid.UUID, u U
 	}), nil
 }
 
+func (s *PostgresStore) SetAvatar(ctx context.Context, userID uuid.UUID, key string) (Stored, string, error) {
+	row, err := s.q.SetUserAvatar(ctx, db.SetUserAvatarParams{
+		AvatarKey: text(key),
+		ID:        pgUUID(userID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Stored{}, "", ErrNotFound
+		}
+		return Stored{}, "", fmt.Errorf("set avatar: %w", err)
+	}
+	return stored(columns{
+		id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
+		bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
+		statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
+		statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+	}), row.PreviousAvatarKey.String, nil
+}
+
 func (s *PostgresStore) SetStatus(ctx context.Context, userID uuid.UUID, emoji, textValue string, expiresAt *time.Time) (Stored, error) {
 	row, err := s.q.SetUserStatus(ctx, db.SetUserStatusParams{
 		Emoji:      text(emoji),

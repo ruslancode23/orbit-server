@@ -11,10 +11,65 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const changeUserNickname = `-- name: ChangeUserNickname :one
+WITH current AS (
+    SELECT nickname FROM users WHERE id = $2
+), released AS (
+    INSERT INTO released_nicknames (nickname_key, released_at, released_by)
+    SELECT lower(current.nickname), now(), $2
+    FROM current
+    WHERE lower(current.nickname) <> lower($1::text)
+    ON CONFLICT (nickname_key) DO UPDATE
+        SET released_at = EXCLUDED.released_at, released_by = EXCLUDED.released_by
+    RETURNING nickname_key
+)
+UPDATE users
+SET nickname = $1::text,
+    profile_updated_at = now(),
+    updated_at = now()
+WHERE users.id = $2
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
+`
+
+type ChangeUserNicknameParams struct {
+	Nickname string      `json:"nickname"`
+	ID       pgtype.UUID `json:"id"`
+}
+
+// Renaming releases the old handle in the same statement that takes the new
+// one: no window in which neither row is visible. A case-only change keeps the
+// key and adds no hold. The unique index settles a name two accounts ask for,
+// and the trigger settles one still held.
+func (q *Queries) ChangeUserNickname(ctx context.Context, arg ChangeUserNicknameParams) (User, error) {
+	row := q.db.QueryRow(ctx, changeUserNickname, arg.Nickname, arg.ID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Nickname,
+		&i.Email,
+		&i.PasswordHash,
+		&i.IsGuest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DmPolicy,
+		&i.FriendRequestPolicy,
+		&i.DisplayName,
+		&i.Bio,
+		&i.AccentColor,
+		&i.AvatarKey,
+		&i.CustomStatusEmoji,
+		&i.CustomStatusText,
+		&i.CustomStatusExpiresAt,
+		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
+	)
+	return i, err
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (nickname, email, password_hash, is_guest)
 VALUES ($1, $2, $3, $4)
-RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
 `
 
 type CreateUserParams struct {
@@ -50,12 +105,13 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
 	)
 	return i, err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at FROM users WHERE id = $1
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUser(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -79,12 +135,13 @@ func (q *Queries) GetUser(ctx context.Context, id pgtype.UUID) (User, error) {
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at FROM users WHERE lower(email) = lower($1)
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users WHERE lower(email) = lower($1)
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error) {
@@ -108,12 +165,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
 	)
 	return i, err
 }
 
 const getUserByLogin = `-- name: GetUserByLogin :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at FROM users
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users
 WHERE lower(nickname) = lower($1) OR lower(email) = lower($1)
 `
 
@@ -139,12 +197,13 @@ func (q *Queries) GetUserByLogin(ctx context.Context, lower string) (User, error
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
 	)
 	return i, err
 }
 
 const getUserByNickname = `-- name: GetUserByNickname :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at FROM users WHERE lower(nickname) = lower($1)
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users WHERE lower(nickname) = lower($1)
 `
 
 func (q *Queries) GetUserByNickname(ctx context.Context, lower string) (User, error) {
@@ -168,6 +227,7 @@ func (q *Queries) GetUserByNickname(ctx context.Context, lower string) (User, er
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
 	)
 	return i, err
 }
@@ -197,11 +257,33 @@ func (q *Queries) ListKnownUsers(ctx context.Context, dollar_1 []pgtype.UUID) ([
 	return items, nil
 }
 
+const nicknameIsHeld = `-- name: NicknameIsHeld :one
+SELECT EXISTS (
+    SELECT 1 FROM released_nicknames
+    WHERE nickname_key = lower($1::text)
+      AND released_at > $2
+) AS held
+`
+
+type NicknameIsHeldParams struct {
+	Nickname string             `json:"nickname"`
+	Since    pgtype.Timestamptz `json:"since"`
+}
+
+// A released nickname stays unclaimable for seven days. The check is here for a
+// clear 409; the trigger on users is what makes it race-free.
+func (q *Queries) NicknameIsHeld(ctx context.Context, arg NicknameIsHeldParams) (bool, error) {
+	row := q.db.QueryRow(ctx, nicknameIsHeld, arg.Nickname, arg.Since)
+	var held bool
+	err := row.Scan(&held)
+	return held, err
+}
+
 const promoteGuest = `-- name: PromoteGuest :one
 UPDATE users
 SET nickname = $2, email = $3, password_hash = $4, is_guest = false, updated_at = now()
 WHERE id = $1 AND is_guest
-RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
 `
 
 type PromoteGuestParams struct {
@@ -238,6 +320,49 @@ func (q *Queries) PromoteGuest(ctx context.Context, arg PromoteGuestParams) (Use
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
+	)
+	return i, err
+}
+
+const setUserEmail = `-- name: SetUserEmail :one
+UPDATE users
+SET email = $1::text,
+    email_verified_at = NULL,
+    updated_at = now()
+WHERE users.id = $2
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
+`
+
+type SetUserEmailParams struct {
+	Email pgtype.Text `json:"email"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// There is no confirmation email yet, so a hand-written address is unverified.
+// An empty address clears it; the unique index allows any number of NULLs.
+func (q *Queries) SetUserEmail(ctx context.Context, arg SetUserEmailParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserEmail, arg.Email, arg.ID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Nickname,
+		&i.Email,
+		&i.PasswordHash,
+		&i.IsGuest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DmPolicy,
+		&i.FriendRequestPolicy,
+		&i.DisplayName,
+		&i.Bio,
+		&i.AccentColor,
+		&i.AvatarKey,
+		&i.CustomStatusEmoji,
+		&i.CustomStatusText,
+		&i.CustomStatusExpiresAt,
+		&i.ProfileUpdatedAt,
+		&i.EmailVerifiedAt,
 	)
 	return i, err
 }

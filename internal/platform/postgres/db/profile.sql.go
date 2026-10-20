@@ -159,6 +159,63 @@ func (q *Queries) ListUserProfiles(ctx context.Context, ids []pgtype.UUID) ([]Li
 	return items, nil
 }
 
+const setUserAvatar = `-- name: SetUserAvatar :one
+WITH previous AS (
+    SELECT avatar_key FROM users WHERE users.id = $2
+)
+UPDATE users
+SET avatar_key = $1::text,
+    profile_updated_at = now(),
+    updated_at = now()
+WHERE users.id = $2
+RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
+          custom_status_emoji, custom_status_text, custom_status_expires_at,
+          is_guest, created_at,
+          (SELECT avatar_key FROM previous) AS previous_avatar_key
+`
+
+type SetUserAvatarParams struct {
+	AvatarKey pgtype.Text `json:"avatar_key"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+type SetUserAvatarRow struct {
+	ID                    pgtype.UUID        `json:"id"`
+	Nickname              string             `json:"nickname"`
+	DisplayName           pgtype.Text        `json:"display_name"`
+	Bio                   string             `json:"bio"`
+	AccentColor           string             `json:"accent_color"`
+	AvatarKey             pgtype.Text        `json:"avatar_key"`
+	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
+	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
+	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	IsGuest               bool               `json:"is_guest"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	PreviousAvatarKey     pgtype.Text        `json:"previous_avatar_key"`
+}
+
+// One statement reads the old key and writes the new one, so two uploads racing
+// cannot both report the same previous key and leave one object alive.
+func (q *Queries) SetUserAvatar(ctx context.Context, arg SetUserAvatarParams) (SetUserAvatarRow, error) {
+	row := q.db.QueryRow(ctx, setUserAvatar, arg.AvatarKey, arg.ID)
+	var i SetUserAvatarRow
+	err := row.Scan(
+		&i.ID,
+		&i.Nickname,
+		&i.DisplayName,
+		&i.Bio,
+		&i.AccentColor,
+		&i.AvatarKey,
+		&i.CustomStatusEmoji,
+		&i.CustomStatusText,
+		&i.CustomStatusExpiresAt,
+		&i.IsGuest,
+		&i.CreatedAt,
+		&i.PreviousAvatarKey,
+	)
+	return i, err
+}
+
 const setUserStatus = `-- name: SetUserStatus :one
 UPDATE users
 SET custom_status_emoji      = $1,
