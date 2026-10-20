@@ -1,9 +1,7 @@
-// Package voice issues access tokens for LiveKit voice rooms.
+// Package voice issues access tokens for LiveKit voice channels.
 package voice
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -40,7 +38,6 @@ type TokenIssuer struct {
 	apiSecret string
 	publicURL string
 	now       func() time.Time
-	newID     func() (string, error)
 }
 
 func NewTokenIssuer(apiKey, apiSecret, publicURL string) *TokenIssuer {
@@ -49,22 +46,18 @@ func NewTokenIssuer(apiKey, apiSecret, publicURL string) *TokenIssuer {
 		apiSecret: apiSecret,
 		publicURL: publicURL,
 		now:       time.Now,
-		newID:     randomIdentity,
 	}
 }
 
-// Issue returns a token that lets one new participant join exactly one room,
-// publish and subscribe. Every call gets a fresh identity, so the same person
-// can join from two tabs without kicking themselves out.
-func (i *TokenIssuer) Issue(room, displayName string) (Token, error) {
+// Issue returns a token that lets one account join one channel's room. The
+// identity is the account id, so the same person joining from a second tab
+// replaces the first participant instead of appearing twice. A listener gets a
+// token without the right to publish; only the microphone and screen follow
+// canSpeak.
+func (i *TokenIssuer) Issue(room, identity, displayName string, canSpeak bool) (Token, error) {
 	displayName = strings.TrimSpace(displayName)
-	if err := validate(room, displayName); err != nil {
+	if err := validate(room, identity, displayName); err != nil {
 		return Token{}, err
-	}
-
-	identity, err := i.newID()
-	if err != nil {
-		return Token{}, fmt.Errorf("generate identity: %w", err)
 	}
 
 	allow := true
@@ -75,7 +68,7 @@ func (i *TokenIssuer) Issue(room, displayName string) (Token, error) {
 		SetVideoGrant(&auth.VideoGrant{
 			RoomJoin:       true,
 			Room:           room,
-			CanPublish:     &allow,
+			CanPublish:     &canSpeak,
 			CanSubscribe:   &allow,
 			CanPublishData: &allow,
 			// Clients publish voice state (deafened) as participant attributes.
@@ -94,10 +87,13 @@ func (i *TokenIssuer) Issue(room, displayName string) (Token, error) {
 	}, nil
 }
 
-func validate(room, displayName string) error {
+func validate(room, identity, displayName string) error {
 	var errs []error
 	if !roomNamePattern.MatchString(room) {
 		errs = append(errs, &ValidationError{"room must be 1-64 characters: latin letters, digits, '-' or '_', starting with a letter or digit"})
+	}
+	if identity == "" || len(identity) > 64 {
+		errs = append(errs, &ValidationError{"identity must be 1-64 characters"})
 	}
 	switch n := utf8.RuneCountInString(displayName); {
 	case n == 0:
@@ -121,12 +117,4 @@ func validate(room, displayName string) error {
 func IsValidationError(err error) bool {
 	var v *ValidationError
 	return errors.As(err, &v)
-}
-
-func randomIdentity() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return "guest-" + hex.EncodeToString(b), nil
 }

@@ -17,6 +17,7 @@ const (
 	ChannelKindText   ChannelKind = "text"
 	ChannelKindDirect ChannelKind = "direct"
 	ChannelKindGroup  ChannelKind = "group"
+	ChannelKindVoice  ChannelKind = "voice"
 )
 
 func (e *ChannelKind) Scan(src interface{}) error {

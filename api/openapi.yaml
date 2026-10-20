@@ -54,7 +54,9 @@ tags:
       server, so messages, files and read cursors work for it through the same
       endpoints; only who may read it is decided differently — by being in it.
   - name: voice
-    description: Voice rooms on LiveKit.
+    description: |
+      LiveKit access for voice channels. The token is issued by session; its grants
+      follow the caller's role, so a listener may join without publishing.
 paths:
   /healthz:
     get:
@@ -588,6 +590,27 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}/voice-token:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: createChannelVoiceToken
+      tags: [voice]
+      summary: A LiveKit token for this voice channel. Needs membership in its server.
+      description: |
+        The room is the channel: its LiveKit name is the channel id and the participant
+        identity is the account id, so signing in twice on the same account replaces the
+        first session instead of adding a second participant. Joining needs membership;
+        publishing the microphone and the screen needs the right to speak.
+      responses:
+        "201":
+          description: Token issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceToken" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/channels/{channelId}/messages:
     parameters:
       - $ref: "#/components/parameters/ChannelId"
@@ -1063,30 +1086,6 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/voice/token:
-    post:
-      operationId: createVoiceToken
-      tags: [voice]
-      summary: Issue a LiveKit token for one voice room (development only).
-      description: |
-        Exists only when the server runs with ORBIT_ENV=development: it has no authorization
-        yet and is replaced by session-based access together with accounts. Elsewhere it
-        returns 404.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/VoiceTokenRequest" }
-      responses:
-        "201":
-          description: Token issued.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VoiceToken" }
-        "400": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "413": { $ref: "#/components/responses/Error" }
-        "500": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     WorkspaceId:
@@ -1377,13 +1376,19 @@ components:
           type: string
           maxLength: 500
           description: Shown to admins in the ban list, not to the banned person.
+    ChannelKind:
+      type: string
+      enum: [text, voice]
+      description: |
+        text — messages live here; voice — a persistent LiveKit room with no history.
     Channel:
       type: object
       additionalProperties: false
-      required: [id, workspaceId, name, position, isReadOnly, canWrite, createdAt]
+      required: [id, workspaceId, kind, name, position, isReadOnly, canWrite, createdAt]
       properties:
         id: { type: string, format: uuid }
         workspaceId: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/ChannelKind" }
         name:
           type: string
           minLength: 1
@@ -1408,6 +1413,11 @@ components:
       additionalProperties: false
       required: [name]
       properties:
+        kind:
+          type: string
+          enum: [text, voice]
+          default: text
+          description: Omit for a text channel.
         name:
           type: string
           minLength: 1
@@ -1691,22 +1701,6 @@ components:
           maxItems: 20
           items: { type: string, format: uuid }
           description: Whom to talk to, besides yourself.
-    VoiceTokenRequest:
-      type: object
-      additionalProperties: false
-      required: [room, displayName]
-      properties:
-        room:
-          type: string
-          pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-          description: Room name. Latin letters, digits, '-' and '_', starting with a letter or digit.
-          example: dev-room
-        displayName:
-          type: string
-          minLength: 1
-          maxLength: 32
-          description: Name shown to other participants.
-          example: Anna
     VoiceToken:
       type: object
       required: [token, url, identity, expiresAt]
@@ -1720,8 +1714,8 @@ components:
           example: ws://localhost:7880
         identity:
           type: string
-          description: Participant identity, unique per token.
-          example: guest-5bac64c953e07d75
+          description: Participant identity; an account id, so one account is one participant.
+          example: 6f1c0a9e-6b1a-4a3a-8f0e-2a4f1d2b3c4d
         expiresAt:
           type: string
           format: date-time

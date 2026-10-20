@@ -40,8 +40,6 @@ const maxBodyBytes = 16 << 10
 // not by the body cap.
 const multipartSlack = 4 << 10
 
-const voiceTokenPath = "/api/v1/voice/token" //nolint:gosec // a URL path, not a credential
-
 // wsPath is the live stream. It is not in api/openapi.yaml: the spec describes
 // HTTP requests and responses, and a WebSocket is neither.
 const wsPath = "/api/v1/ws"
@@ -75,7 +73,7 @@ type Deps struct {
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
-	// Voice is nil outside development: the token endpoint has no real authorization yet.
+	// Voice issues LiveKit tokens for voice channels; its grants follow the caller's role.
 	Voice *voice.Handler
 }
 
@@ -84,7 +82,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -138,11 +136,6 @@ func NewRouter(d Deps) (http.Handler, error) {
 	})
 	// Everything the spec describes goes through validation, with the body limit.
 	r.Group(func(apiRoutes chi.Router) {
-		if d.Voice == nil {
-			// Hide the dev endpoint before validation, so a production instance
-			// does not reveal it through 400 responses.
-			apiRoutes.Use(notFound(voiceTokenPath))
-		}
 		// JSON bodies stay tiny; only an upload may be large, and never larger
 		// than this instance allows.
 		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes, d.MaxIconBytes))
@@ -188,11 +181,8 @@ func (s *server) GetReadiness(ctx context.Context, req api.GetReadinessRequestOb
 	return s.health.GetReadiness(ctx, req)
 }
 
-func (s *server) CreateVoiceToken(ctx context.Context, req api.CreateVoiceTokenRequestObject) (api.CreateVoiceTokenResponseObject, error) {
-	if s.voice == nil {
-		return api.CreateVoiceToken404JSONResponse{Error: api.ErrorDetail{Code: httpx.CodeNotFound, Message: "not found"}}, nil
-	}
-	return s.voice.CreateVoiceToken(ctx, req)
+func (s *server) CreateChannelVoiceToken(ctx context.Context, req api.CreateChannelVoiceTokenRequestObject) (api.CreateChannelVoiceTokenResponseObject, error) {
+	return s.voice.CreateChannelVoiceToken(ctx, req)
 }
 
 func (s *server) Register(ctx context.Context, req api.RegisterRequestObject) (api.RegisterResponseObject, error) {
@@ -384,18 +374,6 @@ func validationError(_ context.Context, err error, w http.ResponseWriter, _ *htt
 			msg = reqErr.Error()
 		}
 		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, msg)
-	}
-}
-
-func notFound(path string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == path {
-				httpx.WriteError(w, http.StatusNotFound, httpx.CodeNotFound, "not found")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
 	}
 }
 

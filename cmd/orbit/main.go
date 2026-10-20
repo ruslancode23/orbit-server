@@ -101,11 +101,9 @@ func run() error {
 		Channels:   channels.NewHandler(channelService, log),
 		Messages: messages.NewHandler(
 			messageService, log),
-	}
-	if cfg.IsDevelopment() {
-		issuer := voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL)
-		deps.Voice = voice.NewHandler(issuer, log)
-		log.Warn("dev voice token endpoint enabled: POST /api/v1/voice/token has no authorization")
+		Voice: voice.NewHandler(
+			voice.NewTokenIssuer(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, cfg.LiveKit.PublicURL),
+			channelService, log),
 	}
 
 	// Files whose message never arrived are swept in the background.

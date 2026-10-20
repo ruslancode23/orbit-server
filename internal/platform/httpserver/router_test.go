@@ -29,7 +29,7 @@ type pinger struct{ err error }
 
 func (p pinger) Ping(context.Context) error { return p.err }
 
-func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
+func newRouter(t *testing.T, dbErr error) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The auth store is never reached here: these tests send no session cookie.
@@ -51,9 +51,8 @@ func newRouter(t *testing.T, voiceEnabled bool, dbErr error) http.Handler {
 		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10), log),
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
-	}
-	if voiceEnabled {
-		d.Voice = voice.NewHandler(voice.NewTokenIssuer("devkey", "a-secret-that-is-long-enough-for-hs256", "ws://lk"), log)
+		Voice: voice.NewHandler(
+			voice.NewTokenIssuer("devkey", "a-secret-that-is-long-enough-for-hs256", "ws://lk"), nil, log),
 	}
 	h, err := NewRouter(d)
 	if err != nil {
@@ -82,36 +81,26 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return body.Error.Code
 }
 
-func TestVoiceToken(t *testing.T) {
-	valid := `{"room":"dev-room","displayName":"Anna"}`
+func TestChannelVoiceToken(t *testing.T) {
+	const channelID = "11111111-1111-4111-8111-111111111111"
 	tests := []struct {
-		name     string
-		enabled  bool
-		body     string
-		status   int
-		wantCode string
+		name   string
+		path   string
+		status int
+		code   string
 	}{
-		{"issued", true, valid, http.StatusCreated, ""},
-		{"room violates pattern", true, `{"room":"../admin","displayName":"Anna"}`, http.StatusBadRequest, httpx.CodeInvalidRequest},
-		{"missing displayName", true, `{"room":"dev-room"}`, http.StatusBadRequest, httpx.CodeInvalidRequest},
-		{"displayName too long", true, `{"room":"dev-room","displayName":"` + strings.Repeat("a", 33) + `"}`, http.StatusBadRequest, httpx.CodeInvalidRequest},
-		{"unknown field", true, `{"room":"dev-room","displayName":"Anna","canPublish":false}`, http.StatusBadRequest, httpx.CodeInvalidRequest},
-		{"not json", true, `room=dev-room`, http.StatusBadRequest, httpx.CodeInvalidRequest},
-		{"body too large", true, `{"room":"dev-room","displayName":"` + strings.Repeat("a", 20000) + `"}`, http.StatusRequestEntityTooLarge, httpx.CodeBodyTooLarge},
-		{"production hides route", false, valid, http.StatusNotFound, httpx.CodeNotFound},
-		{"production hides route before validation", false, `{"room":"../x"}`, http.StatusNotFound, httpx.CodeNotFound},
+		{"needs a session", "/api/v1/channels/" + channelID + "/voice-token", http.StatusUnauthorized, httpx.CodeUnauthorized},
+		{"checks the channel id", "/api/v1/channels/not-a-uuid/voice-token", http.StatusBadRequest, httpx.CodeInvalidRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := do(t, newRouter(t, tt.enabled, nil), http.MethodPost, voiceTokenPath, tt.body)
+			rec := do(t, newRouter(t, nil), http.MethodPost, tt.path, "")
 
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.status, rec.Body)
 			}
-			if tt.wantCode != "" {
-				if got := errorCode(t, rec); got != tt.wantCode {
-					t.Errorf("code = %q, want %q", got, tt.wantCode)
-				}
+			if got := errorCode(t, rec); got != tt.code {
+				t.Errorf("code = %q, want %q", got, tt.code)
 			}
 		})
 	}
@@ -131,7 +120,7 @@ func TestProbes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := do(t, newRouter(t, false, tt.dbErr), http.MethodGet, tt.path, "")
+			rec := do(t, newRouter(t, tt.dbErr), http.MethodGet, tt.path, "")
 			if rec.Code != tt.status || strings.TrimSpace(rec.Body.String()) != tt.body {
 				t.Errorf("got %d %s, want %d %s", rec.Code, rec.Body, tt.status, tt.body)
 			}
@@ -140,7 +129,7 @@ func TestProbes(t *testing.T) {
 }
 
 func TestUnknownRoute(t *testing.T) {
-	rec := do(t, newRouter(t, true, nil), http.MethodGet, "/api/v1/nope", "")
+	rec := do(t, newRouter(t, nil), http.MethodGet, "/api/v1/nope", "")
 	if rec.Code != http.StatusNotFound || errorCode(t, rec) != httpx.CodeNotFound {
 		t.Errorf("got %d %s, want 404 not_found", rec.Code, rec.Body)
 	}
@@ -149,7 +138,7 @@ func TestUnknownRoute(t *testing.T) {
 // Each upload has its own cap, checked before a byte is read, and a JSON body
 // with a long description still fits the general one.
 func TestBodyLimits(t *testing.T) {
-	h := newRouter(t, false, nil)
+	h := newRouter(t, nil)
 	iconPath := "/api/v1/workspaces/7d1f3c56-9f8e-4b52-9d0c-6f2f4d1e0a11/icon"
 
 	t.Run("icon over the limit", func(t *testing.T) {

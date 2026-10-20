@@ -14,6 +14,14 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
+// Kind is the sort of channel: text has messages, voice is a LiveKit room.
+type Kind string
+
+const (
+	KindText  Kind = "text"
+	KindVoice Kind = "voice"
+)
+
 var (
 	// ErrNotFound covers a missing channel and one in a server the caller is not
 	// in: the two are the same answer, or the API reveals what exists elsewhere.
@@ -38,6 +46,7 @@ const (
 type Channel struct {
 	ID          uuid.UUID
 	WorkspaceID uuid.UUID
+	Kind        Kind
 	Name        string
 	Topic       string
 	Position    int
@@ -46,8 +55,25 @@ type Channel struct {
 }
 
 // CanWrite reports whether a role may post in this channel. A read-only channel
-// is for announcements: members read it, admins and the owner write.
+// is for announcements: members read it, admins and the owner write. A voice
+// channel has no messages at all.
 func (c Channel) CanWrite(role servers.Role) bool {
+	if c.Kind == KindVoice {
+		return false
+	}
+	if !c.IsReadOnly {
+		return true
+	}
+	return role == servers.RoleAdmin || role == servers.RoleOwner
+}
+
+// CanSpeak reports whether a role may publish audio and screen in a voice
+// channel. A read-only voice channel is a broadcast: everyone listens, admins
+// and the owner speak.
+func (c Channel) CanSpeak(role servers.Role) bool {
+	if c.Kind != KindVoice {
+		return false
+	}
 	if !c.IsReadOnly {
 		return true
 	}
@@ -57,6 +83,7 @@ func (c Channel) CanWrite(role servers.Role) bool {
 // NewChannel is what Store.Create writes.
 type NewChannel struct {
 	WorkspaceID uuid.UUID
+	Kind        Kind
 	Name        string
 	Topic       string
 	IsReadOnly  bool
@@ -156,8 +183,14 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c
 		return View{}, err
 	}
 
+	kind, err := cleanKind(c.Kind)
+	if err != nil {
+		return View{}, err
+	}
+
 	created, err := s.store.Create(ctx, NewChannel{
 		WorkspaceID: workspaceID,
+		Kind:        kind,
 		Name:        name,
 		Topic:       topic,
 		IsReadOnly:  c.IsReadOnly,
@@ -233,6 +266,20 @@ func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, 
 
 // MayWrite answers "can this account post in this channel" for other modules
 // (messages, the event gateway): one place for the rule.
+// VoiceAccess returns whether the caller may speak in this voice channel. The
+// channel must be a voice channel of a server the caller is on: anything else
+// is ErrNotFound, the same answer as a channel that does not exist.
+func (s *Service) VoiceAccess(ctx context.Context, channelID, callerID uuid.UUID) (bool, error) {
+	channel, role, err := s.channelFor(ctx, channelID, callerID, servers.RoleMember)
+	if err != nil {
+		return false, err
+	}
+	if channel.Kind != KindVoice {
+		return false, ErrNotFound
+	}
+	return channel.CanSpeak(role), nil
+}
+
 func (s *Service) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (Channel, error) {
 	channel, role, err := s.channelFor(ctx, channelID, callerID, servers.RoleMember)
 	if err != nil {
@@ -325,6 +372,20 @@ func sameSet(current []Channel, ids []uuid.UUID) bool {
 		seen[id] = true
 	}
 	return true
+}
+
+// ErrInvalidKind means the request named a channel kind the API does not know.
+var ErrInvalidKind = errors.New("channels: kind must be text or voice")
+
+func cleanKind(kind Kind) (Kind, error) {
+	switch kind {
+	case "":
+		return KindText, nil
+	case KindText, KindVoice:
+		return kind, nil
+	default:
+		return "", ErrInvalidKind
+	}
 }
 
 func cleanName(name string) (string, error) {
