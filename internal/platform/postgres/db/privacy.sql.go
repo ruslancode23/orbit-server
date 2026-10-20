@@ -41,13 +41,16 @@ func (q *Queries) GetDMPolicy(ctx context.Context, id pgtype.UUID) (string, erro
 
 const getUserPrivacy = `-- name: GetUserPrivacy :many
 
-SELECT id, dm_policy, is_guest FROM users WHERE id = ANY($1::uuid[])
+SELECT id, dm_policy, friend_request_policy, is_guest
+FROM users
+WHERE id = ANY($1::uuid[])
 `
 
 type GetUserPrivacyRow struct {
-	ID       pgtype.UUID `json:"id"`
-	DmPolicy string      `json:"dm_policy"`
-	IsGuest  bool        `json:"is_guest"`
+	ID                  pgtype.UUID `json:"id"`
+	DmPolicy            string      `json:"dm_policy"`
+	FriendRequestPolicy string      `json:"friend_request_policy"`
+	IsGuest             bool        `json:"is_guest"`
 }
 
 // Who may write to whom (SCRUM-85). The privacy module owns users.dm_policy and
@@ -64,7 +67,12 @@ func (q *Queries) GetUserPrivacy(ctx context.Context, ids []pgtype.UUID) ([]GetU
 	items := []GetUserPrivacyRow{}
 	for rows.Next() {
 		var i GetUserPrivacyRow
-		if err := rows.Scan(&i.ID, &i.DmPolicy, &i.IsGuest); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.DmPolicy,
+			&i.FriendRequestPolicy,
+			&i.IsGuest,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -192,6 +200,20 @@ type SetDMPolicyParams struct {
 
 func (q *Queries) SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error {
 	_, err := q.db.Exec(ctx, setDMPolicy, arg.ID, arg.DmPolicy)
+	return err
+}
+
+const setFriendRequestPolicy = `-- name: SetFriendRequestPolicy :exec
+UPDATE users SET friend_request_policy = $2, updated_at = now() WHERE id = $1
+`
+
+type SetFriendRequestPolicyParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	FriendRequestPolicy string      `json:"friend_request_policy"`
+}
+
+func (q *Queries) SetFriendRequestPolicy(ctx context.Context, arg SetFriendRequestPolicyParams) error {
+	_, err := q.db.Exec(ctx, setFriendRequestPolicy, arg.ID, arg.FriendRequestPolicy)
 	return err
 }
 

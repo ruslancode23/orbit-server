@@ -166,6 +166,16 @@ type DeviceOneTimeKey struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type Friendship struct {
+	UserLow     pgtype.UUID        `json:"user_low"`
+	UserHigh    pgtype.UUID        `json:"user_high"`
+	Status      string             `json:"status"`
+	RequestedBy pgtype.UUID        `json:"requested_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	AcceptedAt  pgtype.Timestamptz `json:"accepted_at"`
+}
+
 type Invite struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -232,14 +242,15 @@ type Session struct {
 }
 
 type User struct {
-	ID           pgtype.UUID        `json:"id"`
-	Nickname     string             `json:"nickname"`
-	Email        pgtype.Text        `json:"email"`
-	PasswordHash pgtype.Text        `json:"password_hash"`
-	IsGuest      bool               `json:"is_guest"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	DmPolicy     string             `json:"dm_policy"`
+	ID                  pgtype.UUID        `json:"id"`
+	Nickname            string             `json:"nickname"`
+	Email               pgtype.Text        `json:"email"`
+	PasswordHash        pgtype.Text        `json:"password_hash"`
+	IsGuest             bool               `json:"is_guest"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	DmPolicy            string             `json:"dm_policy"`
+	FriendRequestPolicy string             `json:"friend_request_policy"`
 }
 
 type UserBlock struct {
