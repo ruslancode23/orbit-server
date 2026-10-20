@@ -302,6 +302,12 @@ func (h *Handler) pumpPersonalEvents(ctx context.Context, sub *events.Subscripti
 				Seq:     event.Seq,
 				Payload: event.Payload,
 			}
+			// A read cursor belongs to a server even though it travels on the
+			// account stream; the client needs the id to refresh its badges.
+			if event.WorkspaceID != uuid.Nil {
+				workspaceID := event.WorkspaceID
+				frame.WorkspaceID = &workspaceID
+			}
 			if event.ChannelID != uuid.Nil {
 				channelID := event.ChannelID
 				frame.ChannelID = &channelID

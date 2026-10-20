@@ -412,3 +412,23 @@ func TestConversationCatchUpByCursor(t *testing.T) {
 		t.Errorf("seq = %v, want 4: seq 3 came twice", frame["seq"])
 	}
 }
+
+// A personal read.changed still names its server: the client uses that id to
+// refresh the unread badges of the sidebar.
+func TestPersonalStreamKeepsTheWorkspaceOfReadEvents(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+	waitFor(t, func() bool { return ts.hub.PersonalSubscribers(ts.user) == 1 })
+
+	ts.hub.PublishToUser(ts.user, events.Event{
+		Kind: events.KindReadChanged, WorkspaceID: ts.workspace, ChannelID: ts.channel, Seq: 4,
+	})
+
+	frame := read(t, conn)
+	if frame["workspaceId"] != ts.workspace.String() {
+		t.Errorf("workspaceId = %v, want %v", frame["workspaceId"], ts.workspace)
+	}
+	if frame["channelId"] != ts.channel.String() {
+		t.Errorf("channelId = %v, want %v", frame["channelId"], ts.channel)
+	}
+}
