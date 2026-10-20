@@ -1,7 +1,9 @@
-// Package privacy owns who may start a direct conversation with an account and
-// whom people block (SCRUM-85). It owns the users.dm_policy column and the
-// user_blocks table; conversations and messages ask it through the narrow
-// interfaces they declare, so a rule is written once and checked everywhere.
+// Package privacy owns who may start a direct conversation with an account, who
+// may send it a friendship request, and whom people block (SCRUM-85, SCRUM-98).
+// It owns the users.dm_policy and users.friend_request_policy columns and the
+// user_blocks table; conversations, messages and the friends module ask it
+// through the narrow interfaces they declare, so a rule is written once and
+// checked everywhere.
 package privacy
 
 import (
@@ -21,6 +23,8 @@ var (
 	ErrCannotBlockSelf = errors.New("privacy: you cannot block yourself")
 	// ErrInvalidPolicy means the value is not one of shared, friends, nobody.
 	ErrInvalidPolicy = errors.New("privacy: unknown direct message policy")
+	// ErrInvalidFriendRequestPolicy means the value is not one of all, shared, nobody.
+	ErrInvalidFriendRequestPolicy = errors.New("privacy: unknown friendship request policy")
 )
 
 // Policy is who may start a direct conversation with an account.
@@ -29,9 +33,8 @@ type Policy string
 const (
 	// PolicyShared lets people on a common server start a dialogue: the default.
 	PolicyShared Policy = "shared"
-	// PolicyFriends is reserved for the friendships of SCRUM-98. Nobody can be a
-	// friend yet, so today it behaves exactly as PolicyNobody; keeping it in the
-	// type and the database means the setting can ship before the feature.
+	// PolicyFriends lets accepted friends start a dialogue. It outlives a common
+	// server: a friendship is its own proof of acquaintance.
 	PolicyFriends Policy = "friends"
 	// PolicyNobody lets nobody start a dialogue.
 	PolicyNobody Policy = "nobody"
@@ -51,6 +54,35 @@ func ParsePolicy(value string) (Policy, error) {
 	return policy, nil
 }
 
+// FriendRequestPolicy is who may send an account a friendship request. It is a
+// separate setting from Policy: a person may let strangers write to them but
+// not add them, or the other way round.
+type FriendRequestPolicy string
+
+const (
+	// FriendRequestsAll lets any non-guest account send a request.
+	FriendRequestsAll FriendRequestPolicy = "all"
+	// FriendRequestsShared needs a common server: the default, and the same
+	// proof of acquaintance the direct message policy uses.
+	FriendRequestsShared FriendRequestPolicy = "shared"
+	// FriendRequestsNobody lets no one send a request.
+	FriendRequestsNobody FriendRequestPolicy = "nobody"
+)
+
+// Valid reports whether the policy is one this server knows.
+func (p FriendRequestPolicy) Valid() bool {
+	return p == FriendRequestsAll || p == FriendRequestsShared || p == FriendRequestsNobody
+}
+
+// ParseFriendRequestPolicy turns a wire value into a policy, rejecting anything unknown.
+func ParseFriendRequestPolicy(value string) (FriendRequestPolicy, error) {
+	policy := FriendRequestPolicy(value)
+	if !policy.Valid() {
+		return "", ErrInvalidFriendRequestPolicy
+	}
+	return policy, nil
+}
+
 // BlockedUser is one account the caller blocked, as the settings screen shows it.
 type BlockedUser struct {
 	ID        uuid.UUID
@@ -60,8 +92,9 @@ type BlockedUser struct {
 
 // Account is what the rules need to know about one person.
 type Account struct {
-	Policy  Policy
-	IsGuest bool
+	Policy              Policy
+	FriendRequestPolicy FriendRequestPolicy
+	IsGuest             bool
 }
 
 // Store is the persistence this package needs.
@@ -81,16 +114,42 @@ type Store interface {
 	UserExists(ctx context.Context, id uuid.UUID) (bool, error)
 	Policy(ctx context.Context, userID uuid.UUID) (Policy, error)
 	SetPolicy(ctx context.Context, userID uuid.UUID, policy Policy) error
+	SetFriendRequestPolicy(ctx context.Context, userID uuid.UUID, policy FriendRequestPolicy) error
+}
+
+// Friendship answers whether two accounts are friends. The friends module
+// (SCRUM-98) implements it; nil means there are no friendships yet, and
+// PolicyFriends keeps refusing everyone as it did before the module existed.
+type Friendship interface {
+	AreFriends(ctx context.Context, a, b uuid.UUID) (bool, error)
+}
+
+// BlockCleanup withdraws whatever the pair had when one of them blocks the
+// other: a pending request, an accepted friendship, or both. It is optional —
+// nil leaves the rows alone, but every rule below still treats the block as
+// final, so a stale row cannot open a door.
+type BlockCleanup interface {
+	CutOnBlock(ctx context.Context, a, b uuid.UUID) error
 }
 
 // Service holds the rules. It knows nothing about HTTP.
 type Service struct {
-	store Store
+	store        Store
+	friendship   Friendship
+	blockCleanup BlockCleanup
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
 }
+
+// SetFriendship wires in the friendship check after both modules exist; without
+// it PolicyFriends refuses everyone, which is the pre-SCRUM-98 behaviour.
+func (s *Service) SetFriendship(friendship Friendship) { s.friendship = friendship }
+
+// SetBlockCleanup wires in the friends module so a block also removes the pair's
+// request or friendship. Optional; see BlockCleanup.
+func (s *Service) SetBlockCleanup(cleanup BlockCleanup) { s.blockCleanup = cleanup }
 
 // CanStartDirect reports whether fromID may open a dialogue with toID. It is
 // false when either account is missing or does not exist, the sender is a
@@ -135,8 +194,18 @@ func (s *Service) CanStartDirect(ctx context.Context, fromID, toID uuid.UUID) (b
 			return false, fmt.Errorf("check shared workspace: %w", err)
 		}
 		return shared, nil
-	case PolicyFriends, PolicyNobody:
-		// Friends arrive with SCRUM-98; until then nobody is one.
+	case PolicyFriends:
+		// A friendship is its own proof of acquaintance: it outlives the shared
+		// server that may have started it. Without the module nobody is a friend.
+		if s.friendship == nil {
+			return false, nil
+		}
+		friends, err := s.friendship.AreFriends(ctx, fromID, toID)
+		if err != nil {
+			return false, fmt.Errorf("check friendship: %w", err)
+		}
+		return friends, nil
+	case PolicyNobody:
 		return false, nil
 	default:
 		// A value the database should not hold still must not open the door.
@@ -239,6 +308,14 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 	if err := s.store.Block(ctx, blockerID, blockedID); err != nil {
 		return fmt.Errorf("block account: %w", err)
 	}
+	// A block is final at once: a pending request or a friendship that was
+	// already there goes with it. A failure here leaves the block in place and
+	// the retry repeats the cleanup, which is idempotent.
+	if s.blockCleanup != nil {
+		if err := s.blockCleanup.CutOnBlock(ctx, blockerID, blockedID); err != nil {
+			return fmt.Errorf("cut friendship on block: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -247,6 +324,104 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) error {
 	if err := s.store.Unblock(ctx, blockerID, blockedID); err != nil {
 		return fmt.Errorf("unblock account: %w", err)
+	}
+	return nil
+}
+
+// UserPrivacy is the policy pair and the guest flag of these accounts; an
+// unknown id is absent. The friends module asks it before a request, so it does
+// not need its own view of the users table.
+func (s *Service) UserPrivacy(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error) {
+	accounts, err := s.store.UserPrivacy(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read user privacy: %w", err)
+	}
+	return accounts, nil
+}
+
+// HasSharedWorkspace reports whether the two accounts are on one server, the
+// proof of acquaintance behind the shared settings.
+func (s *Service) HasSharedWorkspace(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	shared, err := s.store.HasSharedWorkspace(ctx, a, b)
+	if err != nil {
+		return false, fmt.Errorf("check shared workspace: %w", err)
+	}
+	return shared, nil
+}
+
+// IsGuest reports whether the account is a guest. An unknown id is not a guest:
+// the caller deals with the account being absent on its own.
+func (s *Service) IsGuest(ctx context.Context, userID uuid.UUID) (bool, error) {
+	accounts, err := s.store.UserPrivacy(ctx, []uuid.UUID{userID})
+	if err != nil {
+		return false, fmt.Errorf("read user privacy: %w", err)
+	}
+	return accounts[userID].IsGuest, nil
+}
+
+// CanRequestFriendship reports whether fromID may send a friendship request to
+// toID. It is false when either account is missing or a guest, when a block
+// stands in either direction, and when the recipient's friend request policy
+// does not allow it. The caller must not tell the sender which reason applied.
+func (s *Service) CanRequestFriendship(ctx context.Context, fromID, toID uuid.UUID) (bool, error) {
+	if fromID == toID || fromID == uuid.Nil || toID == uuid.Nil {
+		return false, nil
+	}
+
+	accounts, err := s.store.UserPrivacy(ctx, []uuid.UUID{fromID, toID})
+	if err != nil {
+		return false, fmt.Errorf("read user privacy: %w", err)
+	}
+	from, ok := accounts[fromID]
+	if !ok || from.IsGuest {
+		return false, nil
+	}
+	to, ok := accounts[toID]
+	if !ok || to.IsGuest {
+		return false, nil
+	}
+
+	blocked, err := s.store.BlockedEitherWay(ctx, fromID, toID)
+	if err != nil {
+		return false, fmt.Errorf("check block: %w", err)
+	}
+	if blocked {
+		return false, nil
+	}
+
+	switch to.FriendRequestPolicy {
+	case FriendRequestsAll:
+		return true, nil
+	case FriendRequestsShared:
+		return s.HasSharedWorkspace(ctx, fromID, toID)
+	case FriendRequestsNobody:
+		return false, nil
+	default:
+		// A value the database should not hold must not open the door.
+		return false, nil
+	}
+}
+
+// FriendRequestPolicy is the account's current setting.
+func (s *Service) FriendRequestPolicy(ctx context.Context, userID uuid.UUID) (FriendRequestPolicy, error) {
+	accounts, err := s.store.UserPrivacy(ctx, []uuid.UUID{userID})
+	if err != nil {
+		return "", fmt.Errorf("read user privacy: %w", err)
+	}
+	account, ok := accounts[userID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	return account.FriendRequestPolicy, nil
+}
+
+// SetFriendRequestPolicy changes who may send the account a friendship request.
+func (s *Service) SetFriendRequestPolicy(ctx context.Context, userID uuid.UUID, policy FriendRequestPolicy) error {
+	if !policy.Valid() {
+		return ErrInvalidFriendRequestPolicy
+	}
+	if err := s.store.SetFriendRequestPolicy(ctx, userID, policy); err != nil {
+		return fmt.Errorf("set friend request policy: %w", err)
 	}
 	return nil
 }

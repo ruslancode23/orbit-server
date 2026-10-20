@@ -42,6 +42,19 @@ const (
 	KindSecretEnvelope Kind = "secret.envelope"
 	// KindSecretChatDeleted says a secret chat was deleted for both devices.
 	KindSecretChatDeleted Kind = "secret.chat.deleted"
+	// KindFriendRequestCreated is personal: one account asked another to be
+	// friends. Both sides receive it, each with the direction it sees, so a
+	// client can add the entry to the right list without refetching.
+	KindFriendRequestCreated Kind = "friend.request.created"
+	// KindFriendRequestRemoved says a pending request is gone: declined,
+	// cancelled, accepted or withdrawn by a block. Both sides receive it.
+	KindFriendRequestRemoved Kind = "friend.request.removed"
+	// KindFriendAdded says a pending request became a friendship. Both sides
+	// receive it; the payload is the friend with their online status.
+	KindFriendAdded Kind = "friend.added"
+	// KindFriendRemoved says a friendship ended, either by removal or by a
+	// block. Both sides receive it.
+	KindFriendRemoved Kind = "friend.removed"
 )
 
 // Event is one thing that happened on one server.

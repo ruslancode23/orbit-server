@@ -46,6 +46,22 @@ func New(perMinute int) *Limiter {
 	}
 }
 
+// NewDaily builds a limiter that allows perDay operations at once and then
+// refills one token every 24h/perDay. It is a daily budget rather than a
+// calendar-day counter: a burst spends the budget early and pays for it with a
+// longer wait, which is exactly what Retry-After needs to say.
+func NewDaily(perDay int) *Limiter {
+	if perDay <= 0 {
+		return nil
+	}
+	return &Limiter{
+		perSecond: float64(perDay) / (24 * 60 * 60),
+		burst:     float64(perDay),
+		now:       time.Now,
+		buckets:   make(map[uuid.UUID]*bucket),
+	}
+}
+
 // Allow takes one token for the account. When there is none left it reports how
 // long the caller should wait before asking again; the HTTP layer puts that in
 // Retry-After.

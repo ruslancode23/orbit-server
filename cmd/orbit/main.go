@@ -18,6 +18,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/files"
+	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/gateway"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
@@ -74,6 +75,18 @@ func run() error {
 
 	// Who may write to whom: the block list, the dm policy and the guest rule.
 	privacyService := privacy.NewService(privacy.NewPostgresStore(queries))
+	// Friendships live in their own module. Privacy asks them two questions —
+	// whether two accounts are friends, and what to withdraw when one blocks the
+	// other — so neither package imports the other's rules.
+	friendService := friends.NewService(friends.NewPostgresStore(queries), privacyService, friends.Limits{
+		MaxFriends: cfg.MaxFriends,
+		MaxPending: cfg.FriendRequestPendingLimit,
+	})
+	friendService.SetLimiter(ratelimit.NewDaily(cfg.FriendRequestDailyLimit))
+	friendService.SetPublisher(hub)
+	privacyService.SetFriendship(friendService)
+	privacyService.SetBlockCleanup(friendService)
+
 	// New conversations and the first message of a dialogue share one bucket
 	// per account; opening a dialogue and its opener are one action to guard.
 	limiter := ratelimit.New(cfg.NewConversationLimit)
@@ -91,6 +104,9 @@ func run() error {
 	profileService := profile.NewService(profile.NewPostgresStore(queries), hub, log)
 	profileService.SetServers(workspaces)
 	profileService.SetConversations(conversationService)
+	// A friend sees the profile of a friend: the friendship is what makes the
+	// two strangers readable to each other.
+	profileService.SetFriends(friendService)
 	// Avatars are signed the same way server icons are; uploading one is PR-2.
 	profileService.SetAvatars(profile.Avatars{Storage: storage, LinkTTL: cfg.Storage.IconLinkTTL})
 	workspaces.SetProfiles(profileService)
@@ -122,6 +138,10 @@ func run() error {
 	// Who is online in text. Like voice presence it lives in this process: a
 	// restart costs one reconnect, and the clients announce themselves again.
 	userPresence := presence.NewService(presence.NewMemoryStore(), workspaces, hub, log)
+	// A friend sees an account's status in the personal stream, and the friend
+	// list shows the same status next to the name.
+	userPresence.SetFriends(friendService)
+	friendService.SetPresence(userPresence)
 	workspaceHandler.SetPresence(userPresence)
 	gatewayHandler := gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log)
 	gatewayHandler.SetPresence(userPresence)
@@ -148,6 +168,7 @@ func run() error {
 		Conversations:  conversations.NewHandler(conversationService, log),
 		Secrets:        secrets.NewHandler(secretService, log),
 		Privacy:        privacy.NewHandler(privacyService, log),
+		Friends:        friends.NewHandler(friendService, log),
 		Profiles:       profile.NewHandler(profileService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		MaxIconBytes:   cfg.Storage.MaxIconBytes,

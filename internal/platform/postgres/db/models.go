@@ -166,6 +166,16 @@ type DeviceOneTimeKey struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type Friendship struct {
+	UserLow     pgtype.UUID        `json:"user_low"`
+	UserHigh    pgtype.UUID        `json:"user_high"`
+	Status      string             `json:"status"`
+	RequestedBy pgtype.UUID        `json:"requested_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	AcceptedAt  pgtype.Timestamptz `json:"accepted_at"`
+}
+
 type Invite struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -240,6 +250,7 @@ type User struct {
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
 	DmPolicy              string             `json:"dm_policy"`
+	FriendRequestPolicy   string             `json:"friend_request_policy"`
 	DisplayName           pgtype.Text        `json:"display_name"`
 	Bio                   string             `json:"bio"`
 	AccentColor           string             `json:"accent_color"`

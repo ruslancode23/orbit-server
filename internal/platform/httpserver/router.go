@@ -22,6 +22,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/files"
+	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
@@ -78,10 +79,13 @@ type Deps struct {
 	Conversations *conversations.Handler
 	// Secrets serves devices, their public keys and ciphertext envelopes.
 	Secrets *secrets.Handler
-	// Privacy serves block lists and the direct message policy.
+	// Privacy serves block lists, the direct message policy and the friendship
+	// request policy.
 	Privacy *privacy.Handler
 	// Profiles serves display names, bios, accent colours and custom statuses.
 	Profiles *profile.Handler
+	// Friends serves friendship requests and the friend list.
+	Friends *friends.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -101,7 +105,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -147,7 +151,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -193,6 +197,7 @@ type server struct {
 	secrets       *secrets.Handler
 	privacy       *privacy.Handler
 	profiles      *profile.Handler
+	friends       *friends.Handler
 	voice         *voice.Handler
 }
 
@@ -476,6 +481,38 @@ func (s *server) ClearMyStatus(ctx context.Context, req api.ClearMyStatusRequest
 
 func (s *server) GetUserProfile(ctx context.Context, req api.GetUserProfileRequestObject) (api.GetUserProfileResponseObject, error) {
 	return s.profiles.GetUserProfile(ctx, req)
+}
+
+func (s *server) GetFriendRequestPolicy(ctx context.Context, req api.GetFriendRequestPolicyRequestObject) (api.GetFriendRequestPolicyResponseObject, error) {
+	return s.privacy.GetFriendRequestPolicy(ctx, req)
+}
+
+func (s *server) SetFriendRequestPolicy(ctx context.Context, req api.SetFriendRequestPolicyRequestObject) (api.SetFriendRequestPolicyResponseObject, error) {
+	return s.privacy.SetFriendRequestPolicy(ctx, req)
+}
+
+func (s *server) ListFriends(ctx context.Context, req api.ListFriendsRequestObject) (api.ListFriendsResponseObject, error) {
+	return s.friends.ListFriends(ctx, req)
+}
+
+func (s *server) CreateFriendRequest(ctx context.Context, req api.CreateFriendRequestRequestObject) (api.CreateFriendRequestResponseObject, error) {
+	return s.friends.CreateFriendRequest(ctx, req)
+}
+
+func (s *server) ListFriendRequests(ctx context.Context, req api.ListFriendRequestsRequestObject) (api.ListFriendRequestsResponseObject, error) {
+	return s.friends.ListFriendRequests(ctx, req)
+}
+
+func (s *server) AcceptFriendRequest(ctx context.Context, req api.AcceptFriendRequestRequestObject) (api.AcceptFriendRequestResponseObject, error) {
+	return s.friends.AcceptFriendRequest(ctx, req)
+}
+
+func (s *server) DeleteFriendRequest(ctx context.Context, req api.DeleteFriendRequestRequestObject) (api.DeleteFriendRequestResponseObject, error) {
+	return s.friends.DeleteFriendRequest(ctx, req)
+}
+
+func (s *server) RemoveFriend(ctx context.Context, req api.RemoveFriendRequestObject) (api.RemoveFriendResponseObject, error) {
+	return s.friends.RemoveFriend(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

@@ -72,11 +72,13 @@ tags:
       follow the caller's role, so a listener may join without publishing.
   - name: privacy
     description: |
-      Who may start a direct conversation with an account and whom it blocks.
-      A refusal is the same 404 as an account that does not exist, so the API
-      never reveals whether someone is here. A block works both ways for starting
-      and writing in a dialogue; in a group chat the messages of a blocked author
-      stay in history, marked for the person who blocked them.
+      Who may start a direct conversation with an account, who may send it a
+      friendship request, and whom it blocks. A refusal is the same answer as an
+      account that does not exist, so the API never reveals whether someone is
+      here. A block works both ways for starting and writing in a dialogue; in a
+      group chat the messages of a blocked author stay in history, marked for the
+      person who blocked them. A block also withdraws a pending friendship
+      request and ends the friendship, without telling either side why.
   - name: profile
     description: |
       What people see about each other: a display name, a bio, an accent colour
@@ -85,6 +87,14 @@ tags:
       what the UI draws. A profile is visible to people on a common server, in a
       common conversation, or to friends once friendships exist; anyone else gets
       the same 404 as an unknown account. Changes arrive as `user.updated`.
+  - name: friends
+    description: |
+      Friendships are pairs of accounts with at most one row between them: a
+      pending request or an accepted friendship. A request is sent by exact
+      nickname, compared without case. The only answer to sending one is 202
+      with the same body whether the account exists, whether the recipient
+      allows requests and whether a block stands — otherwise the endpoint would
+      become a way to check who is here. Lists are always the caller's own.
 paths:
   /healthz:
     get:
@@ -191,10 +201,10 @@ paths:
       summary: The account of this session. Needs a session.
       responses:
         "200":
-          description: The current account, with its public profile.
+          description: The current account, with its public profile and its email.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/UserProfile" }
+              schema: { $ref: "#/components/schemas/SelfProfile" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/password:
@@ -1608,6 +1618,168 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/friend-request-policy:
+    get:
+      operationId: getFriendRequestPolicy
+      tags: [privacy]
+      summary: Who may add you as a friend. Needs a session.
+      responses:
+        "200":
+          description: The current setting.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FriendRequestPolicySetting" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: setFriendRequestPolicy
+      tags: [privacy]
+      summary: Choose who may add you as a friend. Needs a session.
+      description: |
+        `all` — anyone who is not a guest, `shared` — people on a common server
+        (the default), `nobody` — no one. A refusal looks exactly like a request
+        to an account that does not exist: the sender always gets 202.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FriendRequestPolicyUpdate" }
+      responses:
+        "200":
+          description: The setting now in force.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FriendRequestPolicySetting" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/friends:
+    get:
+      operationId: listFriends
+      tags: [friends]
+      summary: Your friends, with their online status. Needs a session.
+      description: |
+        A guest has no friends and gets an empty list, which is the same answer
+        as an account that never added anyone.
+      responses:
+        "200":
+          description: The friends, sorted by nickname.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Friend" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/friends/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    delete:
+      operationId: removeFriend
+      tags: [friends]
+      summary: Remove an account from your friends. Needs a session.
+      description: |
+        Removing someone who is not a friend is fine: the client retries without
+        having to know the current state, and the answer reveals nothing.
+      responses:
+        "204":
+          description: Removed, or there was nothing to remove.
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/friends/requests:
+    post:
+      operationId: createFriendRequest
+      tags: [friends]
+      summary: Send a friendship request by exact nickname. Needs a session.
+      description: |
+        The nickname is compared without case and must match exactly otherwise.
+        Every refusal — no such account, the recipient allows no requests, a
+        block, a guest — gets the same 202 and the same body as a request that
+        was stored or that completed a mutual one. A repeat of your own pending
+        request changes nothing. When the other side already has a pending
+        request to you, the pair becomes friends at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FriendRequestCreate" }
+      responses:
+        "202":
+          description: |
+            The request was accepted for processing. This is also the answer when
+            nothing was stored, so it must not be read as proof that the account
+            exists or that the request will be delivered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FriendRequestAccepted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listFriendRequests
+      tags: [friends]
+      summary: Your incoming or outgoing requests. Needs a session.
+      description: |
+        Only the caller's own requests: `incoming` are ones the caller may accept
+        or decline, `outgoing` are ones the caller sent and may cancel. A guest
+        gets an empty list.
+      parameters:
+        - name: direction
+          in: query
+          required: true
+          description: Which side of the requests to list.
+          schema: { $ref: "#/components/schemas/FriendRequestDirection" }
+      responses:
+        "200":
+          description: The requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FriendRequest" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/friends/requests/{userId}/accept:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    post:
+      operationId: acceptFriendRequest
+      tags: [friends]
+      summary: Accept a request addressed to you. Needs a session.
+      description: |
+        Only the addressee may accept: an outgoing request answers 404, like an
+        account that does not exist or a pair that is not friends. A full friend
+        list answers 409 and leaves the request pending.
+      responses:
+        "200":
+          description: The new friend.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Friend" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/friends/requests/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    delete:
+      operationId: deleteFriendRequest
+      tags: [friends]
+      summary: Decline an incoming request or cancel an outgoing one. Needs a session.
+      description: |
+        The addressee declines, the author cancels; either way the request is
+        gone for both. A pair with no pending request answers 404.
+      responses:
+        "204":
+          description: The request is gone.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     WorkspaceId:
@@ -1766,6 +1938,20 @@ components:
           description: |
             When the status stops showing. Absent means it stays until replaced.
             The server hides an expired status from every response and event.
+    SelfProfile:
+      allOf:
+        - $ref: "#/components/schemas/UserProfile"
+        - type: object
+          additionalProperties: false
+          properties:
+            email:
+              type: string
+              format: email
+              nullable: true
+              description: |
+                The address of this account, or null for a guest. Only ever
+                returned about yourself: the public `UserProfile` has no email,
+                so nobody else can read it.
     UserProfile:
       type: object
       additionalProperties: false
@@ -2583,3 +2769,81 @@ components:
           type: string
           format: date-time
           description: The token cannot be used to join after this moment; an established session continues.
+    FriendRequestDirection:
+      type: string
+      enum: [incoming, outgoing]
+      description: |
+        Which side of a pending request an account is on. `incoming` — the other
+        side sent it, so the caller may accept or decline; `outgoing` — the caller
+        sent it, so the caller may cancel.
+    FriendRequest:
+      type: object
+      additionalProperties: false
+      required: [userId, nickname, direction, createdAt]
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: The other account of the request.
+        nickname: { type: string }
+        direction: { $ref: "#/components/schemas/FriendRequestDirection" }
+        createdAt:
+          type: string
+          format: date-time
+          description: When the request was sent.
+    FriendRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [nickname]
+      properties:
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: |
+            The exact nickname of the other account, compared without case. There
+            is no search: a partial or different nickname is simply not a match.
+          example: Anna
+    FriendRequestAccepted:
+      type: object
+      additionalProperties: false
+      required: [message]
+      description: |
+        The answer to every friendship request, stored or not. Its invariance is
+        the point: it must not let a stranger tell an account that exists and
+        allows requests from one that does not.
+      properties:
+        message:
+          type: string
+          example: If such a user exists, they will receive your request.
+    Friend:
+      type: object
+      additionalProperties: false
+      required: [id, nickname, presence, since]
+      properties:
+        id: { type: string, format: uuid }
+        nickname: { type: string }
+        presence: { $ref: "#/components/schemas/PresenceStatus" }
+        since:
+          type: string
+          format: date-time
+          description: When the friendship was accepted.
+    FriendshipPolicy:
+      type: string
+      enum: [all, shared, nobody]
+      description: |
+        Who may send a friendship request to an account. `all` — anyone who is
+        not a guest, `shared` — people on a common server (the default), `nobody`
+        — no one. A block outranks every setting.
+    FriendRequestPolicySetting:
+      type: object
+      additionalProperties: false
+      required: [friendRequestPolicy]
+      properties:
+        friendRequestPolicy: { $ref: "#/components/schemas/FriendshipPolicy" }
+    FriendRequestPolicyUpdate:
+      type: object
+      additionalProperties: false
+      required: [friendRequestPolicy]
+      properties:
+        friendRequestPolicy: { $ref: "#/components/schemas/FriendshipPolicy" }

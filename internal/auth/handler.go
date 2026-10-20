@@ -109,12 +109,33 @@ func (h *Handler) GetCurrentUser(ctx context.Context, _ api.GetCurrentUserReques
 			return api.GetCurrentUser500JSONResponse(errorBody(httpx.CodeInternal, "could not read the account")), nil
 		}
 		if profile, ok := profiles[session.User.ID]; ok {
-			return api.GetCurrentUser200JSONResponse(profile), nil
+			return api.GetCurrentUser200JSONResponse(selfProfile(profile, session.User.Email)), nil
 		}
 	}
 	// Without the profile module the account itself is still known: answer the
 	// auth part, with the nickname standing in for the display name.
-	return api.GetCurrentUser200JSONResponse(toAPIProfile(session.User)), nil
+	return api.GetCurrentUser200JSONResponse(selfProfile(toAPIProfile(session.User), session.User.Email)), nil
+}
+
+// selfProfile is the answer about oneself: the public profile plus the email,
+// which nobody else may read. A guest has no address, so the field is null.
+func selfProfile(profile api.UserProfile, email string) api.SelfProfile {
+	self := api.SelfProfile{
+		AccentColor:  profile.AccentColor,
+		AvatarUrl:    profile.AvatarUrl,
+		Bio:          profile.Bio,
+		CreatedAt:    profile.CreatedAt,
+		CustomStatus: profile.CustomStatus,
+		DisplayName:  profile.DisplayName,
+		Id:           profile.Id,
+		IsGuest:      profile.IsGuest,
+		Nickname:     profile.Nickname,
+	}
+	if email != "" {
+		address := openapi_types.Email(email)
+		self.Email = &address
+	}
+	return self
 }
 
 // toAPIProfile is the fallback shape of /auth/me when the profile module is not

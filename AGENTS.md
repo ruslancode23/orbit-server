@@ -125,10 +125,33 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
   приватность течёт. Не публикуй `Availability` и не считай статус в хендлере сам.
 - Публикует только `Service` (`flush` из `Run`): дебаунс 5 с на аккаунт и грейс 30 с на `offline`
   живут там. Хендлеры и гейтвей только сообщают о соединении и кадрах — без событий напрямую.
-- Аудитория — серверы аккаунта (`Hub.Publish`) и друзья (`Hub.PublishToUser`), когда появится
-  SCRUM-98. Посторонний не должен узнать ничего: тест `TestStrangerSeesNothing`.
+- Аудитория — серверы аккаунта (`Hub.Publish`) и друзья (`Hub.PublishToUser`). Посторонний не
+  должен узнать ничего: тест `TestStrangerSeesNothing`.
 - Состояние в памяти процесса, как voice-presence: перезапуск восстанавливается переподключениями,
   а выбор статуса клиент присылает кадром `status` заново. Хранилище для нескольких инстансов
   подставляется через `PresenceStore`.
 - Тесты: `internal/presence` (статусы, дебаунс, грейс, невидимка, посторонний) и
   `internal/gateway` (кадры `presence`/`status`, Connect/Disconnect).
+
+## Друзья (SCRUM-98)
+
+`internal/friends` владеет таблицей `friendships`: одна строка на пару (`user_low < user_high`),
+`status` — `pending` или `accepted`, `requested_by` — автор заявки.
+
+- Заявка отправляется точным ником без учёта регистра. Ответ на `POST /friends/requests` всегда
+  один и тот же `202` с `{"message":…}`: сохранённая заявка, несуществующий ник, запрет политики,
+  блок и гость неотличимы. Не добавляй в этот ответ ни флаг, ни код, ни разное тело.
+- Встречная заявка сразу принимается: строка меняет `status` на месте, поэтому у пары не может
+  появиться вторая строка. Принятие проверяет лимит друзей (409), отклонение и отмена — только
+  свою сторону; списки всегда берутся из сессии.
+- Политика `users.friend_request_policy` (`all` / `shared` / `nobody`, по умолчанию `shared`) и
+  `users.dm_policy` живут в `internal/privacy`. `shared` — участники общих серверов: это тот же
+  уровень знакомства, что у личек, поэтому он и безопасный дефолт.
+- Блокировка из DM-3 отменяет заявку и удаляет дружбу: `privacy.Service` вызывает
+  `friends.Service.CutOnBlock` через узкий интерфейс. Все проверки дружбы идут через privacy.
+- `PolicyFriends` в личках теперь спрашивает `friends.Service.AreFriends`; nil — как раньше, никто
+  не друг. Presence получает `FriendsOf` и публикует `presence.updated` в личный поток друзей.
+- События: `friend.request.created`, `friend.request.removed`, `friend.added`, `friend.removed` —
+  обеим сторонам через `PublishToUser`, payload в форме `FriendRequest` / `Friend` из OpenAPI.
+- Лимиты: суточный бакет `ratelimit.NewDaily`, висящие заявки и число друзей — конфиг. При
+  превышении — 429 с `Retry-After`, для друзей — 409.
