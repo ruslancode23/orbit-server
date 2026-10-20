@@ -12,7 +12,8 @@ func setRequired(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"ORBIT_ENV", "ORBIT_HTTP_ADDR", "ORBIT_SHUTDOWN_TIMEOUT", "ORBIT_CORS_ORIGINS", "ORBIT_SESSION_TTL", "ORBIT_MAX_UPLOAD_BYTES",
-		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "ORBIT_NEW_CONVERSATION_LIMIT", "LIVEKIT_PUBLIC_URL",
+		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "ORBIT_NEW_CONVERSATION_LIMIT",
+		"ORBIT_MAX_FRIENDS", "ORBIT_FRIEND_REQUEST_DAILY_LIMIT", "ORBIT_FRIEND_REQUEST_PENDING_LIMIT", "LIVEKIT_PUBLIC_URL",
 	} {
 		t.Setenv(name, "")
 	}
@@ -151,6 +152,59 @@ func TestLoadNewConversationLimit(t *testing.T) {
 
 		if _, err := Load(); err == nil {
 			t.Error("Load() error = nil, want a complaint about ORBIT_NEW_CONVERSATION_LIMIT")
+		}
+	})
+}
+
+func TestLoadFriendLimits(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		setRequired(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.MaxFriends != 1000 {
+			t.Errorf("MaxFriends = %d, want 1000", cfg.MaxFriends)
+		}
+		if cfg.FriendRequestDailyLimit != 20 {
+			t.Errorf("FriendRequestDailyLimit = %d, want 20", cfg.FriendRequestDailyLimit)
+		}
+		if cfg.FriendRequestPendingLimit != 100 {
+			t.Errorf("FriendRequestPendingLimit = %d, want 100", cfg.FriendRequestPendingLimit)
+		}
+	})
+
+	t.Run("disabled guards", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_FRIEND_REQUEST_DAILY_LIMIT", "0")
+		t.Setenv("ORBIT_FRIEND_REQUEST_PENDING_LIMIT", "0")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.FriendRequestDailyLimit != 0 || cfg.FriendRequestPendingLimit != 0 {
+			t.Errorf("limits = %d/%d, want both off", cfg.FriendRequestDailyLimit, cfg.FriendRequestPendingLimit)
+		}
+	})
+
+	t.Run("a friend limit is always positive", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_MAX_FRIENDS", "0")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_MAX_FRIENDS")
+		}
+	})
+
+	t.Run("negative request limits", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_FRIEND_REQUEST_DAILY_LIMIT", "-1")
+		t.Setenv("ORBIT_FRIEND_REQUEST_PENDING_LIMIT", "-1")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want complaints about the request limits")
 		}
 	})
 }

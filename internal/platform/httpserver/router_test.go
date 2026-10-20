@@ -16,6 +16,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/files"
+	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
@@ -53,6 +54,7 @@ func newRouter(t *testing.T, dbErr error) http.Handler {
 		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
 		Secrets:        secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
 		Privacy:        privacy.NewHandler(privacy.NewService(nil), log),
+		Friends:        friends.NewHandler(friends.NewService(nil, nil, friends.Limits{}), log),
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 		Voice: voice.NewHandler(
@@ -172,4 +174,36 @@ func TestBodyLimits(t *testing.T) {
 			t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
 		}
 	})
+}
+
+// The friend routes are part of the generated contract; a missing /accept would
+// otherwise only show up as a 404 in a client. Without a session every one of
+// them answers 401, which proves the path matched and the handler ran.
+func TestFriendRoutesExist(t *testing.T) {
+	const userID = "11111111-1111-4111-8111-111111111111"
+	routes := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/v1/friends", ""},
+		{http.MethodDelete, "/api/v1/friends/" + userID, ""},
+		{http.MethodPost, "/api/v1/friends/requests", `{"nickname":"Anna"}`},
+		{http.MethodGet, "/api/v1/friends/requests?direction=incoming", ""},
+		{http.MethodPost, "/api/v1/friends/requests/" + userID + "/accept", ""},
+		{http.MethodDelete, "/api/v1/friends/requests/" + userID, ""},
+		{http.MethodGet, "/api/v1/users/me/friend-request-policy", ""},
+		{http.MethodPut, "/api/v1/users/me/friend-request-policy", `{"friendRequestPolicy":"all"}`},
+	}
+	router := newRouter(t, nil)
+	for _, route := range routes {
+		rec := do(t, router, route.method, route.path, route.body)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s = %d, want 401 (route missing?), body %s", route.method, route.path, rec.Code, rec.Body)
+			continue
+		}
+		if got := errorCode(t, rec); got != httpx.CodeUnauthorized {
+			t.Errorf("%s %s code = %q, want %q", route.method, route.path, got, httpx.CodeUnauthorized)
+		}
+	}
 }

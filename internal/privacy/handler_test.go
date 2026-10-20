@@ -76,14 +76,14 @@ func TestHandlerSetsTheSessionAccountsPolicy(t *testing.T) {
 	w := newWorld(t)
 	h := newHandler(t, w)
 	ctx := auth.WithSession(t.Context(), auth.Session{User: auth.User{ID: w.anna}})
-	body := api.DmPolicyUpdate{DmPolicy: api.Nobody}
+	body := api.DmPolicyUpdate{DmPolicy: api.DmPolicyNobody}
 
 	response, err := h.SetDmPolicy(ctx, api.SetDmPolicyRequestObject{Body: &body})
 	if err != nil {
 		t.Fatalf("SetDmPolicy: %v", err)
 	}
 	setting, ok := response.(api.SetDmPolicy200JSONResponse)
-	if !ok || setting.DmPolicy != api.Nobody {
+	if !ok || setting.DmPolicy != api.DmPolicyNobody {
 		t.Fatalf("response = %#v, want nobody", response)
 	}
 
@@ -91,7 +91,50 @@ func TestHandlerSetsTheSessionAccountsPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDmPolicy: %v", err)
 	}
-	if current, ok := got.(api.GetDmPolicy200JSONResponse); !ok || current.DmPolicy != api.Nobody {
+	if current, ok := got.(api.GetDmPolicy200JSONResponse); !ok || current.DmPolicy != api.DmPolicyNobody {
 		t.Errorf("policy = %#v, want nobody", got)
+	}
+}
+
+// The friendship request setting has its own endpoint next to the dm policy:
+// they answer different questions, so one PUT cannot silently clear the other.
+func TestHandlerSetsTheFriendRequestPolicy(t *testing.T) {
+	w := newWorld(t)
+	h := newHandler(t, w)
+	ctx := auth.WithSession(t.Context(), auth.Session{User: auth.User{ID: w.anna}})
+
+	got, err := h.GetFriendRequestPolicy(ctx, api.GetFriendRequestPolicyRequestObject{})
+	if err != nil {
+		t.Fatalf("GetFriendRequestPolicy: %v", err)
+	}
+	setting, ok := got.(api.GetFriendRequestPolicy200JSONResponse)
+	if !ok || setting.FriendRequestPolicy != api.FriendshipPolicyShared {
+		t.Fatalf("default setting = %#v, want shared", got)
+	}
+
+	body := api.FriendRequestPolicyUpdate{FriendRequestPolicy: api.FriendshipPolicyAll}
+	response, err := h.SetFriendRequestPolicy(ctx, api.SetFriendRequestPolicyRequestObject{Body: &body})
+	if err != nil {
+		t.Fatalf("SetFriendRequestPolicy: %v", err)
+	}
+	if setting, ok := response.(api.SetFriendRequestPolicy200JSONResponse); !ok || setting.FriendRequestPolicy != api.FriendshipPolicyAll {
+		t.Fatalf("response = %#v, want all", response)
+	}
+
+	invalid := api.FriendRequestPolicyUpdate{FriendRequestPolicy: api.FriendshipPolicy("everyone")}
+	response, err = h.SetFriendRequestPolicy(ctx, api.SetFriendRequestPolicyRequestObject{Body: &invalid})
+	if err != nil {
+		t.Fatalf("SetFriendRequestPolicy: %v", err)
+	}
+	if _, ok := response.(api.SetFriendRequestPolicy400JSONResponse); !ok {
+		t.Errorf("response = %T, want 400", response)
+	}
+
+	withoutSession, err := h.GetFriendRequestPolicy(t.Context(), api.GetFriendRequestPolicyRequestObject{})
+	if err != nil {
+		t.Fatalf("GetFriendRequestPolicy without a session: %v", err)
+	}
+	if _, ok := withoutSession.(api.GetFriendRequestPolicy401JSONResponse); !ok {
+		t.Errorf("response = %T, want 401", withoutSession)
 	}
 }
