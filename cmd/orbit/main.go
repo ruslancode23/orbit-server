@@ -27,6 +27,9 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/objectstore"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
+	"github.com/ruslancode23/orbit-server/internal/presence"
+	"github.com/ruslancode23/orbit-server/internal/privacy"
+	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -68,7 +71,14 @@ func run() error {
 	})
 	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
 
-	conversationService := conversations.NewService(conversations.NewPostgresStore(pool), cfg.MaxGroupMembers)
+	// Who may write to whom: the block list, the dm policy and the guest rule.
+	privacyService := privacy.NewService(privacy.NewPostgresStore(queries))
+	// New conversations and the first message of a dialogue share one bucket
+	// per account; opening a dialogue and its opener are one action to guard.
+	limiter := ratelimit.New(cfg.NewConversationLimit)
+
+	conversationService := conversations.NewService(conversations.NewPostgresStore(pool), cfg.MaxGroupMembers, privacyService)
+	conversationService.SetLimiter(limiter)
 	// A new dialogue is announced on each participant's own stream.
 	conversationService.SetPublisher(hub)
 	// A conversation is a channel without a server, so the channels module asks
@@ -82,6 +92,9 @@ func run() error {
 	messageService.SetFiles(files.NewForMessages(fileService))
 	// Messages in a conversation go to its participants, not to a server.
 	messageService.SetConversations(conversationService)
+	// History and live group events hide the authors the reader blocked.
+	messageService.SetPrivacy(privacyService)
+	messageService.SetLimiter(limiter)
 
 	// Secret chats: public keys and ciphertext only. The server never has the
 	// key to open an envelope.
@@ -92,6 +105,14 @@ func run() error {
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
 
 	workspaceHandler := servers.NewHandler(workspaces, log)
+
+	// Who is online in text. Like voice presence it lives in this process: a
+	// restart costs one reconnect, and the clients announce themselves again.
+	userPresence := presence.NewService(presence.NewMemoryStore(), workspaces, hub, log)
+	workspaceHandler.SetPresence(userPresence)
+	gatewayHandler := gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log)
+	gatewayHandler.SetPresence(userPresence)
+
 	var voiceWebhook http.Handler
 	var presence *voice.Presence
 	roomClient, err := voice.NewRooms(cfg.LiveKit.URL, cfg.LiveKit.APIKey, cfg.LiveKit.APISecret)
@@ -113,13 +134,14 @@ func run() error {
 		Files:          files.NewHandler(fileService, log),
 		Conversations:  conversations.NewHandler(conversationService, log),
 		Secrets:        secrets.NewHandler(secretService, log),
+		Privacy:        privacy.NewHandler(privacyService, log),
 		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
 		MaxIconBytes:   cfg.Storage.MaxIconBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,
 		Workspaces: workspaceHandler,
-		Gateway:    gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log),
+		Gateway:    gatewayHandler,
 		Channels:   channels.NewHandler(channelService, log),
 		Messages: messages.NewHandler(
 			messageService, log),
@@ -136,6 +158,9 @@ func run() error {
 	if presence != nil {
 		go presence.Run(ctx)
 	}
+	// Statuses are published from this loop: the debounce and the offline grace
+	// need a clock that is not a request.
+	go userPresence.Run(ctx)
 
 	router, err := httpserver.NewRouter(deps)
 	if err != nil {

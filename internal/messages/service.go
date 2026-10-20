@@ -13,7 +13,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
 
 var (
@@ -30,7 +32,18 @@ var (
 	ErrInvalidReply = errors.New("messages: the message replied to is not in this channel")
 	// ErrInvalidEmoji means the reaction is empty or too long.
 	ErrInvalidEmoji = errors.New("messages: a reaction must be 1 to 32 characters")
+	// ErrRateLimited means the account started too many new dialogues lately.
+	ErrRateLimited = errors.New("messages: too many new conversations")
 )
+
+// RateLimitedError carries how long the caller should wait; the handler puts it
+// in Retry-After. It unwraps to ErrRateLimited, so errors.Is stays simple.
+type RateLimitedError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitedError) Error() string { return ErrRateLimited.Error() }
+func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }
 
 const (
 	maxContentLength = 4000
@@ -63,6 +76,10 @@ type Message struct {
 	CreatedAt   time.Time
 	EditedAt    *time.Time
 	DeletedAt   *time.Time
+	// Blocked is for the viewer only: the author is blocked by them, so the
+	// client collapses the message instead of showing it. It never leaves this
+	// server as a property of the message itself.
+	Blocked bool
 }
 
 // Attachment is a file on a message, as the messages module passes it along;
@@ -118,6 +135,9 @@ type Store interface {
 	RemoveReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error
 	// Load fills mentions and reactions of one message for this viewer.
 	Load(ctx context.Context, m Message, viewerID uuid.UUID) (Message, error)
+	// HasMessages reports whether the channel has any message yet: the first one
+	// in a new dialogue is rate-limited like opening the dialogue itself.
+	HasMessages(ctx context.Context, channelID uuid.UUID) (bool, error)
 }
 
 // ChannelAccess is the part of internal/channels this package needs.
@@ -141,6 +161,9 @@ type Publisher interface {
 // conversation message is stored and simply not announced live.
 type Conversations interface {
 	MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
+	// Kind tells a pair from a group: a block freezes the first and only marks
+	// the author in the second.
+	Kind(ctx context.Context, channelID uuid.UUID) (conversations.Kind, error)
 }
 
 // Files binds uploaded files to the message that names them and loads the
@@ -159,6 +182,16 @@ type Members interface {
 	IsMember(ctx context.Context, workspaceID, userID uuid.UUID) (bool, error)
 }
 
+// Privacy decides whom a reader blocked. internal/privacy owns the rules; this
+// package only asks, and a nil Privacy leaves every message unmarked.
+type Privacy interface {
+	// BlockedEitherWay reports a block in either direction: a direct dialogue
+	// with such a pair accepts no new messages from either side.
+	BlockedEitherWay(ctx context.Context, a, b uuid.UUID) (bool, error)
+	// BlockedIDs is whom this reader blocked, as a set.
+	BlockedIDs(ctx context.Context, userID uuid.UUID) (map[uuid.UUID]bool, error)
+}
+
 type Service struct {
 	store    Store
 	channels ChannelAccess
@@ -169,6 +202,10 @@ type Service struct {
 	publisher Publisher
 	// conversations is optional; see Conversations.
 	conversations Conversations
+	// privacy is optional: without it blocked authors stay visible.
+	privacy Privacy
+	// limiter caps the first message of a new dialogue; nil means no cap.
+	limiter *ratelimit.Limiter
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -183,6 +220,13 @@ func (s *Service) SetFiles(f Files) { s.files = f }
 // SetConversations wires the conversations module in after construction: a
 // message in a conversation is published to its people, not to a server.
 func (s *Service) SetConversations(c Conversations) { s.conversations = c }
+
+// SetPrivacy wires the blocking rules in after construction: history and live
+// group events mark the authors the reader blocked.
+func (s *Service) SetPrivacy(p Privacy) { s.privacy = p }
+
+// SetLimiter wires the per-account bucket for the first message of a dialogue.
+func (s *Service) SetLimiter(limiter *ratelimit.Limiter) { s.limiter = limiter }
 
 // withAttachments fills in the files of one message.
 func (s *Service) withAttachments(ctx context.Context, m Message) (Message, error) {
@@ -231,7 +275,20 @@ func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afte
 	case limit > maxPageSize:
 		limit = maxPageSize
 	}
-	return s.store.Since(ctx, channelID, afterSeq, limit, callerID)
+	list, err := s.store.Since(ctx, channelID, afterSeq, limit, callerID)
+	if err != nil {
+		return nil, err
+	}
+	if view.Channel.WorkspaceID == uuid.Nil {
+		if s.inGroup(ctx, channelID) {
+			s.markBlocked(ctx, callerID, list)
+		}
+	} else {
+		// A server channel keeps the message for everyone; only its client-side
+		// view can collapse it, and the history endpoint is that view.
+		s.markBlocked(ctx, callerID, list)
+	}
+	return list, nil
 }
 
 // ChannelOf is which channel a message belongs to. internal/files asks before
@@ -278,6 +335,8 @@ func (s *Service) publish(ctx context.Context, kind events.Kind, workspaceID uui
 		Payload:     APIMessage(m),
 	}
 	if workspaceID != uuid.Nil {
+		// A server channel has one stream for everyone, so a per-reader mark
+		// cannot travel here; the client sees it when it loads the history.
 		s.publisher.Publish(event)
 		return
 	}
@@ -289,9 +348,97 @@ func (s *Service) publish(ctx context.Context, kind events.Kind, workspaceID uui
 		// The message is stored; a failed fan-out must not fail the send.
 		return
 	}
+	mark := s.inGroup(ctx, m.ChannelID)
 	for _, memberID := range members {
-		s.publisher.PublishToUser(memberID, event)
+		personal := event
+		// A group has its own stream per participant, so the block mark can be
+		// personal. A direct dialogue does not need it: writing there is refused.
+		if mark {
+			personal.Payload = APIMessage(s.blockedFor(ctx, memberID, m))
+		}
+		s.publisher.PublishToUser(memberID, personal)
 	}
+}
+
+// inGroup reports whether the channel is a group chat, where a blocked author
+// stays in the history. A direct dialogue never has a blocked pair writing in
+// it, and a server channel has a single stream that cannot be personal.
+func (s *Service) inGroup(ctx context.Context, channelID uuid.UUID) bool {
+	if s.privacy == nil || s.conversations == nil {
+		return false
+	}
+	kind, err := s.conversations.Kind(ctx, channelID)
+	if err != nil {
+		return false
+	}
+	return kind == conversations.KindGroup
+}
+
+// blockedFor returns the message as one viewer sees it: the author is blocked
+// by them, so the client collapses it. A failed lookup leaves the message as it
+// is: a display mark must not break the history, and the block still binds
+// where it matters.
+func (s *Service) blockedFor(ctx context.Context, viewerID uuid.UUID, m Message) Message {
+	if s.privacy == nil || m.Author == nil {
+		return m
+	}
+	blocked, err := s.privacy.BlockedIDs(ctx, viewerID)
+	if err != nil {
+		return m
+	}
+	if blocked[m.Author.ID] {
+		m.Blocked = true
+	}
+	return m
+}
+
+// markBlocked marks a page of history for its reader in one lookup.
+func (s *Service) markBlocked(ctx context.Context, viewerID uuid.UUID, list []Message) {
+	if s.privacy == nil || len(list) == 0 {
+		return
+	}
+	blocked, err := s.privacy.BlockedIDs(ctx, viewerID)
+	if err != nil || len(blocked) == 0 {
+		return
+	}
+	for i := range list {
+		if list[i].Author != nil && blocked[list[i].Author.ID] {
+			list[i].Blocked = true
+		}
+	}
+}
+
+// directBlocked reports whether the caller may not write in a direct dialogue
+// because either side blocked the other. Only a dialogue freezes this way; a
+// group keeps its history, marked for whoever blocked whom.
+func (s *Service) directBlocked(ctx context.Context, channel channels.Channel, callerID uuid.UUID) (bool, error) {
+	if s.privacy == nil || s.conversations == nil || channel.WorkspaceID != uuid.Nil {
+		return false, nil
+	}
+	kind, err := s.conversations.Kind(ctx, channel.ID)
+	if err != nil {
+		return false, fmt.Errorf("conversation kind: %w", err)
+	}
+	if kind != conversations.KindDirect {
+		return false, nil
+	}
+	members, err := s.conversations.MemberIDs(ctx, channel.ID)
+	if err != nil {
+		return false, fmt.Errorf("list conversation members: %w", err)
+	}
+	for _, memberID := range members {
+		if memberID == callerID {
+			continue
+		}
+		blocked, err := s.privacy.BlockedEitherWay(ctx, callerID, memberID)
+		if err != nil {
+			return false, fmt.Errorf("check block: %w", err)
+		}
+		if blocked {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (Message, bool, error) {
@@ -302,6 +449,16 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	// A secret chat carries ciphertext envelopes, not messages: plaintext must
 	// never be stored for it.
 	if channel.Kind == channels.KindSecret {
+		return Message{}, false, ErrNotFound
+	}
+
+	// A dialogue between two accounts where either blocked the other accepts no
+	// new messages: the refusal is the same 404 as everywhere else.
+	blocked, err := s.directBlocked(ctx, channel, callerID)
+	if err != nil {
+		return Message{}, false, err
+	}
+	if blocked {
 		return Message{}, false, ErrNotFound
 	}
 
@@ -333,6 +490,21 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	mentions, err := s.knownMembers(ctx, channel.WorkspaceID, m.Mentions)
 	if err != nil {
 		return Message{}, false, err
+	}
+
+	// The first message of a new dialogue spends the same per-account token as
+	// opening it: a new conversation and its opener are one action to guard.
+	if channel.WorkspaceID == uuid.Nil && s.limiter != nil {
+		has, err := s.store.HasMessages(ctx, channel.ID)
+		if err != nil {
+			return Message{}, false, err
+		}
+		if !has {
+			allowed, retryAfter := s.limiter.Allow(callerID)
+			if !allowed {
+				return Message{}, false, &RateLimitedError{RetryAfter: retryAfter}
+			}
+		}
 	}
 
 	created, existed, err := s.store.Create(ctx, NewMessage{
@@ -397,6 +569,15 @@ func (s *Service) History(ctx context.Context, channelID, callerID uuid.UUID, be
 	list, err = s.withAttachmentsPage(ctx, list)
 	if err != nil {
 		return Page{}, err
+	}
+	if view.Channel.WorkspaceID == uuid.Nil {
+		if s.inGroup(ctx, channelID) {
+			s.markBlocked(ctx, callerID, list)
+		}
+	} else {
+		// A server channel keeps the message for everyone; only its client-side
+		// view can collapse it, and the history endpoint is that view.
+		s.markBlocked(ctx, callerID, list)
 	}
 
 	page := Page{Messages: list}

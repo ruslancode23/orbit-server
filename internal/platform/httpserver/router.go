@@ -26,6 +26,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/privacy"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -76,6 +77,8 @@ type Deps struct {
 	Conversations *conversations.Handler
 	// Secrets serves devices, their public keys and ciphertext envelopes.
 	Secrets *secrets.Handler
+	// Privacy serves block lists and the direct message policy.
+	Privacy *privacy.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -95,7 +98,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -141,7 +144,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -185,6 +188,7 @@ type server struct {
 	files         *files.Handler
 	conversations *conversations.Handler
 	secrets       *secrets.Handler
+	privacy       *privacy.Handler
 	voice         *voice.Handler
 }
 
@@ -432,6 +436,26 @@ func (s *server) StartConversation(ctx context.Context, req api.StartConversatio
 
 func (s *server) GetConversation(ctx context.Context, req api.GetConversationRequestObject) (api.GetConversationResponseObject, error) {
 	return s.conversations.GetConversation(ctx, req)
+}
+
+func (s *server) ListUserBlocks(ctx context.Context, req api.ListUserBlocksRequestObject) (api.ListUserBlocksResponseObject, error) {
+	return s.privacy.ListUserBlocks(ctx, req)
+}
+
+func (s *server) BlockUser(ctx context.Context, req api.BlockUserRequestObject) (api.BlockUserResponseObject, error) {
+	return s.privacy.BlockUser(ctx, req)
+}
+
+func (s *server) UnblockUser(ctx context.Context, req api.UnblockUserRequestObject) (api.UnblockUserResponseObject, error) {
+	return s.privacy.UnblockUser(ctx, req)
+}
+
+func (s *server) GetDmPolicy(ctx context.Context, req api.GetDmPolicyRequestObject) (api.GetDmPolicyResponseObject, error) {
+	return s.privacy.GetDmPolicy(ctx, req)
+}
+
+func (s *server) SetDmPolicy(ctx context.Context, req api.SetDmPolicyRequestObject) (api.SetDmPolicyResponseObject, error) {
+	return s.privacy.SetDmPolicy(ctx, req)
 }
 
 func validationError(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {

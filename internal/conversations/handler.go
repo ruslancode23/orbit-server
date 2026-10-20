@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -64,8 +65,21 @@ func (h *Handler) StartConversation(ctx context.Context, req api.StartConversati
 	}
 
 	conversation, err := h.svc.Start(ctx, userID, req.Body.UserIds)
+	var limited *RateLimitedError
 	switch {
-	case errors.Is(err, ErrNoMembers), errors.Is(err, ErrUnknownMember), errors.Is(err, ErrTooManyMembers):
+	case errors.As(err, &limited):
+		seconds := int((limited.RetryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		return api.StartConversation429JSONResponse{TooManyRequestsJSONResponse: api.TooManyRequestsJSONResponse{
+			Body:    api.Error(errorBody(httpx.CodeTooManyRequests, "too many new conversations, try again later")),
+			Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
+		}}, nil
+	case errors.Is(err, ErrNotFound):
+		// No such account and "you may not talk to them" answer the same.
+		return api.StartConversation404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrNoMembers), errors.Is(err, ErrTooManyMembers):
 		return api.StartConversation400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:
 		h.log.ErrorContext(ctx, "start conversation", slog.Any("error", err))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -75,7 +76,18 @@ func (h *Handler) SendMessage(ctx context.Context, req api.SendMessageRequestObj
 		Mentions:        value(req.Body.Mentions),
 		AttachmentIDs:   value(req.Body.AttachmentIds),
 	})
+	var limited *RateLimitedError
 	switch {
+	case errors.As(err, &limited):
+		// 429 with Retry-After: the client backs off instead of retrying at once.
+		seconds := int((limited.RetryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		return api.SendMessage429JSONResponse{TooManyRequestsJSONResponse: api.TooManyRequestsJSONResponse{
+			Body:    api.Error(errorBody(httpx.CodeTooManyRequests, "too many new conversations, try again later")),
+			Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
+		}}, nil
 	case errors.Is(err, ErrNotFound):
 		return api.SendMessage404JSONResponse(api.Error(notFound())), nil
 	case errors.Is(err, ErrAttachNotAllowed):
@@ -195,6 +207,10 @@ func APIMessage(m Message) api.Message {
 	}
 	if message.Mentions == nil {
 		message.Mentions = []openapi_types.UUID{}
+	}
+	if m.Blocked {
+		blocked := true
+		message.Blocked = &blocked
 	}
 	for _, r := range m.Reactions {
 		message.Reactions = append(message.Reactions, api.Reaction{

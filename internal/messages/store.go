@@ -102,6 +102,16 @@ func (s *PostgresStore) Since(ctx context.Context, channelID uuid.UUID, afterSeq
 	return s.decorate(ctx, list, ids, viewerID)
 }
 
+// HasMessages answers whether a dialogue has any message yet: its first one
+// counts against the new-conversation limit.
+func (s *PostgresStore) HasMessages(ctx context.Context, channelID uuid.UUID) (bool, error) {
+	has, err := s.q.ChannelHasMessages(ctx, pgUUID(channelID))
+	if err != nil {
+		return false, fmt.Errorf("channel has messages: %w", err)
+	}
+	return has, nil
+}
+
 func (s *PostgresStore) Edit(ctx context.Context, id, authorID uuid.UUID, content string) (Message, error) {
 	row, err := s.q.EditMessage(ctx, db.EditMessageParams{
 		ID:       pgUUID(id),
