@@ -11,6 +11,9 @@ import (
 )
 
 type Querier interface {
+	// A pending row becomes a friendship in place, so it keeps created_at and the
+	// pair cannot end up with two rows. Only the pending row moves.
+	AcceptFriendship(ctx context.Context, arg AcceptFriendshipParams) (AcceptFriendshipRow, error)
 	AddChannelMember(ctx context.Context, arg AddChannelMemberParams) error
 	AddMessageMention(ctx context.Context, arg AddMessageMentionParams) error
 	// One-time keys are claimed, never listed: a key is handed out once, and the
@@ -20,6 +23,8 @@ type Querier interface {
 	// A secret chat is a pair of devices; this table is the binding.
 	AddSecretChatDevice(ctx context.Context, arg AddSecretChatDeviceParams) error
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
+	// privacy asks this before it lets a friendship open a dialogue.
+	AreFriends(ctx context.Context, arg AreFriendsParams) (bool, error)
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
@@ -32,7 +37,13 @@ type Querier interface {
 	CountChannelMembers(ctx context.Context, channelID pgtype.UUID) (int64, error)
 	// The counts of one channel, for the answer after the cursor moved.
 	CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error)
+	// The friend limit counts accepted rows only; a pending request does not take a
+	// place in the list yet.
+	CountFriends(ctx context.Context, userLow pgtype.UUID) (int64, error)
 	CountOneTimeKeys(ctx context.Context, deviceID pgtype.UUID) (int64, error)
+	// The pending limit counts only what this account sent; incoming requests are
+	// the other side's limit to keep.
+	CountOutgoingPendingRequests(ctx context.Context, requestedBy pgtype.UUID) (int64, error)
 	CountUserDevices(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// A server always keeps exactly one owner; the count guards the last one.
 	CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
@@ -47,6 +58,10 @@ type Querier interface {
 	// Devices are a person's browsers and apps. Only public keys live here: the
 	// private halves never leave the device, so the server cannot read a chat.
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) (Device, error)
+	// Sending twice is harmless: the pair already has its row and the request stays
+	// as it was. The unique primary key is what decides a race, not a read first.
+	// No row comes back when the insert lost that race.
+	CreateFriendshipRequest(ctx context.Context, arg CreateFriendshipRequestParams) (pgtype.Timestamptz, error)
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (Invite, error)
 	// A resend with the same client id returns the message already stored
 	// instead of creating a second one (FR-04).
@@ -58,6 +73,7 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
+	DeleteAcceptedFriendship(ctx context.Context, arg DeleteAcceptedFriendshipParams) (int64, error)
 	DeleteAttachment(ctx context.Context, id pgtype.UUID) error
 	DeleteChannel(ctx context.Context, id pgtype.UUID) error
 	DeleteDeviceEnvelopes(ctx context.Context, senderDeviceID pgtype.UUID) error
@@ -65,14 +81,23 @@ type Querier interface {
 	DeleteExpiredAttachment(ctx context.Context, id pgtype.UUID) error
 	DeleteExpiredSecretEnvelopes(ctx context.Context) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
+	// Blocking cancels whatever the pair had, pending or accepted. The caller reads
+	// the row first so it can tell the two sides what disappeared and why.
+	DeleteFriendship(ctx context.Context, arg DeleteFriendshipParams) (int64, error)
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
+	DeletePendingFriendship(ctx context.Context, arg DeletePendingFriendshipParams) (int64, error)
 	DeleteSecretChatChannel(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretEnvelope(ctx context.Context, id pgtype.UUID) error
 	DeleteWorkspace(ctx context.Context, id pgtype.UUID) error
 	DetachOrphanedAttachment(ctx context.Context, id pgtype.UUID) error
 	DeviceSecretChatIDs(ctx context.Context, deviceID pgtype.UUID) ([]pgtype.UUID, error)
 	EditMessage(ctx context.Context, arg EditMessageParams) (Message, error)
+	// Presence asks who may see an account's status.
+	FriendsOf(ctx context.Context, userLow pgtype.UUID) ([]pgtype.UUID, error)
+	// The one row of a pair, with both nicknames: a hit is either a pending request
+	// or a friendship, and the caller decides which way it may move.
+	FriendshipPair(ctx context.Context, arg FriendshipPairParams) (FriendshipPairRow, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
 	GetDMPolicy(ctx context.Context, id pgtype.UUID) (string, error)
@@ -136,6 +161,10 @@ type Querier interface {
 	// Files of secret chats carry their own deadline: the server must forget them
 	// when the message expires, not only the sender's screen.
 	ListExpiredAttachments(ctx context.Context, limit int32) ([]Attachment, error)
+	ListFriends(ctx context.Context, userLow pgtype.UUID) ([]ListFriendsRow, error)
+	// Incoming requests: the other side sent it. The pair is normalized, so the
+	// account may sit in either column; the CASE picks the other person.
+	ListIncomingFriendRequests(ctx context.Context, userLow pgtype.UUID) ([]ListIncomingFriendRequestsRow, error)
 	// Which of these ids are real accounts (task 2.10 checks before it opens a chat).
 	ListKnownUsers(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
 	ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.UUID) ([]Attachment, error)
@@ -144,6 +173,8 @@ type Querier interface {
 	ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error)
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)
+	// Outgoing requests: this account is the one that asked.
+	ListOutgoingFriendRequests(ctx context.Context, userLow pgtype.UUID) ([]ListOutgoingFriendRequestsRow, error)
 	ListPendingSecretEnvelopes(ctx context.Context, arg ListPendingSecretEnvelopesParams) ([]SecretEnvelope, error)
 	ListSecretChatDevices(ctx context.Context, channelID pgtype.UUID) ([]SecretChatDevice, error)
 	// The conversations of one account, most recently used first, so the list
@@ -169,6 +200,7 @@ type Querier interface {
 	// Reordering sends the whole list: position is the index of the channel in it.
 	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)
 	SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error
+	SetFriendRequestPolicy(ctx context.Context, arg SetFriendRequestPolicyParams) error
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
 	// Swaps the icon and reports the key it replaced, so the caller can drop the old
 	// object. The row lock keeps two uploads at once from losing track of one.
@@ -183,6 +215,14 @@ type Querier interface {
 	// description is touched only when set_description is true (NULL then clears it).
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 	UseInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
+	UserByID(ctx context.Context, id pgtype.UUID) (UserByIDRow, error)
+	// Friendships (SCRUM-98). A pair has at most one row, stored with the smaller
+	// account id first, so every lookup is one equality on the primary key. The
+	// friends module owns this table; privacy asks it through a Go interface when a
+	// block has to withdraw a request.
+	// A request is sent by exact nickname, compared without case. The same rule as
+	// registration's unique index, so "Anna" and "anna" name one account.
+	UserByNickname(ctx context.Context, nickname string) (UserByNicknameRow, error)
 	// Blocking an id that names no account is a 404, not a foreign key error.
 	UserExists(ctx context.Context, id pgtype.UUID) (bool, error)
 }

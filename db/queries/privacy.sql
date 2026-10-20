@@ -5,7 +5,9 @@
 -- Both accounts of a dialogue in one query: a missing row means an unknown
 -- account, which the caller treats the same as a refusal.
 -- name: GetUserPrivacy :many
-SELECT id, dm_policy, is_guest FROM users WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+SELECT id, dm_policy, friend_request_policy, is_guest
+FROM users
+WHERE id = ANY(sqlc.arg(ids)::uuid[]);
 
 -- The only proof of acquaintance the product has so far: two accounts on one
 -- server. One query, so starting a dialogue does not walk a list of servers.
@@ -57,3 +59,6 @@ SELECT dm_policy FROM users WHERE id = $1;
 
 -- name: SetDMPolicy :exec
 UPDATE users SET dm_policy = $2, updated_at = now() WHERE id = $1;
+
+-- name: SetFriendRequestPolicy :exec
+UPDATE users SET friend_request_policy = $2, updated_at = now() WHERE id = $1;

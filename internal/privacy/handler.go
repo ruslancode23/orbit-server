@@ -101,6 +101,47 @@ func (h *Handler) GetDmPolicy(ctx context.Context, _ api.GetDmPolicyRequestObjec
 	return api.GetDmPolicy200JSONResponse(api.DmPolicySetting{DmPolicy: api.DmPolicy(policy)}), nil
 }
 
+func (h *Handler) GetFriendRequestPolicy(ctx context.Context, _ api.GetFriendRequestPolicyRequestObject) (api.GetFriendRequestPolicyResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.GetFriendRequestPolicy401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+
+	policy, err := h.svc.FriendRequestPolicy(ctx, userID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "get friend request policy", slog.Any("error", err))
+		return api.GetFriendRequestPolicy500JSONResponse(internal("could not read the friendship request policy")), nil
+	}
+	return api.GetFriendRequestPolicy200JSONResponse{
+		FriendRequestPolicy: api.FriendshipPolicy(policy),
+	}, nil
+}
+
+func (h *Handler) SetFriendRequestPolicy(ctx context.Context, req api.SetFriendRequestPolicyRequestObject) (api.SetFriendRequestPolicyResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.SetFriendRequestPolicy401JSONResponse(api.Error(unauthorized())), nil
+	}
+	if req.Body == nil {
+		return api.SetFriendRequestPolicy400JSONResponse{ErrorJSONResponse: badRequest("request body is required")}, nil
+	}
+
+	policy, err := ParseFriendRequestPolicy(string(req.Body.FriendRequestPolicy))
+	if err != nil {
+		return api.SetFriendRequestPolicy400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
+	}
+	if err := h.svc.SetFriendRequestPolicy(ctx, userID, policy); err != nil {
+		if errors.Is(err, ErrInvalidFriendRequestPolicy) {
+			return api.SetFriendRequestPolicy400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
+		}
+		h.log.ErrorContext(ctx, "set friend request policy", slog.Any("error", err))
+		return api.SetFriendRequestPolicy500JSONResponse(internal("could not change the friendship request policy")), nil
+	}
+	return api.SetFriendRequestPolicy200JSONResponse{
+		FriendRequestPolicy: api.FriendshipPolicy(policy),
+	}, nil
+}
+
 func (h *Handler) SetDmPolicy(ctx context.Context, req api.SetDmPolicyRequestObject) (api.SetDmPolicyResponseObject, error) {
 	userID, ok := caller(ctx)
 	if !ok {

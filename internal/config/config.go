@@ -22,8 +22,17 @@ type Config struct {
 	// NewConversationLimit caps how many new conversations one account may open
 	// per minute. Zero turns the guard off.
 	NewConversationLimit int
-	LiveKit              LiveKit
-	Storage              Storage
+	// MaxFriends caps accepted friendships per account. A zero value would make
+	// the list unlimited, but Load rejects that: production always has a cap.
+	MaxFriends int
+	// FriendRequestDailyLimit caps friendship requests per account per day;
+	// zero turns the guard off.
+	FriendRequestDailyLimit int
+	// FriendRequestPendingLimit caps outgoing requests that are still waiting
+	// for an answer; zero turns the guard off.
+	FriendRequestPendingLimit int
+	LiveKit                   LiveKit
+	Storage                   Storage
 }
 
 // Storage is the object store for attachments (SeaweedFS locally, S3 elsewhere).
@@ -87,6 +96,24 @@ func Load() (Config, error) {
 			os.Getenv("ORBIT_NEW_CONVERSATION_LIMIT")))
 	}
 
+	maxFriends, err := strconv.Atoi(getenv("ORBIT_MAX_FRIENDS", "1000"))
+	if err != nil || maxFriends <= 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_MAX_FRIENDS must be a positive number, got %q",
+			os.Getenv("ORBIT_MAX_FRIENDS")))
+	}
+
+	friendRequestDaily, err := strconv.Atoi(getenv("ORBIT_FRIEND_REQUEST_DAILY_LIMIT", "20"))
+	if err != nil || friendRequestDaily < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_FRIEND_REQUEST_DAILY_LIMIT must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_FRIEND_REQUEST_DAILY_LIMIT")))
+	}
+
+	friendRequestPending, err := strconv.Atoi(getenv("ORBIT_FRIEND_REQUEST_PENDING_LIMIT", "100"))
+	if err != nil || friendRequestPending < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_FRIEND_REQUEST_PENDING_LIMIT must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_FRIEND_REQUEST_PENDING_LIMIT")))
+	}
+
 	maxUpload, err := strconv.ParseInt(getenv("ORBIT_MAX_UPLOAD_BYTES", "26214400"), 10, 64)
 	if err != nil || maxUpload <= 0 {
 		errs = append(errs, fmt.Errorf("ORBIT_MAX_UPLOAD_BYTES must be a positive number of bytes, got %q",
@@ -115,14 +142,17 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Env:                  getenv("ORBIT_ENV", "production"),
-		HTTPAddr:             getenv("ORBIT_HTTP_ADDR", ":8080"),
-		ShutdownTimeout:      shutdownTimeout,
-		DatabaseURL:          required("ORBIT_DATABASE_URL"),
-		CORSOrigins:          splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
-		SessionTTL:           sessionTTL,
-		MaxGroupMembers:      maxGroup,
-		NewConversationLimit: newConversations,
+		Env:                       getenv("ORBIT_ENV", "production"),
+		HTTPAddr:                  getenv("ORBIT_HTTP_ADDR", ":8080"),
+		ShutdownTimeout:           shutdownTimeout,
+		DatabaseURL:               required("ORBIT_DATABASE_URL"),
+		CORSOrigins:               splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
+		SessionTTL:                sessionTTL,
+		MaxGroupMembers:           maxGroup,
+		NewConversationLimit:      newConversations,
+		MaxFriends:                maxFriends,
+		FriendRequestDailyLimit:   friendRequestDaily,
+		FriendRequestPendingLimit: friendRequestPending,
 		Storage: Storage{
 			Endpoint:       required("ORBIT_S3_ENDPOINT"),
 			Bucket:         required("ORBIT_S3_BUCKET"),

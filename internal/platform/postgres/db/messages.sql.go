@@ -179,7 +179,7 @@ func (q *Queries) EditMessage(ctx context.Context, arg EditMessageParams) (Messa
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, users.friend_request_policy
 FROM messages
     LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.id = $1
@@ -212,12 +212,13 @@ func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (GetMessageRow
 		&i.User.CreatedAt,
 		&i.User.UpdatedAt,
 		&i.User.DmPolicy,
+		&i.User.FriendRequestPolicy,
 	)
 	return i, err
 }
 
 const listChannelMessages = `-- name: ListChannelMessages :many
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, users.friend_request_policy
 FROM messages
     LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1
@@ -267,6 +268,7 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
 			&i.User.DmPolicy,
+			&i.User.FriendRequestPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -279,7 +281,7 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 }
 
 const listChannelMessagesAfter = `-- name: ListChannelMessagesAfter :many
-SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, users.id, users.nickname, users.email, users.password_hash, users.is_guest, users.created_at, users.updated_at, users.dm_policy, users.friend_request_policy
 FROM messages
     LEFT JOIN users ON users.id = messages.author_id
 WHERE messages.channel_id = $1 AND messages.seq > $3
@@ -327,6 +329,7 @@ func (q *Queries) ListChannelMessagesAfter(ctx context.Context, arg ListChannelM
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
 			&i.User.DmPolicy,
+			&i.User.FriendRequestPolicy,
 		); err != nil {
 			return nil, err
 		}

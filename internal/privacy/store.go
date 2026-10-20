@@ -29,8 +29,9 @@ func (s *PostgresStore) UserPrivacy(ctx context.Context, ids []uuid.UUID) (map[u
 	out := make(map[uuid.UUID]Account, len(rows))
 	for _, row := range rows {
 		out[uuid.UUID(row.ID.Bytes)] = Account{
-			Policy:  Policy(row.DmPolicy),
-			IsGuest: row.IsGuest,
+			Policy:              Policy(row.DmPolicy),
+			FriendRequestPolicy: FriendRequestPolicy(row.FriendRequestPolicy),
+			IsGuest:             row.IsGuest,
 		}
 	}
 	return out, nil
@@ -123,6 +124,16 @@ func (s *PostgresStore) Policy(ctx context.Context, userID uuid.UUID) (Policy, e
 		return "", fmt.Errorf("get dm policy: %w", err)
 	}
 	return Policy(policy), nil
+}
+
+func (s *PostgresStore) SetFriendRequestPolicy(ctx context.Context, userID uuid.UUID, policy FriendRequestPolicy) error {
+	if err := s.q.SetFriendRequestPolicy(ctx, db.SetFriendRequestPolicyParams{
+		ID:                  pgUUID(userID),
+		FriendRequestPolicy: string(policy),
+	}); err != nil {
+		return fmt.Errorf("set friend request policy: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) SetPolicy(ctx context.Context, userID uuid.UUID, policy Policy) error {

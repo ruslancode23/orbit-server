@@ -81,3 +81,36 @@ func TestIdleBucketsAreForgotten(t *testing.T) {
 		t.Error("an idle bucket survived the sweep")
 	}
 }
+
+// A daily bucket spends its whole budget at once and then refills at a day's
+// pace; the wait is what Retry-After reports.
+func TestDailyBucket(t *testing.T) {
+	limiter := NewDaily(2)
+	clock := time.Now()
+	limiter.now = func() time.Time { return clock }
+	anna := uuid.New()
+
+	for range 2 {
+		if allowed, _ := limiter.Allow(anna); !allowed {
+			t.Fatal("a call inside the daily budget was refused")
+		}
+	}
+	allowed, retryAfter := limiter.Allow(anna)
+	if allowed {
+		t.Fatal("the daily budget was not enforced")
+	}
+	if retryAfter != 12*time.Hour {
+		t.Errorf("RetryAfter = %v, want 12h", retryAfter)
+	}
+
+	clock = clock.Add(12 * time.Hour)
+	if allowed, _ := limiter.Allow(anna); !allowed {
+		t.Error("no token after half the day with a two-per-day budget")
+	}
+}
+
+func TestZeroDailyLimitDisablesTheGuard(t *testing.T) {
+	if limiter := NewDaily(0); limiter != nil {
+		t.Fatalf("NewDaily(0) = %v, want nil", limiter)
+	}
+}

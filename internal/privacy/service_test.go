@@ -31,7 +31,8 @@ func newFakeStore() *fakeStore {
 }
 
 func (s *fakeStore) add(id uuid.UUID, policy Policy, guest bool) {
-	s.accounts[id] = Account{Policy: policy, IsGuest: guest}
+	// The default friend request policy matches the column default.
+	s.accounts[id] = Account{Policy: policy, FriendRequestPolicy: FriendRequestsShared, IsGuest: guest}
 	s.nicknames[id] = "user-" + id.String()[:8]
 }
 
@@ -118,21 +119,66 @@ func (s *fakeStore) SetPolicy(_ context.Context, userID uuid.UUID, policy Policy
 	return nil
 }
 
+func (s *fakeStore) SetFriendRequestPolicy(_ context.Context, userID uuid.UUID, policy FriendRequestPolicy) error {
+	account, ok := s.accounts[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	account.FriendRequestPolicy = policy
+	s.accounts[userID] = account
+	return nil
+}
+
+// fakeFriendship is the narrow interface the friends module implements.
+type fakeFriendship struct {
+	pairs map[string]bool
+}
+
+func newFakeFriendship() *fakeFriendship {
+	return &fakeFriendship{pairs: map[string]bool{}}
+}
+
+func (f *fakeFriendship) add(a, b uuid.UUID) {
+	f.pairs[a.String()+":"+b.String()] = true
+}
+
+func (f *fakeFriendship) AreFriends(_ context.Context, a, b uuid.UUID) (bool, error) {
+	return f.pairs[a.String()+":"+b.String()] || f.pairs[b.String()+":"+a.String()], nil
+}
+
+// fakeBlockCleanup records what privacy asked the friends module to withdraw.
+type fakeBlockCleanup struct {
+	pairs [][2]uuid.UUID
+}
+
+func (f *fakeBlockCleanup) CutOnBlock(_ context.Context, a, b uuid.UUID) error {
+	f.pairs = append(f.pairs, [2]uuid.UUID{a, b})
+	return nil
+}
+
 type world struct {
-	svc   *Service
-	store *fakeStore
-	anna  uuid.UUID
-	bob   uuid.UUID
-	vika  uuid.UUID
+	svc        *Service
+	store      *fakeStore
+	friendship *fakeFriendship
+	anna       uuid.UUID
+	bob        uuid.UUID
+	vika       uuid.UUID
 }
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	w := &world{store: newFakeStore(), anna: uuid.New(), bob: uuid.New(), vika: uuid.New()}
+	w := &world{
+		store:      newFakeStore(),
+		friendship: newFakeFriendship(),
+		anna:       uuid.New(),
+		bob:        uuid.New(),
+		vika:       uuid.New(),
+	}
 	for _, id := range []uuid.UUID{w.anna, w.bob, w.vika} {
 		w.store.add(id, PolicyShared, false)
 	}
 	w.svc = NewService(w.store)
+	w.svc.SetFriendship(w.friendship)
 	return w
 }
 
@@ -163,10 +209,18 @@ func TestCanStartDirect(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "friends behaves as nobody until SCRUM-98",
+			name: "a friend opens the door under friends",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyFriends, FriendRequestPolicy: FriendRequestsShared}
+				w.friendship.add(w.anna, w.bob)
+			},
+			want: true,
+		},
+		{
+			name: "a stranger gets no door under friends",
 			setup: func(w *world) {
 				w.store.share(w.anna, w.bob)
-				w.store.accounts[w.bob] = Account{Policy: PolicyFriends}
+				w.store.accounts[w.bob] = Account{Policy: PolicyFriends, FriendRequestPolicy: FriendRequestsShared}
 			},
 			want: false,
 		},
@@ -414,5 +468,190 @@ func TestParsePolicy(t *testing.T) {
 	}
 	if _, err := ParsePolicy("everyone"); !errors.Is(err, ErrInvalidPolicy) {
 		t.Errorf("ParsePolicy(everyone): err = %v, want ErrInvalidPolicy", err)
+	}
+}
+
+// The friend request setting has three values, and a shared server is the proof
+// of acquaintance behind the default one. A block outranks every value, and a
+// guest neither sends nor receives.
+func TestCanRequestFriendship(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*world)
+		want  bool
+	}{
+		{
+			name: "all lets a stranger ask",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll}
+			},
+			want: true,
+		},
+		{
+			name: "shared lets a person on a common server ask",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsShared}
+				w.store.share(w.anna, w.bob)
+			},
+			want: true,
+		},
+		{
+			name: "shared keeps a stranger out",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsShared}
+			},
+			want: false,
+		},
+		{
+			name: "nobody keeps everyone out",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsNobody}
+				w.store.share(w.anna, w.bob)
+			},
+			want: false,
+		},
+		{
+			name: "the recipient blocked the caller",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll}
+				w.store.block(w.bob, w.anna)
+			},
+			want: false,
+		},
+		{
+			name: "the caller blocked the recipient",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll}
+				w.store.block(w.anna, w.bob)
+			},
+			want: false,
+		},
+		{
+			name: "a guest may not send",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll}
+				w.store.accounts[w.anna] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll, IsGuest: true}
+			},
+			want: false,
+		},
+		{
+			name: "a guest may not receive",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll, IsGuest: true}
+			},
+			want: false,
+		},
+		{
+			name: "the account does not exist",
+			setup: func(w *world) {
+				w.store.accounts[w.bob] = Account{Policy: PolicyShared, FriendRequestPolicy: FriendRequestsAll}
+			},
+			want: false,
+			// bob is replaced below by an id the store does not know.
+		},
+		{
+			name:  "asking yourself",
+			setup: func(*world) {},
+			want:  false,
+			// anna asks anna below.
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			tt.setup(w)
+			to := w.bob
+			switch tt.name {
+			case "the account does not exist":
+				to = uuid.New()
+			case "asking yourself":
+				to = w.anna
+			}
+			allowed, err := w.svc.CanRequestFriendship(t.Context(), w.anna, to)
+			if err != nil {
+				t.Fatalf("CanRequestFriendship: %v", err)
+			}
+			if allowed != tt.want {
+				t.Errorf("allowed = %v, want %v", allowed, tt.want)
+			}
+		})
+	}
+}
+
+func TestFriendRequestPolicySetting(t *testing.T) {
+	w := newWorld(t)
+
+	policy, err := w.svc.FriendRequestPolicy(t.Context(), w.anna)
+	if err != nil {
+		t.Fatalf("FriendRequestPolicy: %v", err)
+	}
+	if policy != FriendRequestsShared {
+		t.Errorf("default policy = %q, want %q", policy, FriendRequestsShared)
+	}
+
+	if err := w.svc.SetFriendRequestPolicy(t.Context(), w.anna, FriendRequestsNobody); err != nil {
+		t.Fatalf("SetFriendRequestPolicy: %v", err)
+	}
+	policy, err = w.svc.FriendRequestPolicy(t.Context(), w.anna)
+	if err != nil {
+		t.Fatalf("FriendRequestPolicy: %v", err)
+	}
+	if policy != FriendRequestsNobody {
+		t.Errorf("policy = %q, want %q", policy, FriendRequestsNobody)
+	}
+
+	if err := w.svc.SetFriendRequestPolicy(t.Context(), w.anna, FriendRequestPolicy("everyone")); !errors.Is(err, ErrInvalidFriendRequestPolicy) {
+		t.Errorf("unknown policy: err = %v, want ErrInvalidFriendRequestPolicy", err)
+	}
+	if _, err := w.svc.FriendRequestPolicy(t.Context(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("policy of an unknown account: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestParseFriendRequestPolicy(t *testing.T) {
+	for _, value := range []string{"all", "shared", "nobody"} {
+		if _, err := ParseFriendRequestPolicy(value); err != nil {
+			t.Errorf("ParseFriendRequestPolicy(%q): %v", value, err)
+		}
+	}
+	if _, err := ParseFriendRequestPolicy("everyone"); !errors.Is(err, ErrInvalidFriendRequestPolicy) {
+		t.Errorf("ParseFriendRequestPolicy(everyone): err = %v, want ErrInvalidFriendRequestPolicy", err)
+	}
+}
+
+// A block is final for a friendship too: privacy tells the friends module to
+// withdraw the pair after the block is stored.
+func TestBlockAsksFriendsToWithdrawThePair(t *testing.T) {
+	w := newWorld(t)
+	cleanup := &fakeBlockCleanup{}
+	w.svc.SetBlockCleanup(cleanup)
+
+	if err := w.svc.Block(t.Context(), w.anna, w.bob); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+	if len(cleanup.pairs) != 1 || cleanup.pairs[0] != [2]uuid.UUID{w.anna, w.bob} {
+		t.Errorf("cleanup = %v, want one call for anna and bob", cleanup.pairs)
+	}
+}
+
+func TestIsGuest(t *testing.T) {
+	w := newWorld(t)
+	guest := uuid.New()
+	w.store.add(guest, PolicyShared, true)
+
+	isGuest, err := w.svc.IsGuest(t.Context(), guest)
+	if err != nil {
+		t.Fatalf("IsGuest: %v", err)
+	}
+	if !isGuest {
+		t.Error("a guest is not reported as one")
+	}
+	isGuest, err = w.svc.IsGuest(t.Context(), w.anna)
+	if err != nil {
+		t.Fatalf("IsGuest: %v", err)
+	}
+	if isGuest {
+		t.Error("a regular account is reported as a guest")
 	}
 }
