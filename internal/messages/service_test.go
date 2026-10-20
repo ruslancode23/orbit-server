@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
@@ -226,10 +227,18 @@ func (r *recorder) PublishToUser(userID uuid.UUID, event events.Event) {
 // to their own streams instead of a server's.
 type fakeConversations struct {
 	members map[uuid.UUID][]uuid.UUID
+	kinds   map[uuid.UUID]conversations.Kind
 }
 
 func (c *fakeConversations) MemberIDs(_ context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
 	return c.members[channelID], nil
+}
+
+func (c *fakeConversations) Kind(_ context.Context, channelID uuid.UUID) (conversations.Kind, error) {
+	if kind, ok := c.kinds[channelID]; ok {
+		return kind, nil
+	}
+	return conversations.KindDirect, nil
 }
 
 func (r *recorder) kinds() []events.Kind {
@@ -285,9 +294,10 @@ func newWorld(t *testing.T) world {
 	}}
 	w.published = &recorder{}
 	w.svc = NewService(w.store, w.access, members, nil, w.published)
-	w.svc.SetConversations(&fakeConversations{members: map[uuid.UUID][]uuid.UUID{
-		w.direct: {w.anna, w.bob},
-	}})
+	w.svc.SetConversations(&fakeConversations{
+		members: map[uuid.UUID][]uuid.UUID{w.direct: {w.anna, w.bob}},
+		kinds:   map[uuid.UUID]conversations.Kind{w.direct: conversations.KindDirect},
+	})
 	return w
 }
 
