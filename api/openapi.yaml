@@ -70,6 +70,13 @@ tags:
     description: |
       LiveKit access for voice channels. The token is issued by session; its grants
       follow the caller's role, so a listener may join without publishing.
+  - name: privacy
+    description: |
+      Who may start a direct conversation with an account and whom it blocks.
+      A refusal is the same 404 as an account that does not exist, so the API
+      never reveals whether someone is here. A block works both ways for starting
+      and writing in a dialogue; in a group chat the messages of a blocked author
+      stay in history, marked for the person who blocked them.
 paths:
   /healthz:
     get:
@@ -682,6 +689,7 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/messages/{messageId}:
     parameters:
@@ -1105,6 +1113,90 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/dm-policy:
+    get:
+      operationId: getDmPolicy
+      tags: [privacy]
+      summary: Who may start a direct conversation with you. Needs a session.
+      responses:
+        "200":
+          description: The current policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DmPolicySetting" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: setDmPolicy
+      tags: [privacy]
+      summary: Choose who may start a direct conversation with you. Needs a session.
+      description: |
+        `shared` — people who are on a server with you (the default), `nobody` — no one.
+        `friends` is accepted for the friendships that come later and behaves as
+        `nobody` until then: nobody may guess that the setting means something else.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DmPolicyUpdate" }
+      responses:
+        "200":
+          description: The policy now in force.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DmPolicySetting" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/blocks:
+    get:
+      operationId: listUserBlocks
+      tags: [privacy]
+      summary: The accounts you blocked. Needs a session.
+      description: |
+        Only your own list: there is no way to read somebody else's blocks, and
+        blocking is not visible to the blocked account.
+      responses:
+        "200":
+          description: The blocked accounts, most recently blocked first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BlockedUser" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/blocks/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    put:
+      operationId: blockUser
+      tags: [privacy]
+      summary: Block an account. Needs a session.
+      description: |
+        A blocked account cannot start a dialogue with you, and neither of you can
+        write in the dialogue you already had: the block works both ways. Messages
+        it writes in a shared group stay in the history, marked for you, so the
+        conversation keeps its context. Blocking yourself answers 400; an unknown
+        account answers 404, like every other refusal here. Blocking twice is fine.
+      responses:
+        "204":
+          description: Blocked.
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: unblockUser
+      tags: [privacy]
+      summary: Unblock an account. Needs a session.
+      description: Unblocking an account that is not blocked is fine.
+      responses:
+        "204":
+          description: Unblocked.
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/{userId}/devices:
     parameters:
       - $ref: "#/components/parameters/UserId"
@@ -1395,7 +1487,15 @@ paths:
               schema: { $ref: "#/components/schemas/Conversation" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "404":
+          description: |
+            No such account, or one that may not be talked to. The same answer for
+            both, so the API never reveals which accounts exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/conversations/{conversationId}:
     parameters:
@@ -1475,6 +1575,15 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: Too many new conversations in a short time.
+      headers:
+        Retry-After:
+          description: Seconds to wait before the next attempt.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
   schemas:
     Error:
       type: object
@@ -1491,7 +1600,7 @@ components:
           type: string
           description: |
             Machine-readable code: invalid_request, unauthorized, forbidden, not_found,
-            conflict, method_not_allowed, body_too_large, internal.
+            conflict, method_not_allowed, body_too_large, too_many_requests, internal.
           example: invalid_request
         message:
           type: string
@@ -1536,6 +1645,36 @@ components:
         createdAt:
           type: string
           format: date-time
+    DmPolicy:
+      type: string
+      enum: [shared, friends, nobody]
+      description: |
+        Who may start a direct conversation with an account. `shared` — people on a
+        common server (the default), `nobody` — no one. `friends` is reserved for the
+        friendships that come later and behaves as `nobody` until then.
+    DmPolicySetting:
+      type: object
+      additionalProperties: false
+      required: [dmPolicy]
+      properties:
+        dmPolicy: { $ref: "#/components/schemas/DmPolicy" }
+    DmPolicyUpdate:
+      type: object
+      additionalProperties: false
+      required: [dmPolicy]
+      properties:
+        dmPolicy: { $ref: "#/components/schemas/DmPolicy" }
+    BlockedUser:
+      type: object
+      additionalProperties: false
+      required: [id, nickname, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        nickname: { type: string }
+        createdAt:
+          type: string
+          format: date-time
+          description: When the caller blocked this account.
     RegisterRequest:
       type: object
       additionalProperties: false
@@ -1844,6 +1983,13 @@ components:
           type: string
           format: date-time
           description: Set for a deleted message; its content is then empty.
+        blocked:
+          type: boolean
+          description: |
+            Set when the author is blocked by the caller: the message stays in the
+            history of a shared group, but the client collapses or hides it. Absent
+            means the message is shown as usual. Never set in a direct dialogue,
+            which does not exist with a blocked account.
     Reaction:
       type: object
       additionalProperties: false

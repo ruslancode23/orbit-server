@@ -27,6 +27,7 @@ const (
 	CodeNotFound         = "not_found"
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeBodyTooLarge     = "body_too_large"
+	CodeTooManyRequests  = "too_many_requests"
 	CodeInternal         = "internal"
 )
 
