@@ -298,9 +298,10 @@ func (s *Service) requestAgainstExisting(ctx context.Context, existing Friendshi
 		// The other side asked first: this is the mutual request that becomes a
 		// friendship at once. It is still a neutral success to the sender.
 		_, err := s.accept(ctx, existing, fromID)
-		if errors.Is(err, ErrFriendLimit) {
-			// A full list is the recipient's problem to solve; the request stays
-			// pending and the sender must not learn the difference.
+		if errors.Is(err, ErrFriendLimit) || errors.Is(err, ErrNotFound) {
+			// A full list, or a block that arrived between the checks: the request
+			// stays pending or already went, and the sender must not learn the
+			// difference.
 			return nil
 		}
 		return err
