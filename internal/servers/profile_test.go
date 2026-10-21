@@ -60,7 +60,17 @@ func (s *fakeStorage) count() int {
 type fakeWatchers struct {
 	mu        sync.Mutex
 	published []events.Event
+	personal  map[uuid.UUID][]events.Event
 	revoked   []uuid.UUID
+}
+
+func (f *fakeWatchers) PublishToUser(userID uuid.UUID, event events.Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.personal == nil {
+		f.personal = map[uuid.UUID][]events.Event{}
+	}
+	f.personal[userID] = append(f.personal[userID], event)
 }
 
 func (f *fakeWatchers) Publish(event events.Event) {

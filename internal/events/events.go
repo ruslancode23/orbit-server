@@ -25,6 +25,10 @@ const (
 	// KindWorkspaceUpdated says the server itself changed: its name, description,
 	// icon or what members may do. The payload is the server in its API shape.
 	KindWorkspaceUpdated Kind = "workspace.updated"
+	// KindWorkspaceDeleted says the owner deleted the server. It goes to each
+	// former member's personal stream, so the server leaves every client's rail
+	// even where it was not the one open; the frame names it in workspaceId.
+	KindWorkspaceDeleted Kind = "workspace.deleted"
 	// KindUserUpdated says a profile changed: display name, avatar, accent,
 	// bio or custom status. The payload is the `UserProfile` the API returns, so
 	// a client replaces the author already in a loaded feed. It goes to the

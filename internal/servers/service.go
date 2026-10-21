@@ -174,6 +174,9 @@ type Store interface {
 // Optional: with nil, the HTTP API behaves the same and nobody is told live.
 type Watchers interface {
 	Publish(event events.Event)
+	// PublishToUser reaches every connection of one account, whatever server it
+	// watches: a deleted server must leave rails where it was not open too.
+	PublishToUser(userID uuid.UUID, event events.Event)
 	Revoke(workspaceID, userID uuid.UUID)
 }
 
@@ -442,12 +445,35 @@ func (s *Service) Delete(ctx context.Context, workspaceID, callerID uuid.UUID) e
 	if err != nil {
 		return err
 	}
+	// Who to tell is read before the rows go with the server.
+	members, err := s.store.ListMembers(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
 	if err := s.store.DeleteWorkspace(ctx, workspaceID); err != nil {
 		return err
 	}
 	// The server is gone either way; an icon left behind is only wasted space.
 	s.dropIcon(ctx, workspace.IconKey)
+	s.gone(workspaceID, members)
 	return nil
+}
+
+// gone tells every former member that the server no longer exists and ends
+// their subscriptions to it. The event goes to each personal stream, not to
+// the server's: most members are not watching this server at the moment.
+func (s *Service) gone(workspaceID uuid.UUID, members []Member) {
+	if s.watchers == nil {
+		return
+	}
+	for _, member := range members {
+		s.watchers.PublishToUser(member.User.ID, events.Event{
+			Kind:        events.KindWorkspaceDeleted,
+			WorkspaceID: workspaceID,
+			Payload:     map[string]any{"workspaceId": workspaceID},
+		})
+		s.watchers.Revoke(workspaceID, member.User.ID)
+	}
 }
 
 func (s *Service) ListMembers(ctx context.Context, workspaceID, callerID uuid.UUID) ([]Member, error) {
