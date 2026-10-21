@@ -1750,15 +1750,31 @@ paths:
     get:
       operationId: listConversations
       tags: [conversations]
-      summary: Your conversations, the liveliest first. Needs a session.
+      summary: A page of your conversations, the liveliest first. Needs a session.
+      description: |
+        Each row already carries what a sidebar draws: the newest message with its
+        author, the unread and mention counts after this account's read cursor, and
+        the group name. Hidden conversations are left out; a message that arrives
+        after they were hidden brings them back. Secret chats never appear here.
+        The cursor is opaque: pass `nextCursor` back as `cursor` for the next page.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page. Omit for the first page.
+          schema: { type: string, maxLength: 512 }
+        - name: limit
+          in: query
+          required: false
+          description: How many conversations to return.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         "200":
-          description: The conversations.
+          description: The page.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/Conversation" }
+              schema: { $ref: "#/components/schemas/ConversationPage" }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
@@ -1767,7 +1783,7 @@ paths:
       summary: Open a conversation with one or more people. Needs a session.
       description: |
         With one other person this returns the dialogue you already have, if there is
-        one: a pair has a single conversation.
+        one: a pair has a single conversation. A name is set later by a group member.
       requestBody:
         required: true
         content:
@@ -1796,13 +1812,26 @@ paths:
         "413": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/conversations/unread:
+    get:
+      operationId: getConversationUnread
+      tags: [conversations]
+      summary: The unread badge for all conversations. Needs a session.
+      description: |
+        The sum of unread messages and mentions over every ordinary conversation of
+        the caller, with hidden conversations left out exactly as the list leaves
+        them out. Secret chats have no read cursors and are never counted.
+      responses:
+        "200":
+          description: The totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationUnread" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/conversations/{conversationId}:
     parameters:
-      - name: conversationId
-        in: path
-        required: true
-        description: Conversation identifier; it is also the channel id for messages.
-        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/ConversationId"
     get:
       operationId: getConversation
       tags: [conversations]
@@ -1813,6 +1842,105 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Conversation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateConversation
+      tags: [conversations]
+      summary: Rename a group. Needs to be in it.
+      description: |
+        Only a group has a name. A direct dialogue answers 409: it cannot become a
+        group, and a new group is a new conversation. Any member may rename it; the
+        change is announced to everyone as `conversation.updated` and a system line
+        appears in the feed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConversationRenameRequest" }
+      responses:
+        "200":
+          description: The renamed conversation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/conversations/{conversationId}/members:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      operationId: addConversationMembers
+      tags: [conversations]
+      summary: Add people to a group. Any member may.
+      description: |
+        The group limit (`maxMembers`) counts everyone already there. A direct
+        dialogue answers 409 instead of turning into a group: create a new group.
+        The added people are told with `conversation.created`, the rest with
+        `conversation.updated`, and each addition leaves a system line.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConversationMembersRequest" }
+      responses:
+        "200":
+          description: The conversation with its new members.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/conversations/{conversationId}/members/me:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    delete:
+      operationId: leaveConversation
+      tags: [conversations]
+      summary: Leave a group. Needs to be in it.
+      description: |
+        Access to the history, its files and the live stream ends at once: the
+        endpoints behind them check membership on every request. A direct dialogue
+        answers 409 — hide it instead. The remaining members get
+        `conversation.updated` and a system line.
+      responses:
+        "204":
+          description: Left the group.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/conversations/{conversationId}/hidden:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      operationId: hideConversation
+      tags: [conversations]
+      summary: Hide a conversation from your list. Needs to be in it.
+      description: |
+        Hiding is private: the other members see nothing, and no system line is
+        written. It lasts until the conversation gets a new message — that message
+        is newer than the moment of hiding and puts the conversation back — or until
+        `DELETE` on this path. The caller's other devices are told with
+        `conversation.hidden`.
+      responses:
+        "204": { description: Hidden. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: unhideConversation
+      tags: [conversations]
+      summary: Show a hidden conversation again. Needs to be in it.
+      responses:
+        "204": { description: Shown again. }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -1991,6 +2119,12 @@ components:
       in: path
       required: true
       description: Channel identifier.
+      schema: { type: string, format: uuid }
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      description: Conversation identifier; it is also the channel id for messages.
       schema: { type: string, format: uuid }
     UserId:
       name: userId
@@ -2605,7 +2739,7 @@ components:
     Message:
       type: object
       additionalProperties: false
-      required: [id, channelId, seq, content, mentions, reactions, createdAt]
+      required: [id, channelId, seq, kind, content, mentions, reactions, createdAt]
       properties:
         id: { type: string, format: uuid }
         channelId: { type: string, format: uuid }
@@ -2613,6 +2747,8 @@ components:
           type: integer
           format: int64
           description: Order inside the channel; also the cursor for the next page.
+        kind:
+          $ref: "#/components/schemas/MessageKind"
         author:
           allOf:
             - $ref: "#/components/schemas/UserProfile"
@@ -2620,6 +2756,12 @@ components:
         content:
           type: string
           maxLength: 4000
+          description: |
+            What the author wrote. A system line carries a readable fallback built
+            by the server; `system` says what happened, so a client can render it
+            in its own language instead.
+        system:
+          $ref: "#/components/schemas/SystemMessage"
         replyToId:
           type: string
           format: uuid
@@ -2835,10 +2977,136 @@ components:
         kind:
           type: string
           enum: [direct, group]
+        name:
+          type: string
+          maxLength: 100
+          description: The group title a member set; absent for a dialogue and for an unnamed group.
         members:
           type: array
           items: { $ref: "#/components/schemas/ConversationMember" }
         createdAt: { type: string, format: date-time }
+    ConversationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, kind, members, createdAt, lastReadSeq, unread, mentions]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [direct, group]
+        name:
+          type: string
+          maxLength: 100
+          description: The group title; absent for a dialogue and for an unnamed group.
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/ConversationMember" }
+        createdAt: { type: string, format: date-time }
+        lastMessage:
+          $ref: "#/components/schemas/ConversationLastMessage"
+        lastReadSeq:
+          type: integer
+          format: int64
+          description: The `seq` this account has read up to in this conversation; 0 when never opened.
+        unread:
+          type: integer
+          description: Messages after the cursor, not counting this account's own.
+        mentions:
+          type: integer
+          description: How many of those mention this account.
+    ConversationLastMessage:
+      type: object
+      additionalProperties: false
+      required: [id, seq, kind, content, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        seq:
+          type: integer
+          format: int64
+        kind:
+          $ref: "#/components/schemas/MessageKind"
+        author:
+          allOf:
+            - $ref: "#/components/schemas/UserProfile"
+          description: Absent when the account has been deleted.
+        content:
+          type: string
+          maxLength: 120
+          description: The first 120 characters; the whole message is in the history.
+        system:
+          $ref: "#/components/schemas/SystemMessage"
+        createdAt: { type: string, format: date-time }
+        deletedAt:
+          type: string
+          format: date-time
+          description: Set for a deleted message; its content is then empty.
+    ConversationPage:
+      type: object
+      additionalProperties: false
+      required: [conversations]
+      properties:
+        conversations:
+          type: array
+          items: { $ref: "#/components/schemas/ConversationSummary" }
+        nextCursor:
+          type: string
+          maxLength: 512
+          description: Pass as `cursor` for the next page; absent on the last page.
+    ConversationUnread:
+      type: object
+      additionalProperties: false
+      required: [unread, mentions]
+      properties:
+        unread:
+          type: integer
+          description: The sum over conversations that are not hidden.
+        mentions:
+          type: integer
+          description: How many of those unread messages mention this account.
+    MessageKind:
+      type: string
+      enum: [user, system]
+      description: |
+        `user` is written by a person. `system` is a line the server writes when
+        the group changes ("X added Y", "X left", "X renamed the chat"): it has an
+        author and a seq like any message, but no mentions and no text to edit.
+    SystemMessage:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [member_added, member_removed, conversation_renamed]
+        targetId:
+          type: string
+          format: uuid
+          description: The person added or removed; the author is in `author`.
+        name:
+          type: string
+          maxLength: 100
+          description: The new group name, for `conversation_renamed`.
+    ConversationRenameRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: The new group title.
+    ConversationMembersRequest:
+      type: object
+      additionalProperties: false
+      required: [userIds]
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: string, format: uuid }
+          description: Whom to add. People already in the group are ignored.
     ConversationMember:
       type: object
       additionalProperties: false

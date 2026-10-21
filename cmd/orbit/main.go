@@ -128,6 +128,9 @@ func run() error {
 	messageService.SetFiles(files.NewForMessages(fileService))
 	// Messages in a conversation go to its participants, not to a server.
 	messageService.SetConversations(conversationService)
+	// A group change is a system line in the same feed: the conversations module
+	// asks the messages module to store and announce it.
+	conversationService.SetSystemMessages(messageService)
 	// History and live group events hide the authors the reader blocked.
 	messageService.SetPrivacy(privacyService)
 	messageService.SetLimiter(limiter)

@@ -36,7 +36,13 @@ const (
 	// secret chat was started. It goes to each participant's own stream.
 	KindConversationCreated Kind = "conversation.created"
 	// KindConversationUpdated says the name or the people of a group changed.
+	// The payload is the conversation in its API shape, without per-viewer
+	// counters: one event reaches every participant.
 	KindConversationUpdated Kind = "conversation.updated"
+	// KindConversationHidden says a conversation was hidden from or shown again
+	// in one account's list. It is personal: only that account's devices hear it,
+	// and nobody else may learn what another person keeps in their sidebar.
+	KindConversationHidden Kind = "conversation.hidden"
 	// KindSecretEnvelope is one ciphertext waiting for a device. It goes to the
 	// recipient's personal stream and nowhere else.
 	KindSecretEnvelope Kind = "secret.envelope"

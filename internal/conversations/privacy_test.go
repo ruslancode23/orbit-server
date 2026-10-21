@@ -38,7 +38,7 @@ func TestStartIsRefusedWhenThePrivacyRulesSayNo(t *testing.T) {
 			w := newWorld(t)
 			w.svc = NewService(w.store, maxMembers, tt.rules)
 
-			if _, err := w.svc.Start(t.Context(), w.anna, tt.with(w)); !errors.Is(err, ErrNotFound) {
+			if _, _, err := w.svc.Start(t.Context(), w.anna, tt.with(w)); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Start: err = %v, want ErrNotFound", err)
 			}
 			if w.store.creates != 0 {
@@ -54,18 +54,18 @@ func TestNewConversationsAreRateLimited(t *testing.T) {
 	w := newWorld(t)
 	w.svc.SetLimiter(ratelimit.New(1))
 
-	direct, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	direct, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
 	if err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
-	if _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna}); err != nil {
+	if _, _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna}); err != nil {
 		t.Fatalf("reopening the dialogue: %v", err)
 	}
 	if direct.ID == uuid.Nil {
 		t.Fatal("the first conversation has no id")
 	}
 
-	_, err = w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.vika})
+	_, _, err = w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.vika})
 	var limited *RateLimitedError
 	if !errors.As(err, &limited) {
 		t.Fatalf("Start over the limit: err = %v, want *RateLimitedError", err)

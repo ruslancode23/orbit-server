@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 	"github.com/ruslancode23/orbit-server/internal/profile"
 )
@@ -38,6 +39,7 @@ func (s *PostgresStore) Create(ctx context.Context, m NewMessage) (Message, bool
 		ID:        uuid.UUID(row.ID.Bytes),
 		ChannelID: uuid.UUID(row.ChannelID.Bytes),
 		Seq:       row.Seq,
+		Kind:      MessageKindUser,
 		Content:   row.Content,
 		ReplyToID: uuidPtr(row.ReplyToID),
 		CreatedAt: row.CreatedAt.Time,
@@ -48,6 +50,24 @@ func (s *PostgresStore) Create(ctx context.Context, m NewMessage) (Message, bool
 	// this module does not read auth's table.
 	message.Author = &profile.Public{ID: m.AuthorID}
 	return message, !row.Inserted, nil
+}
+
+// CreateSystem writes a group-change line: the same table and seq as a message,
+// with kind = 'system' and no mention of its own.
+func (s *PostgresStore) CreateSystem(ctx context.Context, m NewSystemMessage) (Message, error) {
+	row, err := s.q.CreateSystemMessage(ctx, db.CreateSystemMessageParams{
+		ChannelID:       pgUUID(m.ChannelID),
+		AuthorID:        pgUUID(m.AuthorID),
+		ClientMessageID: "system:" + uuid.NewString(),
+		Content:         m.Content,
+		SystemType:      pgtext(string(m.Type)),
+		SystemTargetID:  pgUUIDPtr(m.TargetID),
+		SystemName:      pgtext(m.Name),
+	})
+	if err != nil {
+		return Message{}, fmt.Errorf("create system message: %w", err)
+	}
+	return toMessage(row), nil
 }
 
 func (s *PostgresStore) Message(ctx context.Context, id uuid.UUID) (Message, error) {
@@ -236,11 +256,21 @@ func toMessage(row db.Message) Message {
 		ID:        uuid.UUID(row.ID.Bytes),
 		ChannelID: uuid.UUID(row.ChannelID.Bytes),
 		Seq:       row.Seq,
+		Kind:      MessageKind(row.Kind),
 		Content:   row.Content,
 		ReplyToID: uuidPtr(row.ReplyToID),
 		CreatedAt: row.CreatedAt.Time,
 		EditedAt:  timePtr(row.EditedAt),
 		DeletedAt: timePtr(row.DeletedAt),
+	}
+	if row.SystemType.Valid {
+		message.System = &System{
+			Type:     conversations.SystemType(row.SystemType.String),
+			TargetID: uuidPtr(row.SystemTargetID),
+		}
+		if row.SystemName.Valid {
+			message.System.Name = row.SystemName.String
+		}
 	}
 	// A NULL author_id means the account has been deleted; the message stays.
 	if row.AuthorID.Valid {
@@ -266,6 +296,13 @@ func toPgUUIDs(ids []uuid.UUID) []pgtype.UUID {
 		out = append(out, pgUUID(id))
 	}
 	return out
+}
+
+func pgtext(value string) pgtype.Text {
+	if value == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: value, Valid: true}
 }
 
 func pgInt8(v *int64) pgtype.Int8 {
