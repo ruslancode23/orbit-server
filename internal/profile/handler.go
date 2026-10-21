@@ -167,6 +167,48 @@ func (h *Handler) GetUserProfile(ctx context.Context, req api.GetUserProfileRequ
 	return api.GetUserProfile200JSONResponse(APIProfile(profile)), nil
 }
 
+func (h *Handler) GetMutual(ctx context.Context, req api.GetMutualRequestObject) (api.GetMutualResponseObject, error) {
+	viewerID, ok := caller(ctx)
+	if !ok {
+		return api.GetMutual401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+
+	mutual, err := h.svc.Mutual(ctx, viewerID, req.UserId)
+	switch {
+	case errors.Is(err, ErrSelf):
+		// A mutual list is about a pair, so asking about yourself is a mistake in
+		// the request rather than a hidden answer.
+		return api.GetMutual400JSONResponse(api.Error(badRequest(err.Error()))), nil
+	case errors.Is(err, ErrNotFound):
+		// A stranger, an unknown id and a blocked pair answer the same way.
+		return api.GetMutual404JSONResponse(notFound()), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "get mutual lists", slog.Any("error", err))
+		return api.GetMutual500JSONResponse(internal("could not read the mutual lists")), nil
+	}
+
+	response := api.GetMutual200JSONResponse{
+		Servers: make([]api.MutualServer, 0, len(mutual.Servers)),
+		Friends: make([]api.UserProfile, 0, len(mutual.Friends)),
+	}
+	for _, server := range mutual.Servers {
+		item := api.MutualServer{
+			Id:   server.ID,
+			Name: server.Name,
+			Role: api.WorkspaceRole(server.Role),
+		}
+		if server.IconURL != "" {
+			url := server.IconURL
+			item.IconUrl = &url
+		}
+		response.Servers = append(response.Servers, item)
+	}
+	for _, friend := range mutual.Friends {
+		response.Friends = append(response.Friends, APIProfile(friend))
+	}
+	return response, nil
+}
+
 // invalid reports an error the caller can fix by sending a different value.
 func invalid(err error) bool {
 	switch {

@@ -222,6 +222,58 @@ func (q *Queries) IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMe
 	return exists, err
 }
 
+const listMutualWorkspaces = `-- name: ListMutualWorkspaces :many
+SELECT w.id, w.name, w.icon_key, mine.role
+FROM workspace_members mine
+    JOIN workspace_members theirs
+        ON theirs.workspace_id = mine.workspace_id
+        AND theirs.user_id = $1::uuid
+    JOIN workspaces w ON w.id = mine.workspace_id
+WHERE mine.user_id = $2::uuid
+ORDER BY lower(w.name), w.id
+`
+
+type ListMutualWorkspacesParams struct {
+	OtherID pgtype.UUID `json:"other_id"`
+	UserID  pgtype.UUID `json:"user_id"`
+}
+
+type ListMutualWorkspacesRow struct {
+	ID      pgtype.UUID   `json:"id"`
+	Name    string        `json:"name"`
+	IconKey pgtype.Text   `json:"icon_key"`
+	Role    WorkspaceRole `json:"role"`
+}
+
+// The mutual lists ask which servers both accounts are on, in one query: reading
+// each membership separately would be an N+1. The role is the caller's own, so
+// the endpoint never shows what the other account may do. The icon key stays in
+// this module; the service turns it into a signed link.
+func (q *Queries) ListMutualWorkspaces(ctx context.Context, arg ListMutualWorkspacesParams) ([]ListMutualWorkspacesRow, error) {
+	rows, err := q.db.Query(ctx, listMutualWorkspaces, arg.OtherID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMutualWorkspacesRow{}
+	for rows.Next() {
+		var i ListMutualWorkspacesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.IconKey,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserWorkspaces = `-- name: ListUserWorkspaces :many
 SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, workspaces.members_can_invite, workspaces.members_can_create_channels, workspaces.members_can_attach_files, workspace_members.role
 FROM workspaces

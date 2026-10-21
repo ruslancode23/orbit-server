@@ -56,6 +56,9 @@ var (
 	ErrInvalidExpiry = errors.New("profile: unknown status expiry")
 	// ErrNothingToUpdate means a profile update named no field.
 	ErrNothingToUpdate = errors.New("profile: nothing to update")
+	// ErrSelf means the caller asked for a mutual list with their own account:
+	// a mutual list needs two different accounts.
+	ErrSelf = errors.New("profile: a mutual list needs two different accounts")
 )
 
 // AccentColor is one of the product's named palette tokens. A raw hex colour is
@@ -116,6 +119,24 @@ type Public struct {
 type Stored struct {
 	Public
 	AvatarKey string
+}
+
+// MutualServer is one server two accounts are on, as the caller sees it. The
+// servers module fills it: this package owns the pair question, that module owns
+// the server, its icon key and the caller's role there.
+type MutualServer struct {
+	ID      uuid.UUID
+	Name    string
+	IconURL string
+	// Role is the caller's role on this server, as the servers module names it.
+	Role string
+}
+
+// Mutual is what two accounts share: the servers both are on and the friends
+// both have, each list an intersection.
+type Mutual struct {
+	Servers []MutualServer
+	Friends []Public
 }
 
 // Update carries only what the caller asked to change. A pointer to an empty

@@ -194,6 +194,11 @@ type Querier interface {
 	ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]MessageMention, error)
 	// Reactions of a page of messages, with whether the caller is among them.
 	ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error)
+	// The mutual lists ask which servers both accounts are on, in one query: reading
+	// each membership separately would be an N+1. The role is the caller's own, so
+	// the endpoint never shows what the other account may do. The icon key stays in
+	// this module; the service turns it into a signed link.
+	ListMutualWorkspaces(ctx context.Context, arg ListMutualWorkspacesParams) ([]ListMutualWorkspacesRow, error)
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)
 	// Outgoing requests: this account is the one that asked.

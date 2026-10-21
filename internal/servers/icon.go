@@ -139,15 +139,22 @@ func (s *Service) afterIconChange(ctx context.Context, workspaceID uuid.UUID, ro
 // present fills in what only a member sees: the signed link to the icon. A link
 // that cannot be signed leaves the icon out rather than failing the whole read.
 func (s *Service) present(ctx context.Context, workspace Workspace) Workspace {
-	workspace.IconURL = ""
-	if workspace.IconKey == "" || s.icons.Storage == nil {
-		return workspace
-	}
-	url, err := s.icons.Storage.SignedURL(ctx, workspace.IconKey, "icon"+path.Ext(workspace.IconKey), s.icons.LinkTTL)
-	if err == nil {
-		workspace.IconURL = url
-	}
+	workspace.IconURL = s.signIconURL(ctx, workspace.IconKey)
 	return workspace
+}
+
+// signIconURL turns an icon key into a link the browser renders. The empty key
+// and an instance without a store both mean no link; a signing failure is not a
+// reason to fail a read that does not depend on the icon.
+func (s *Service) signIconURL(ctx context.Context, key string) string {
+	if key == "" || s.icons.Storage == nil {
+		return ""
+	}
+	url, err := s.icons.Storage.SignedURL(ctx, key, "icon"+path.Ext(key), s.icons.LinkTTL)
+	if err != nil {
+		return ""
+	}
+	return url
 }
 
 // dropIcon deletes an icon object nobody points at any more. It is best effort:
