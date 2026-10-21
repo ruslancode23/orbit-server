@@ -43,6 +43,7 @@ type fakeStore struct {
 	mu       sync.Mutex
 	profiles map[uuid.UUID]Stored
 	batches  int
+	reads    int
 }
 
 func newFakeStore() *fakeStore {
@@ -52,6 +53,7 @@ func newFakeStore() *fakeStore {
 func (s *fakeStore) Profile(_ context.Context, userID uuid.UUID) (Stored, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reads++
 	profile, ok := s.profiles[userID]
 	if !ok {
 		return Stored{}, ErrNotFound
@@ -170,10 +172,34 @@ func (h *fakeHub) personalEvents() []personal {
 
 type fakeServers struct {
 	servers map[uuid.UUID][]uuid.UUID
+	// details are the names, icons and caller roles the mutual list returns.
+	details     map[uuid.UUID]MutualServer
+	mutualCalls int
 }
 
 func (f *fakeServers) Servers(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	return f.servers[userID], nil
+}
+
+func (f *fakeServers) MutualServers(_ context.Context, callerID, otherID uuid.UUID) ([]MutualServer, error) {
+	f.mutualCalls++
+	mine := make(map[uuid.UUID]bool, len(f.servers[callerID]))
+	for _, id := range f.servers[callerID] {
+		mine[id] = true
+	}
+	out := make([]MutualServer, 0, len(f.servers[otherID]))
+	for _, id := range f.servers[otherID] {
+		if !mine[id] {
+			continue
+		}
+		detail, ok := f.details[id]
+		if !ok {
+			detail = MutualServer{Name: "server-" + id.String()[:8]}
+		}
+		detail.ID = id
+		out = append(out, detail)
+	}
+	return out, nil
 }
 
 type fakeConversations struct {
@@ -192,6 +218,8 @@ func (f *fakeConversations) Peers(_ context.Context, userID uuid.UUID) ([]uuid.U
 type fakeFriends struct {
 	pairs   map[[2]uuid.UUID]bool
 	friends map[uuid.UUID][]uuid.UUID
+
+	friendsOfCalls int
 }
 
 func (f *fakeFriends) AreFriends(_ context.Context, a, b uuid.UUID) (bool, error) {
@@ -199,7 +227,18 @@ func (f *fakeFriends) AreFriends(_ context.Context, a, b uuid.UUID) (bool, error
 }
 
 func (f *fakeFriends) FriendsOf(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	f.friendsOfCalls++
 	return f.friends[userID], nil
+}
+
+type fakePrivacy struct {
+	blocked map[[2]uuid.UUID]bool
+	calls   int
+}
+
+func (f *fakePrivacy) BlockedEitherWay(_ context.Context, a, b uuid.UUID) (bool, error) {
+	f.calls++
+	return f.blocked[pairKey(a, b)], nil
 }
 
 type harness struct {
@@ -210,6 +249,7 @@ type harness struct {
 	servers       *fakeServers
 	conversations *fakeConversations
 	friends       *fakeFriends
+	privacy       *fakePrivacy
 }
 
 func newHarness(t *testing.T) *harness {
@@ -217,7 +257,10 @@ func newHarness(t *testing.T) *harness {
 	store := newFakeStore()
 	hub := &fakeHub{}
 	c := newClock()
-	servers := &fakeServers{servers: map[uuid.UUID][]uuid.UUID{}}
+	servers := &fakeServers{
+		servers: map[uuid.UUID][]uuid.UUID{},
+		details: map[uuid.UUID]MutualServer{},
+	}
 	conversations := &fakeConversations{
 		shared: map[[2]uuid.UUID]bool{},
 		peers:  map[uuid.UUID][]uuid.UUID{},
@@ -226,15 +269,17 @@ func newHarness(t *testing.T) *harness {
 		pairs:   map[[2]uuid.UUID]bool{},
 		friends: map[uuid.UUID][]uuid.UUID{},
 	}
+	privacy := &fakePrivacy{blocked: map[[2]uuid.UUID]bool{}}
 
 	svc := NewService(store, hub, testLogger())
 	svc.now = c.Now
 	svc.SetServers(servers)
 	svc.SetConversations(conversations)
 	svc.SetFriends(friends)
+	svc.SetPrivacy(privacy)
 	return &harness{
 		svc: svc, store: store, clock: c, hub: hub,
-		servers: servers, conversations: conversations, friends: friends,
+		servers: servers, conversations: conversations, friends: friends, privacy: privacy,
 	}
 }
 

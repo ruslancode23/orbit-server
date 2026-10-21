@@ -103,6 +103,27 @@ func (s *fakeStore) ListMemberships(_ context.Context, userID uuid.UUID) ([]Memb
 	return out, nil
 }
 
+func (s *fakeStore) MutualServers(_ context.Context, callerID, otherID uuid.UUID) ([]SharedServer, error) {
+	var out []SharedServer
+	for id, members := range s.members {
+		mine, ok := members[callerID]
+		if !ok {
+			continue
+		}
+		if _, ok := members[otherID]; !ok {
+			continue
+		}
+		workspace := s.workspaces[id]
+		out = append(out, SharedServer{
+			ID:      workspace.ID,
+			Name:    workspace.Name,
+			IconKey: workspace.IconKey,
+			Role:    mine.Role,
+		})
+	}
+	return out, nil
+}
+
 func (s *fakeStore) Role(_ context.Context, workspaceID, userID uuid.UUID) (Role, error) {
 	member, ok := s.members[workspaceID][userID]
 	if !ok {

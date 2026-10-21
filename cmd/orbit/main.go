@@ -107,6 +107,9 @@ func run() error {
 	// A friend sees the profile of a friend: the friendship is what makes the
 	// two strangers readable to each other.
 	profileService.SetFriends(friendService)
+	// A block outranks acquaintance: the mutual lists answer 404 even when the
+	// pair still shares a server.
+	profileService.SetPrivacy(privacyService)
 	// Avatars are re-encoded into WebP before they are stored, so their links can
 	// be rendered inline and cached for long.
 	profileService.SetAvatars(profile.Avatars{

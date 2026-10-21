@@ -113,6 +113,17 @@ type Membership struct {
 	Role      Role
 }
 
+// SharedServer is one server two accounts are on, as the caller sees it. The
+// role is the caller's own; IconKey stays in this module and the service turns
+// it into a signed IconURL.
+type SharedServer struct {
+	ID      uuid.UUID
+	Name    string
+	IconKey string
+	IconURL string
+	Role    Role
+}
+
 // Member is one person on a server. User is the public profile: this module
 // reads it from internal/profile in one batch, never from its own SQL.
 type Member struct {
@@ -138,6 +149,9 @@ type Store interface {
 	SetIcon(ctx context.Context, id uuid.UUID, key string) (previous string, err error)
 	DeleteWorkspace(ctx context.Context, id uuid.UUID) error
 	ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// MutualServers lists the servers both accounts are on, with the caller's
+	// role. It is one query for the whole list, never one per server.
+	MutualServers(ctx context.Context, callerID, otherID uuid.UUID) ([]SharedServer, error)
 	// Role returns ErrNotMember when the account is not on the server.
 	Role(ctx context.Context, workspaceID, userID uuid.UUID) (Role, error)
 	// Access is the role together with what the server lets members do; it
@@ -346,6 +360,29 @@ func (s *Service) Servers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, e
 	out := make([]uuid.UUID, 0, len(memberships))
 	for _, membership := range memberships {
 		out = append(out, membership.Workspace.ID)
+	}
+	return out, nil
+}
+
+// MutualServers lists the servers both accounts are on, with the caller's role
+// and a signed icon link. It is one query for the whole list: the mutual endpoint
+// asks this module instead of reading its tables, and no per-server read happens.
+func (s *Service) MutualServers(ctx context.Context, callerID, otherID uuid.UUID) ([]profile.MutualServer, error) {
+	if callerID == uuid.Nil || otherID == uuid.Nil || callerID == otherID {
+		return nil, nil
+	}
+	shared, err := s.store.MutualServers(ctx, callerID, otherID)
+	if err != nil {
+		return nil, fmt.Errorf("list mutual servers: %w", err)
+	}
+	out := make([]profile.MutualServer, 0, len(shared))
+	for _, server := range shared {
+		out = append(out, profile.MutualServer{
+			ID:      server.ID,
+			Name:    server.Name,
+			IconURL: s.signIconURL(ctx, server.IconKey),
+			Role:    string(server.Role),
+		})
 	}
 	return out, nil
 }

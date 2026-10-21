@@ -485,6 +485,10 @@ func (s *server) GetUserProfile(ctx context.Context, req api.GetUserProfileReque
 	return s.profiles.GetUserProfile(ctx, req)
 }
 
+func (s *server) GetMutual(ctx context.Context, req api.GetMutualRequestObject) (api.GetMutualResponseObject, error) {
+	return s.profiles.GetMutual(ctx, req)
+}
+
 func (s *server) UploadMyAvatar(ctx context.Context, req api.UploadMyAvatarRequestObject) (api.UploadMyAvatarResponseObject, error) {
 	return s.profiles.UploadMyAvatar(ctx, req)
 }

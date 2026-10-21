@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +46,9 @@ type Store interface {
 // profile, and every server is an audience of user.updated.
 type Servers interface {
 	Servers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// MutualServers lists the servers both accounts are on, with the caller's
+	// role and a signed icon link, in one query.
+	MutualServers(ctx context.Context, callerID, otherID uuid.UUID) ([]MutualServer, error)
 }
 
 // Conversations is the conversations module, reached through its own interface:
@@ -61,6 +66,12 @@ type Conversations interface {
 type Friends interface {
 	AreFriends(ctx context.Context, a, b uuid.UUID) (bool, error)
 	FriendsOf(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// Privacy is the block rule of internal/privacy. Optional: nil means no block is
+// consulted, which is only right where blocks cannot exist.
+type Privacy interface {
+	BlockedEitherWay(ctx context.Context, a, b uuid.UUID) (bool, error)
 }
 
 // Publisher is the live stream profile changes are announced to. A nil
@@ -99,6 +110,7 @@ type Service struct {
 	servers       Servers
 	conversations Conversations
 	friends       Friends
+	privacy       Privacy
 	avatars       Avatars
 
 	now      func() time.Time
@@ -137,6 +149,10 @@ func (s *Service) SetConversations(conversations Conversations) { s.conversation
 // SetFriends wires in the friendships module. Optional: nil means the friend path
 // simply does not fire.
 func (s *Service) SetFriends(friends Friends) { s.friends = friends }
+
+// SetPrivacy wires in the block rule. Optional: nil leaves every pair unblocked,
+// which is only right in tests or an instance without blocks.
+func (s *Service) SetPrivacy(privacy Privacy) { s.privacy = privacy }
 
 // SetAvatars wires in signed avatar links. Optional: without it avatarUrl stays
 // absent, and PR-2 adds the upload that fills the key.
@@ -242,6 +258,91 @@ func (s *Service) acquainted(ctx context.Context, a, b uuid.UUID) (bool, error) 
 		return shared, nil
 	}
 	return false, nil
+}
+
+// Mutual returns what two accounts share: the servers both are on and the
+// friends both have. The lists are intersections, never unions, and the audience
+// is the profile audience — a common server, a common conversation or a
+// friendship. A block answers ErrNotFound like a stranger or an unknown id;
+// asking about yourself is ErrSelf, because a mutual list needs two accounts.
+func (s *Service) Mutual(ctx context.Context, viewerID, targetID uuid.UUID) (Mutual, error) {
+	if targetID == uuid.Nil {
+		return Mutual{}, ErrNotFound
+	}
+	if viewerID == targetID {
+		return Mutual{}, ErrSelf
+	}
+	if s.privacy != nil {
+		blocked, err := s.privacy.BlockedEitherWay(ctx, viewerID, targetID)
+		if err != nil {
+			return Mutual{}, fmt.Errorf("check block: %w", err)
+		}
+		if blocked {
+			return Mutual{}, ErrNotFound
+		}
+	}
+	known, err := s.acquainted(ctx, viewerID, targetID)
+	if err != nil {
+		return Mutual{}, err
+	}
+	if !known {
+		return Mutual{}, ErrNotFound
+	}
+
+	out := Mutual{Servers: []MutualServer{}, Friends: []Public{}}
+	if s.servers != nil {
+		out.Servers, err = s.servers.MutualServers(ctx, viewerID, targetID)
+		if err != nil {
+			return Mutual{}, fmt.Errorf("list shared servers: %w", err)
+		}
+	}
+	if s.friends == nil {
+		return out, nil
+	}
+
+	mine, err := s.friends.FriendsOf(ctx, viewerID)
+	if err != nil {
+		return Mutual{}, fmt.Errorf("list friends of the caller: %w", err)
+	}
+	theirs, err := s.friends.FriendsOf(ctx, targetID)
+	if err != nil {
+		return Mutual{}, fmt.Errorf("list friends of the target: %w", err)
+	}
+	common := sharedIDs(mine, theirs)
+	profiles, err := s.Profiles(ctx, common)
+	if err != nil {
+		return Mutual{}, err
+	}
+	for _, id := range common {
+		if friend, ok := profiles[id]; ok {
+			out.Friends = append(out.Friends, friend)
+		}
+	}
+	sort.Slice(out.Friends, func(i, j int) bool {
+		left, right := strings.ToLower(out.Friends[i].Nickname), strings.ToLower(out.Friends[j].Nickname)
+		if left != right {
+			return left < right
+		}
+		return out.Friends[i].ID.String() < out.Friends[j].ID.String()
+	})
+	return out, nil
+}
+
+// sharedIDs keeps the ids present in both lists, in the order of the first: the
+// intersection a mutual list is. A union would include people only one account
+// knows, which is exactly what the endpoint must not reveal.
+func sharedIDs(a, b []uuid.UUID) []uuid.UUID {
+	inB := make(map[uuid.UUID]bool, len(b))
+	for _, id := range b {
+		inB[id] = true
+	}
+	out := make([]uuid.UUID, 0, len(a))
+	for _, id := range a {
+		if inB[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // Update changes the named fields and schedules one announcement. A field not

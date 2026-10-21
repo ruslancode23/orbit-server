@@ -128,6 +128,26 @@ func (s *PostgresStore) ListMemberships(ctx context.Context, userID uuid.UUID) (
 	return out, nil
 }
 
+func (s *PostgresStore) MutualServers(ctx context.Context, callerID, otherID uuid.UUID) ([]SharedServer, error) {
+	rows, err := s.q.ListMutualWorkspaces(ctx, db.ListMutualWorkspacesParams{
+		UserID:  pgUUID(callerID),
+		OtherID: pgUUID(otherID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list mutual workspaces: %w", err)
+	}
+	out := make([]SharedServer, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, SharedServer{
+			ID:      uuid.UUID(row.ID.Bytes),
+			Name:    row.Name,
+			IconKey: row.IconKey.String,
+			Role:    Role(row.Role),
+		})
+	}
+	return out, nil
+}
+
 func (s *PostgresStore) Role(ctx context.Context, workspaceID, userID uuid.UUID) (Role, error) {
 	role, err := s.q.GetWorkspaceRole(ctx, db.GetWorkspaceRoleParams{
 		WorkspaceID: pgUUID(workspaceID),
