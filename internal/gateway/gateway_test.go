@@ -305,6 +305,41 @@ func TestCatchUpByCursor(t *testing.T) {
 	}
 }
 
+// Changes to a message carry that message's seq. The catch-up already sent the
+// message, but an edit, a delete or a reaction is news and must still arrive:
+// only a repeated message.created is dropped.
+func TestChangesToCaughtUpMessagesStillArrive(t *testing.T) {
+	ts := newTestServer(t)
+	ts.history.missed[ts.channel] = []events.Event{
+		{Kind: events.KindMessageCreated, ChannelID: ts.channel, Seq: 2},
+	}
+	conn := ts.dial(t)
+
+	write(t, conn, map[string]any{
+		"type":        "subscribe",
+		"workspaceId": ts.workspace,
+		"cursors":     map[string]any{ts.channel.String(): 1},
+	})
+	read(t, conn) // subscribed
+	if frame := read(t, conn); frame["seq"] != float64(2) {
+		t.Fatalf("catch-up frame = %v, want seq 2", frame)
+	}
+
+	waitFor(t, func() bool { return ts.hub.Subscribers(ts.workspace) == 1 })
+	changes := []events.Kind{
+		events.KindMessageUpdated, events.KindReactionChanged, events.KindMessageDeleted,
+	}
+	for _, kind := range changes {
+		ts.hub.Publish(events.Event{Kind: kind, WorkspaceID: ts.workspace, ChannelID: ts.channel, Seq: 2})
+	}
+	for _, want := range changes {
+		frame := read(t, conn)
+		if frame["type"] != string(want) || frame["seq"] != float64(2) {
+			t.Fatalf("frame = %v, want %s for seq 2", frame, want)
+		}
+	}
+}
+
 // A channel the client may no longer read is skipped instead of failing the
 // whole subscribe.
 func TestCatchUpSkipsUnreadableChannels(t *testing.T) {
@@ -478,6 +513,37 @@ func TestConversationCatchUpByCursor(t *testing.T) {
 	ts.hub.PublishToUser(ts.user, events.Event{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 4})
 	if frame := read(t, conn); frame["seq"] != float64(4) {
 		t.Errorf("seq = %v, want 4: seq 3 came twice", frame["seq"])
+	}
+}
+
+// In a conversation the live message.created is remembered too, so a later
+// change to that message — same seq — must not be taken for a repeat.
+func TestPersonalStreamDeliversChangesToSeenMessages(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+	conv := uuid.New()
+	waitFor(t, func() bool { return ts.hub.PersonalSubscribers(ts.user) == 1 })
+
+	sequence := []events.Kind{
+		events.KindMessageCreated,
+		events.KindMessageUpdated,
+		events.KindReactionChanged,
+		events.KindMessageDeleted,
+	}
+	for _, kind := range sequence {
+		ts.hub.PublishToUser(ts.user, events.Event{Kind: kind, ChannelID: conv, Seq: 7})
+	}
+	// The same message.created again is still a repeat and is dropped.
+	ts.hub.PublishToUser(ts.user, events.Event{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 7})
+	ts.hub.PublishToUser(ts.user, events.Event{Kind: events.KindMessageCreated, ChannelID: conv, Seq: 8})
+
+	for _, want := range sequence {
+		if frame := read(t, conn); frame["type"] != string(want) {
+			t.Fatalf("frame = %v, want %s", frame, want)
+		}
+	}
+	if frame := read(t, conn); frame["seq"] != float64(8) {
+		t.Errorf("frame = %v, want seq 8: a repeated message.created came through", frame)
 	}
 }
 

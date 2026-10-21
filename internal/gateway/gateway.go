@@ -300,7 +300,7 @@ func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, trac
 			}
 			return
 		case event := <-sub.Events():
-			if tracker.seen(event.ChannelID, event.Seq) {
+			if tracker.seen(event) {
 				continue
 			}
 			workspaceID, channelID := event.WorkspaceID, event.ChannelID
@@ -335,10 +335,10 @@ func (h *Handler) pumpPersonalEvents(ctx context.Context, sub *events.Subscripti
 			}
 			return
 		case event := <-sub.Events():
-			if tracker.seen(event.ChannelID, event.Seq) {
+			if tracker.seen(event) {
 				continue
 			}
-			if event.Seq > 0 {
+			if event.Kind == events.KindMessageCreated {
 				tracker.mark(event.ChannelID, event.Seq)
 			}
 			frame := serverFrame{
@@ -363,6 +363,10 @@ func (h *Handler) pumpPersonalEvents(ctx context.Context, sub *events.Subscripti
 
 // replayTracker remembers the highest seq sent on each channel, so a catch-up
 // and a live event cannot both deliver the same message.
+//
+// Only message.created is a repeat when its seq is not new: the catch-up sends
+// nothing else. An edit, a delete or a reaction carries the seq of the message
+// it changes, which the client has usually seen already, so it always goes out.
 type replayTracker struct {
 	mu      sync.RWMutex
 	highest map[uuid.UUID]int64
@@ -372,13 +376,13 @@ func newReplayTracker() *replayTracker {
 	return &replayTracker{highest: map[uuid.UUID]int64{}}
 }
 
-func (t *replayTracker) seen(channelID uuid.UUID, seq int64) bool {
-	if seq <= 0 {
+func (t *replayTracker) seen(event events.Event) bool {
+	if event.Kind != events.KindMessageCreated || event.Seq <= 0 {
 		return false
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return seq <= t.highest[channelID]
+	return event.Seq <= t.highest[event.ChannelID]
 }
 
 func (t *replayTracker) mark(channelID uuid.UUID, seq int64) {
