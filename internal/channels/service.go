@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -124,9 +125,16 @@ type Authorizer interface {
 	RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error)
 }
 
+// Watchers is the live stream of a server. Optional: with nil the API behaves the
+// same and the other members see the change on their next load.
+type Watchers interface {
+	Publish(event events.Event)
+}
+
 type Service struct {
-	store Store
-	roles Authorizer
+	store    Store
+	roles    Authorizer
+	watchers Watchers
 	// participants resolves access to conversations; see Participants.
 	participants Participants
 }
@@ -138,6 +146,25 @@ func NewService(store Store, roles Authorizer) *Service {
 // SetParticipants wires conversations in after construction: the two modules
 // point at each other, so one of them is told about the other once both exist.
 func (s *Service) SetParticipants(p Participants) { s.participants = p }
+
+// SetWatchers wires in the live stream, so the other members of the server see
+// a channel appear, change, move or go without reloading.
+func (s *Service) SetWatchers(w Watchers) { s.watchers = w }
+
+// announce tells the server that its channel list changed. The payload names
+// the channel only: the channel as the API shows it carries canWrite, which
+// depends on who reads it, so each client asks for its own view. A zero
+// channelID means the whole list changed — a new order.
+func (s *Service) announce(kind events.Kind, workspaceID, channelID uuid.UUID) {
+	if s.watchers == nil {
+		return
+	}
+	event := events.Event{Kind: kind, WorkspaceID: workspaceID, ChannelID: channelID}
+	if channelID != uuid.Nil {
+		event.Payload = map[string]any{"channelId": channelID}
+	}
+	s.watchers.Publish(event)
+}
 
 // View is a channel as one caller sees it: the channel plus whether they may write.
 type View struct {
@@ -200,6 +227,7 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c
 	if err != nil {
 		return View{}, err
 	}
+	s.announce(events.KindChannelChanged, workspaceID, created.ID)
 	return View{Channel: created, CanWrite: created.CanWrite(role)}, nil
 }
 
@@ -228,16 +256,22 @@ func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u U
 	if err != nil {
 		return View{}, err
 	}
+	s.announce(events.KindChannelChanged, updated.WorkspaceID, updated.ID)
 	return View{Channel: updated, CanWrite: updated.CanWrite(role)}, nil
 }
 
 // Delete removes the channel; the database takes its messages and attachments
 // with it, so nothing is left pointing at a channel that is gone.
 func (s *Service) Delete(ctx context.Context, channelID, callerID uuid.UUID) error {
-	if _, _, err := s.channelFor(ctx, channelID, callerID, servers.RoleAdmin); err != nil {
+	channel, _, err := s.channelFor(ctx, channelID, callerID, servers.RoleAdmin)
+	if err != nil {
 		return err
 	}
-	return s.store.Delete(ctx, channelID)
+	if err := s.store.Delete(ctx, channelID); err != nil {
+		return err
+	}
+	s.announce(events.KindChannelDeleted, channel.WorkspaceID, channelID)
+	return nil
 }
 
 // Reorder sets the order of the whole list. The new order must name every channel
@@ -259,6 +293,7 @@ func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, 
 	if err := s.store.Reorder(ctx, workspaceID, ids); err != nil {
 		return nil, err
 	}
+	s.announce(events.KindChannelChanged, workspaceID, uuid.Nil)
 	list, err := s.store.List(ctx, workspaceID)
 	if err != nil {
 		return nil, err

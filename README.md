@@ -294,7 +294,8 @@ SQL-запросом на страницу; участники страницы 
 беседы отвечает 404.
 
 От сервера: `subscribed`, `unsubscribed`, `pong`, события `message.created`, `message.updated`,
-`message.deleted`, `message.reaction`, `member.changed`, `workspace.updated`, `user.updated`,
+`message.deleted`, `message.reaction`, `channel.changed`, `channel.deleted`, `member.changed`,
+`workspace.updated`, `user.updated`,
 `voice.presence`, `presence.updated`, `friend.request.created`, `friend.request.removed`, `friend.added`
 и `friend.removed` (поля `workspaceId`, `channelId`, `seq`, `payload`) и `error` с кодом. После
 `subscribe` сервер сначала досылает пропущенное по курсорам, потом включает живой поток и не повторяет
@@ -302,6 +303,9 @@ SQL-запросом на страницу; участники страницы 
 свои собственные обновления клиент тоже получает (он участник своих серверов) и пропускает по `userId`.
 У `user.updated` payload — та же схема `UserProfile`, что и в ответах API, поэтому клиент заменяет
 автора в уже загруженной ленте.
+`channel.changed` — канал создан или изменён (`channelId` в кадре и в payload) либо переставлен весь
+список (без `channelId`); `channel.deleted` — канал удалён. Сам канал в событии не едет: в API у него есть
+`canWrite`, который зависит от роли читающего, поэтому клиент перезапрашивает список каналов.
 
 
 Коды ошибок потока: `not_found` — нет доступа к серверу; `forbidden` — доступ пропал уже во время
