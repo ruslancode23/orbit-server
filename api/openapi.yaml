@@ -1444,6 +1444,35 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{userId}/mutual:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: getMutual
+      tags: [profile]
+      summary: What you and another account share. Needs a shared server or friendship.
+      description: |
+        The servers you are both on and the friends you both have: the
+        intersection of the two accounts, never a union. The audience is the
+        profile audience — a common server, a common conversation or a friendship;
+        a stranger, an unknown id and a blocked pair all answer the same 404, so
+        the endpoint cannot be used to probe accounts. Asking about yourself
+        answers 400: a mutual list needs two different accounts.
+        Server icons are signed links; the icon keys never leave the server.
+      responses:
+        "200":
+          description: The shared servers and friends, sorted by name and nickname.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutualOverview" }
+        "400":
+          description: The caller named their own account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/{userId}/devices:
     parameters:
       - $ref: "#/components/parameters/UserId"
@@ -2129,6 +2158,43 @@ components:
           type: boolean
           description: A guest has no password and keeps its id when it signs up.
         createdAt: { type: string, format: date-time }
+    MutualOverview:
+      type: object
+      additionalProperties: false
+      description: |
+        What two accounts share: the servers both are on and the friends both
+        have. Each list is an intersection — an item only one of the accounts has
+        is not there.
+      required: [servers, friends]
+      properties:
+        servers:
+          type: array
+          description: Shared servers, sorted by name.
+          items: { $ref: "#/components/schemas/MutualServer" }
+        friends:
+          type: array
+          description: Shared friends, sorted by nickname.
+          items: { $ref: "#/components/schemas/UserProfile" }
+    MutualServer:
+      type: object
+      additionalProperties: false
+      description: |
+        A server both accounts are on, as the caller sees it. `role` is the
+        caller's own role there, not the other account's.
+      required: [id, name, iconUrl, role]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        iconUrl:
+          type: string
+          nullable: true
+          description: |
+            A signed link to the icon; null without an icon. The key never leaves
+            the server, so read the list again for a fresh link.
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
     ProfileUpdate:
       type: object
       additionalProperties: false

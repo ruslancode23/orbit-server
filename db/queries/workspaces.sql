@@ -100,3 +100,17 @@ ORDER BY bans.created_at DESC;
 -- A server always keeps exactly one owner; the count guards the last one.
 -- name: CountWorkspaceOwners :one
 SELECT count(*) FROM workspace_members WHERE workspace_id = $1 AND role = 'owner';
+
+-- The mutual lists ask which servers both accounts are on, in one query: reading
+-- each membership separately would be an N+1. The role is the caller's own, so
+-- the endpoint never shows what the other account may do. The icon key stays in
+-- this module; the service turns it into a signed link.
+-- name: ListMutualWorkspaces :many
+SELECT w.id, w.name, w.icon_key, mine.role
+FROM workspace_members mine
+    JOIN workspace_members theirs
+        ON theirs.workspace_id = mine.workspace_id
+        AND theirs.user_id = sqlc.arg(other_id)::uuid
+    JOIN workspaces w ON w.id = mine.workspace_id
+WHERE mine.user_id = sqlc.arg(user_id)::uuid
+ORDER BY lower(w.name), w.id;
