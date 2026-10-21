@@ -54,3 +54,28 @@ func TestKickedMemberHearsTheirOwnRemoval(t *testing.T) {
 		t.Errorf("the owner heard %+v, want one member.changed", got)
 	}
 }
+
+// The ban list is the staff's: an unban reaches the admins and the owner on
+// their own streams, and plain members hear nothing.
+func TestUnbanReachesOnlyTheStaff(t *testing.T) {
+	w, _, watchers := newProfileWorld(t)
+	if _, err := w.svc.Ban(t.Context(), w.workspace, w.admin, w.member, ""); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+	watchers.personal = nil
+
+	if err := w.svc.Unban(t.Context(), w.workspace, w.admin, w.member); err != nil {
+		t.Fatalf("Unban: %v", err)
+	}
+
+	for _, id := range []uuid.UUID{w.owner, w.admin} {
+		if got := watchers.personal[id]; len(got) != 1 || got[0].Kind != events.KindBansChanged {
+			t.Errorf("staff %s heard %+v, want one bans.changed", id, got)
+		}
+	}
+	for _, id := range []uuid.UUID{w.member, w.member2} {
+		if got := watchers.personal[id]; len(got) != 0 {
+			t.Errorf("non-staff %s heard %+v", id, got)
+		}
+	}
+}

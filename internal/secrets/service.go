@@ -235,7 +235,17 @@ func (s *Service) RegisterDevice(ctx context.Context, userID uuid.UUID, registra
 		}
 		return Device{}, false, err
 	}
+	s.devicesChanged(userID)
 	return device, true, nil
+}
+
+// devicesChanged tells the account's own devices that its device list changed,
+// so a revoked device disappears from the settings of the others at once.
+func (s *Service) devicesChanged(userID uuid.UUID) {
+	if s.publisher == nil {
+		return
+	}
+	s.publisher.PublishToUser(userID, events.Event{Kind: events.KindDevicesChanged})
 }
 
 // ListDevices is the caller's own devices.
@@ -254,7 +264,11 @@ func (s *Service) UserDevices(ctx context.Context, userID uuid.UUID) ([]Device, 
 // RevokeDevice forgets one of the caller's devices, its pending keys and its
 // undelivered envelopes.
 func (s *Service) RevokeDevice(ctx context.Context, userID, deviceID uuid.UUID) error {
-	return s.store.RevokeDevice(ctx, deviceID, userID)
+	if err := s.store.RevokeDevice(ctx, deviceID, userID); err != nil {
+		return err
+	}
+	s.devicesChanged(userID)
+	return nil
 }
 
 // UploadOneTimeKeys adds a batch of pre-keys to a device the caller owns.

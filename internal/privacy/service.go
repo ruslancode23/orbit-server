@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
 var (
@@ -137,6 +139,13 @@ type Service struct {
 	store        Store
 	friendship   Friendship
 	blockCleanup BlockCleanup
+	publisher    Publisher
+}
+
+// Publisher reaches the account's own connections. Optional: without it the
+// other devices of the account see a new block or policy on their next load.
+type Publisher interface {
+	PublishToUser(userID uuid.UUID, event events.Event)
 }
 
 func NewService(store Store) *Service {
@@ -150,6 +159,19 @@ func (s *Service) SetFriendship(friendship Friendship) { s.friendship = friendsh
 // SetBlockCleanup wires in the friends module so a block also removes the pair's
 // request or friendship. Optional; see BlockCleanup.
 func (s *Service) SetBlockCleanup(cleanup BlockCleanup) { s.blockCleanup = cleanup }
+
+// SetPublisher wires in the live stream, so the account's other devices follow
+// its block list and policies.
+func (s *Service) SetPublisher(publisher Publisher) { s.publisher = publisher }
+
+// changed tells the account's own devices that its privacy changed. Only them:
+// a blocked account must not learn of the block this way.
+func (s *Service) changed(userID uuid.UUID) {
+	if s.publisher == nil {
+		return
+	}
+	s.publisher.PublishToUser(userID, events.Event{Kind: events.KindPrivacyChanged})
+}
 
 // CanStartDirect reports whether fromID may open a dialogue with toID. It is
 // false when either account is missing or does not exist, the sender is a
@@ -316,6 +338,7 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 			return fmt.Errorf("cut friendship on block: %w", err)
 		}
 	}
+	s.changed(blockerID)
 	return nil
 }
 
@@ -325,6 +348,7 @@ func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) e
 	if err := s.store.Unblock(ctx, blockerID, blockedID); err != nil {
 		return fmt.Errorf("unblock account: %w", err)
 	}
+	s.changed(blockerID)
 	return nil
 }
 
@@ -423,6 +447,7 @@ func (s *Service) SetFriendRequestPolicy(ctx context.Context, userID uuid.UUID, 
 	if err := s.store.SetFriendRequestPolicy(ctx, userID, policy); err != nil {
 		return fmt.Errorf("set friend request policy: %w", err)
 	}
+	s.changed(userID)
 	return nil
 }
 
@@ -443,5 +468,6 @@ func (s *Service) SetPolicy(ctx context.Context, userID uuid.UUID, policy Policy
 	if err := s.store.SetPolicy(ctx, userID, policy); err != nil {
 		return fmt.Errorf("set dm policy: %w", err)
 	}
+	s.changed(userID)
 	return nil
 }

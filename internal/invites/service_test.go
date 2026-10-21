@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
+	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -96,6 +97,12 @@ type fakeMembers struct {
 	roles     map[uuid.UUID]servers.Role
 	banned    map[uuid.UUID]bool
 	joins     int
+	// staff are the events announced to the admins of the server.
+	staff []events.Event
+}
+
+func (m *fakeMembers) AnnounceToStaff(_ context.Context, event events.Event) {
+	m.staff = append(m.staff, event)
 }
 
 func (m *fakeMembers) RequireAtLeast(_ context.Context, workspaceID, userID uuid.UUID, least servers.Role) (servers.Role, error) {
