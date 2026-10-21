@@ -58,7 +58,9 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
   SHA-256. Токен живёт в cookie `orbit_session` (HttpOnly, SameSite=Lax, Secure вне разработки) — её же браузер
   пришлёт при апгрейде WebSocket, чего заголовком не сделать. `auth.Middleware` кладёт сессию в контекст и никого
   не отклоняет; хендлер без сессии отвечает 401 сам, вне генерируемых хендлеров — `auth.RequireSession`.
-- Не доверяй `X-Forwarded-For` без списка доверенных прокси (`chi/middleware.RealIP` не используем).
+- Не доверяй `X-Forwarded-For` без списка доверенных прокси (`chi/middleware.RealIP` не используем): адрес
+  клиента — только `clientip.From(ctx)`, список — `ORBIT_TRUSTED_PROXIES`. Лимиты по адресу и по имени
+  входа — `ratelimit.AllowKey`/`Check` (см. README, «Лимиты входа и регистрации»).
 - SQL только параметризованный, через sqlc.
 - Вложения (`internal/files`): загрузка идёт через сервер, тип определяется по содержимому
   (`http.DetectContentType`), html/svg/js не принимаем; скачивание — подписанной ссылкой из

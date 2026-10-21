@@ -11,7 +11,9 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
+	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -24,11 +26,18 @@ type Handler struct {
 	svc     *Service
 	cookies Cookies
 	log     *slog.Logger
+	// signups is the per-address budget of new accounts, shared with
+	// registration; nil lets everything through.
+	signups *ratelimit.Limiter
 }
 
 func NewHandler(svc *Service, cookies Cookies, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, cookies: cookies, log: log}
 }
+
+// SetSignupLimiter counts guests against the same per-address budget as
+// registered accounts: entering as a guest creates an account too.
+func (h *Handler) SetSignupLimiter(limiter *ratelimit.Limiter) { h.signups = limiter }
 
 func caller(ctx context.Context) (uuid.UUID, bool) {
 	session, ok := auth.SessionFrom(ctx)
@@ -151,6 +160,13 @@ func (h *Handler) AcceptInvite(ctx context.Context, req api.AcceptInviteRequestO
 func (h *Handler) JoinAsGuest(ctx context.Context, req api.JoinAsGuestRequestObject) (api.JoinAsGuestResponseObject, error) {
 	if req.Body == nil {
 		return api.JoinAsGuest400JSONResponse{ErrorJSONResponse: badRequest("request body is required")}, nil
+	}
+	if ok, wait := h.signups.AllowKey(clientip.From(ctx)); !ok {
+		seconds := ratelimit.Seconds(wait)
+		return api.JoinAsGuest429JSONResponse{TooManyRequestsJSONResponse: api.TooManyRequestsJSONResponse{
+			Body:    api.Error(errorBody(httpx.CodeTooManyRequests, "too many new accounts from this address, try again later")),
+			Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
+		}}, nil
 	}
 
 	user, creds, membership, err := h.svc.JoinAsGuest(ctx, req.Code, req.Body.Nickname)

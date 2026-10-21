@@ -1,7 +1,7 @@
-// Package ratelimit is a per-account token bucket held in the process. It costs
+// Package ratelimit is a token bucket per key held in the process. It costs
 // nothing to consult and needs no shared storage: one instance serves one
-// process, and the limit is about how often one account may start something,
-// not about the total load of the cluster.
+// process, and the limit is about how often one account — or one address, or
+// one login name — may do something, not about the total load of the cluster.
 package ratelimit
 
 import (
@@ -16,14 +16,14 @@ import (
 // for long enough that its map entry is not worth keeping.
 const idleFor = 10 * time.Minute
 
-// Limiter hands out tokens to accounts. A nil *Limiter allows everything, so a
+// Limiter hands out tokens per key: an account id, a client address, a login. A nil *Limiter allows everything, so a
 // caller that does not need a limit can leave the field unset.
 type Limiter struct {
 	mu        sync.Mutex
 	perSecond float64
 	burst     float64
 	now       func() time.Time
-	buckets   map[uuid.UUID]*bucket
+	buckets   map[string]*bucket
 }
 
 type bucket struct {
@@ -42,7 +42,7 @@ func New(perMinute int) *Limiter {
 		perSecond: float64(perMinute) / 60,
 		burst:     float64(perMinute),
 		now:       time.Now,
-		buckets:   make(map[uuid.UUID]*bucket),
+		buckets:   make(map[string]*bucket),
 	}
 }
 
@@ -58,7 +58,7 @@ func NewDaily(perDay int) *Limiter {
 		perSecond: float64(perDay) / (24 * 60 * 60),
 		burst:     float64(perDay),
 		now:       time.Now,
-		buckets:   make(map[uuid.UUID]*bucket),
+		buckets:   make(map[string]*bucket),
 	}
 }
 
@@ -73,7 +73,7 @@ func NewHourly(perHour int) *Limiter {
 		perSecond: float64(perHour) / (60 * 60),
 		burst:     float64(perHour),
 		now:       time.Now,
-		buckets:   make(map[uuid.UUID]*bucket),
+		buckets:   make(map[string]*bucket),
 	}
 }
 
@@ -81,6 +81,12 @@ func NewHourly(perHour int) *Limiter {
 // long the caller should wait before asking again; the HTTP layer puts that in
 // Retry-After.
 func (l *Limiter) Allow(userID uuid.UUID) (bool, time.Duration) {
+	return l.AllowKey(userID.String())
+}
+
+// AllowKey is Allow for any key: a client address or a login name. Keys of
+// different kinds belong in different limiters, so they never share a budget.
+func (l *Limiter) AllowKey(key string) (bool, time.Duration) {
 	if l == nil {
 		return true, 0
 	}
@@ -88,14 +94,42 @@ func (l *Limiter) Allow(userID uuid.UUID) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.now()
-	b, ok := l.buckets[userID]
+	b := l.refilled(key, l.now())
+	if b.tokens >= 1 {
+		b.tokens--
+		return true, 0
+	}
+	return false, l.waitFor(b)
+}
+
+// Check reports whether a token is there without taking it. It serves a limit
+// that only failures spend: the caller checks before the attempt and calls
+// AllowKey when the attempt failed, so success costs nothing.
+func (l *Limiter) Check(key string) (bool, time.Duration) {
+	if l == nil {
+		return true, 0
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	b := l.refilled(key, l.now())
+	if b.tokens >= 1 {
+		return true, 0
+	}
+	return false, l.waitFor(b)
+}
+
+// refilled returns the bucket of the key with the tokens it earned since it was
+// last touched. The caller holds the lock.
+func (l *Limiter) refilled(key string, now time.Time) *bucket {
+	b, ok := l.buckets[key]
 	if !ok {
 		if len(l.buckets) > 1024 {
 			l.forgetIdle(now)
 		}
 		b = &bucket{tokens: l.burst, last: now}
-		l.buckets[userID] = b
+		l.buckets[key] = b
 	}
 
 	// Refill by elapsed time, capped at the burst: an idle bucket does not grow
@@ -104,16 +138,16 @@ func (l *Limiter) Allow(userID uuid.UUID) (bool, time.Duration) {
 		b.tokens = math.Min(l.burst, b.tokens+elapsed*l.perSecond)
 		b.last = now
 	}
-	if b.tokens >= 1 {
-		b.tokens--
-		return true, 0
-	}
+	return b
+}
 
+// waitFor is how long until the bucket holds one whole token again.
+func (l *Limiter) waitFor(b *bucket) time.Duration {
 	wait := time.Duration(math.Ceil((1-b.tokens)/l.perSecond)) * time.Second
 	if wait < time.Second {
 		wait = time.Second
 	}
-	return false, wait
+	return wait
 }
 
 // forgetIdle drops the buckets that have been full for idleFor; it runs only
@@ -127,4 +161,14 @@ func (l *Limiter) forgetIdle(now time.Time) {
 			delete(l.buckets, id)
 		}
 	}
+}
+
+// Seconds is a wait as Retry-After states it: whole seconds, rounded up, at
+// least one.
+func Seconds(wait time.Duration) int {
+	seconds := int((wait + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }

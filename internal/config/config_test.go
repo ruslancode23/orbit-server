@@ -15,7 +15,8 @@ func setRequired(t *testing.T) {
 		"ORBIT_ATTACHMENT_LINK_TTL", "ORBIT_ORPHAN_ATTACHMENT_AGE", "ORBIT_NEW_CONVERSATION_LIMIT",
 		"ORBIT_MAX_FRIENDS", "ORBIT_FRIEND_REQUEST_DAILY_LIMIT", "ORBIT_FRIEND_REQUEST_PENDING_LIMIT", "LIVEKIT_PUBLIC_URL",
 		"ORBIT_MAX_ICON_BYTES", "ORBIT_ICON_LINK_TTL", "ORBIT_MAX_AVATAR_BYTES", "ORBIT_AVATAR_LINK_TTL",
-		"ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT",
+		"ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT", "ORBIT_TRUSTED_PROXIES", "ORBIT_LOGIN_PER_MINUTE_PER_IP",
+		"ORBIT_LOGIN_FAILURES_PER_HOUR", "ORBIT_SIGNUPS_PER_HOUR_PER_IP",
 	} {
 		t.Setenv(name, "")
 	}
@@ -269,4 +270,41 @@ func TestLoadAvatarAndNicknameSettings(t *testing.T) {
 			t.Error("Load() error = nil, want a complaint about ORBIT_MAX_AVATAR_BYTES")
 		}
 	})
+}
+
+// The sign-in and sign-up limits are on unless an operator turns them off, and
+// a garbled proxy list stops the start instead of trusting nobody silently.
+func TestLoadAuthLimits(t *testing.T) {
+	setRequired(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.LoginPerMinutePerIP != 20 || cfg.LoginFailuresPerHour != 10 || cfg.SignupsPerHourPerIP != 30 {
+		t.Errorf("limits = %d/%d/%d, want 20/10/30",
+			cfg.LoginPerMinutePerIP, cfg.LoginFailuresPerHour, cfg.SignupsPerHourPerIP)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Errorf("TrustedProxies = %v, want none by default", cfg.TrustedProxies)
+	}
+
+	t.Setenv("ORBIT_TRUSTED_PROXIES", "10.0.0.0/8, 127.0.0.1")
+	t.Setenv("ORBIT_SIGNUPS_PER_HOUR_PER_IP", "0")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.TrustedProxies) != 2 || cfg.SignupsPerHourPerIP != 0 {
+		t.Errorf("TrustedProxies = %v, signups = %d", cfg.TrustedProxies, cfg.SignupsPerHourPerIP)
+	}
+
+	t.Setenv("ORBIT_TRUSTED_PROXIES", "proxy.local")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ORBIT_TRUSTED_PROXIES") {
+		t.Errorf("Load() error = %v, want one about ORBIT_TRUSTED_PROXIES", err)
+	}
+	t.Setenv("ORBIT_TRUSTED_PROXIES", "")
+	t.Setenv("ORBIT_LOGIN_FAILURES_PER_HOUR", "-1")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ORBIT_LOGIN_FAILURES_PER_HOUR") {
+		t.Errorf("Load() error = %v, want one about ORBIT_LOGIN_FAILURES_PER_HOUR", err)
+	}
 }

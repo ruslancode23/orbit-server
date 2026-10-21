@@ -150,6 +150,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/login:
     post:
@@ -178,6 +179,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/logout:
     post:
@@ -919,6 +921,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/claim:
     post:

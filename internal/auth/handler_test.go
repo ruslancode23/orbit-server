@@ -13,6 +13,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
@@ -584,5 +585,121 @@ func TestGuestCannotChangeIdentityThroughTheHandler(t *testing.T) {
 	}
 	if _, ok := email.(api.UpdateMyEmail403JSONResponse); !ok {
 		t.Errorf("email response = %T, want 403", email)
+	}
+}
+
+func fromAddr(addr string) context.Context {
+	return clientip.WithAddr(context.Background(), addr)
+}
+
+func loginAs(t *testing.T, h *Handler, ctx context.Context, login, password string) api.LoginResponseObject {
+	t.Helper()
+	resp, err := h.Login(ctx, api.LoginRequestObject{
+		Body: &api.LoginJSONRequestBody{Login: login, Password: password},
+	})
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	return resp
+}
+
+func retryAfter(t *testing.T, resp api.TooManyRequestsJSONResponse) int {
+	t.Helper()
+	if resp.Headers.RetryAfter == nil || *resp.Headers.RetryAfter < 1 {
+		t.Fatalf("Retry-After = %v, want a positive number of seconds", resp.Headers.RetryAfter)
+	}
+	return *resp.Headers.RetryAfter
+}
+
+// Wrong passwords for one name run out its budget whatever address they come
+// from, and the owner's right password is refused too until the wait is over:
+// otherwise a guesser would learn the password by the answer changing. A name
+// nobody owns answers exactly the same way.
+func TestLoginFailuresPerNameAcrossAddresses(t *testing.T) {
+	h, _, _ := newTestHandler(t, true)
+	h.SetLimits(Limits{LoginFailures: ratelimit.NewHourly(2)})
+	if _, err := h.Register(context.Background(), api.RegisterRequestObject{Body: registerBody("")}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, addr := range []string{"203.0.113.1", "203.0.113.2"} {
+		if _, ok := loginAs(t, h, fromAddr(addr), "anna", "wrong-password").(api.Login401JSONResponse); !ok {
+			t.Fatalf("attempt %d was not a plain 401", i+1)
+		}
+	}
+	limited, ok := loginAs(t, h, fromAddr("203.0.113.3"), "ANNA", testPassword).(api.Login429JSONResponse)
+	if !ok {
+		t.Fatal("the right password went through a spent budget")
+	}
+	retryAfter(t, limited.TooManyRequestsJSONResponse)
+
+	for range 2 {
+		loginAs(t, h, fromAddr("203.0.113.1"), "ghost", "whatever")
+	}
+	ghost, ok := loginAs(t, h, fromAddr("203.0.113.1"), "ghost", "whatever").(api.Login429JSONResponse)
+	if !ok || ghost.Body.Error.Message != limited.Body.Error.Message {
+		t.Errorf("an unknown name answered differently: %#v", ghost)
+	}
+}
+
+// Signing in successfully spends nothing from the failure budget, so the owner
+// can come and go as often as they like.
+func TestLoginSuccessDoesNotSpendTheFailureBudget(t *testing.T) {
+	h, _, _ := newTestHandler(t, true)
+	h.SetLimits(Limits{LoginFailures: ratelimit.NewHourly(1)})
+	if _, err := h.Register(context.Background(), api.RegisterRequestObject{Body: registerBody("")}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5 {
+		if _, ok := loginAs(t, h, fromAddr("203.0.113.1"), "anna", testPassword).(api.Login200JSONResponse); !ok {
+			t.Fatalf("sign-in %d was refused", i+1)
+		}
+	}
+}
+
+// One address may only try so often, right password or not; another address
+// is not affected.
+func TestLoginAttemptsPerAddress(t *testing.T) {
+	h, _, _ := newTestHandler(t, true)
+	h.SetLimits(Limits{LoginPerIP: ratelimit.New(2)})
+	if _, err := h.Register(context.Background(), api.RegisterRequestObject{Body: registerBody("")}); err != nil {
+		t.Fatal(err)
+	}
+	loginAs(t, h, fromAddr("203.0.113.1"), "anna", testPassword)
+	loginAs(t, h, fromAddr("203.0.113.1"), "anna", testPassword)
+	if _, ok := loginAs(t, h, fromAddr("203.0.113.1"), "anna", testPassword).(api.Login429JSONResponse); !ok {
+		t.Error("a third attempt in a minute passed a limit of two")
+	}
+	if _, ok := loginAs(t, h, fromAddr("203.0.113.2"), "anna", testPassword).(api.Login200JSONResponse); !ok {
+		t.Error("another address was limited too")
+	}
+}
+
+func TestRegisterPerAddress(t *testing.T) {
+	h, _, _ := newTestHandler(t, true)
+	h.SetLimits(Limits{Signups: ratelimit.NewHourly(1)})
+
+	register := func(addr, nickname string) api.RegisterResponseObject {
+		t.Helper()
+		resp, err := h.Register(fromAddr(addr), api.RegisterRequestObject{
+			Body: &api.RegisterJSONRequestBody{Nickname: nickname, Password: testPassword},
+		})
+		if err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		return resp
+	}
+	if _, ok := register("203.0.113.1", "Anna").(api.Register201JSONResponse); !ok {
+		t.Fatal("the first account was refused")
+	}
+	limited, ok := register("203.0.113.1", "Bob").(api.Register429JSONResponse)
+	if !ok {
+		t.Fatal("a second account from the same address passed a limit of one")
+	}
+	if seconds := retryAfter(t, limited.TooManyRequestsJSONResponse); seconds > 3600 {
+		t.Errorf("Retry-After = %d, want at most an hour", seconds)
+	}
+	if _, ok := register("203.0.113.2", "Bob").(api.Register201JSONResponse); !ok {
+		t.Error("another address was limited too")
 	}
 }

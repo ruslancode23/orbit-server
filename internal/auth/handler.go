@@ -5,13 +5,16 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
 
 // Profiles is the public part of an account, owned by internal/profile. It
@@ -48,6 +51,24 @@ type Handler struct {
 	profiles Profiles
 	// profileEvents is optional too: without it a change simply is not announced.
 	profileEvents ProfileEvents
+	// limits guard sign-in and sign-up; a nil limiter in it lets everything through.
+	limits Limits
+}
+
+// Limits are the guards in front of the endpoints that need no session. They
+// are keyed by the client address (internal/platform/clientip) and by the login
+// name, because there is no account to key them by yet.
+type Limits struct {
+	// LoginPerIP counts every sign-in attempt from one address.
+	LoginPerIP *ratelimit.Limiter
+	// LoginFailures counts wrong passwords for one login name, whoever sends
+	// them: a password cannot be guessed by spreading attempts over addresses.
+	// A successful sign-in spends nothing, so the owner is locked out only
+	// while someone is actually guessing.
+	LoginFailures *ratelimit.Limiter
+	// Signups counts new accounts from one address. The guest entrance shares
+	// it: a guest is an account too.
+	Signups *ratelimit.Limiter
 }
 
 func NewHandler(svc *Service, secureCookies bool, log *slog.Logger) *Handler {
@@ -60,9 +81,30 @@ func (h *Handler) SetProfiles(profiles Profiles) { h.profiles = profiles }
 // SetProfileEvents wires in the announcement scheduler of the profile module.
 func (h *Handler) SetProfileEvents(events ProfileEvents) { h.profileEvents = events }
 
+// SetLimits turns on the sign-in and sign-up guards.
+func (h *Handler) SetLimits(limits Limits) { h.limits = limits }
+
+// tooMany is the shared 429 body of the endpoints that need no session.
+func tooMany(wait time.Duration, message string) api.TooManyRequestsJSONResponse {
+	seconds := ratelimit.Seconds(wait)
+	return api.TooManyRequestsJSONResponse{
+		Body:    api.Error(errorBody(httpx.CodeTooManyRequests, message)),
+		Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
+	}
+}
+
+// loginKey is how the failure budget names a login: nicknames and emails are
+// compared without case, so «Anna» and «anna» share one budget.
+func loginKey(login string) string {
+	return strings.ToLower(strings.TrimSpace(login))
+}
+
 func (h *Handler) Register(ctx context.Context, req api.RegisterRequestObject) (api.RegisterResponseObject, error) {
 	if req.Body == nil {
 		return api.Register400JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeInvalidRequest, "request body is required")}, nil
+	}
+	if ok, wait := h.limits.Signups.AllowKey(clientip.From(ctx)); !ok {
+		return api.Register429JSONResponse{TooManyRequestsJSONResponse: tooMany(wait, "too many new accounts from this address, try again later")}, nil
 	}
 
 	user, creds, err := h.svc.Register(ctx, req.Body.Nickname, email(req.Body.Email), req.Body.Password)
@@ -87,10 +129,20 @@ func (h *Handler) Login(ctx context.Context, req api.LoginRequestObject) (api.Lo
 	if req.Body == nil {
 		return api.Login400JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeInvalidRequest, "request body is required")}, nil
 	}
+	// The same answer for both limits: it must not tell a guesser whether the
+	// address or the name ran out, nor whether that name exists.
+	if ok, wait := h.limits.LoginPerIP.AllowKey(clientip.From(ctx)); !ok {
+		return api.Login429JSONResponse{TooManyRequestsJSONResponse: tooMany(wait, "too many sign-in attempts, try again later")}, nil
+	}
+	key := loginKey(req.Body.Login)
+	if ok, wait := h.limits.LoginFailures.Check(key); !ok {
+		return api.Login429JSONResponse{TooManyRequestsJSONResponse: tooMany(wait, "too many sign-in attempts, try again later")}, nil
+	}
 
 	user, creds, err := h.svc.Login(ctx, req.Body.Login, req.Body.Password)
 	switch {
 	case errors.Is(err, ErrCredentials):
+		h.limits.LoginFailures.AllowKey(key)
 		return api.Login401JSONResponse(errorBody(httpx.CodeUnauthorized, "wrong login or password")), nil
 	case err != nil:
 		h.log.ErrorContext(ctx, "login", slog.Any("error", err))
