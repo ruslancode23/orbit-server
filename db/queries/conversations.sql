@@ -42,7 +42,7 @@ WITH visible AS (
         channels.created_at,
         coalesce(last_message.seq, 0)::bigint AS last_seq,
         last_message.id AS last_message_id,
-        last_message.seq AS last_message_seq,
+        coalesce(last_message.seq, 0)::bigint AS last_message_seq,
         last_message.author_id AS last_message_author_id,
         left(coalesce(last_message.content, ''), 120)::text AS last_message_content,
         coalesce(last_message.kind, 'user')::message_kind AS last_message_kind,
