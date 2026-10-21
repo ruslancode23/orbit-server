@@ -8,6 +8,22 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The integration tests (internal/platform/postgres/pgtest) create their own
+    # databases on this server; without it they are skipped.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: orbit
+          POSTGRES_PASSWORD: orbit
+          POSTGRES_DB: orbit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orbit"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -21,4 +37,6 @@ jobs:
         run: make api-check
       - run: make lint
       - run: make test
+        env:
+          ORBIT_TEST_DATABASE_URL: postgres://orbit:orbit@localhost:5432/orbit?sslmode=disable
       - run: docker build -t orbit-server .
