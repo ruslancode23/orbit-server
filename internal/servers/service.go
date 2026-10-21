@@ -264,6 +264,25 @@ func (s *Service) announce(ctx context.Context, workspaceID, userID uuid.UUID, r
 	}, userID)
 }
 
+// AnnounceToStaff sends an event about a server to its admins and owner only:
+// the invite links and the ban list are theirs, and nobody else may even learn
+// that they changed.
+func (s *Service) AnnounceToStaff(ctx context.Context, event events.Event) {
+	if s.watchers == nil {
+		return
+	}
+	members, err := s.store.ListMembers(ctx, event.WorkspaceID)
+	if err != nil {
+		// No shared-stream fallback here: it would reach plain members too.
+		return
+	}
+	for _, member := range members {
+		if member.Role.Rank() >= RoleAdmin.Rank() {
+			s.watchers.PublishToUser(member.User.ID, event)
+		}
+	}
+}
+
 // Announce sends an event about a server to the personal stream of each of
 // its members (and of anyone in also). The server's own stream reaches only
 // the connections watching it right now, and most members watch another
@@ -661,6 +680,7 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 		return Ban{}, err
 	}
 	s.announce(ctx, workspaceID, targetID, "", false)
+	s.AnnounceToStaff(ctx, events.Event{Kind: events.KindBansChanged, WorkspaceID: workspaceID})
 	s.cutOff(workspaceID, targetID)
 	return ban, nil
 }
@@ -669,7 +689,11 @@ func (s *Service) Unban(ctx context.Context, workspaceID, callerID, targetID uui
 	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin); err != nil {
 		return err
 	}
-	return s.store.Unban(ctx, workspaceID, targetID)
+	if err := s.store.Unban(ctx, workspaceID, targetID); err != nil {
+		return err
+	}
+	s.AnnounceToStaff(ctx, events.Event{Kind: events.KindBansChanged, WorkspaceID: workspaceID})
+	return nil
 }
 
 func (s *Service) ListBans(ctx context.Context, workspaceID, callerID uuid.UUID) ([]Ban, error) {

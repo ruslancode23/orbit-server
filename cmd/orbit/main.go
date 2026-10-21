@@ -77,6 +77,7 @@ func run() error {
 
 	// Who may write to whom: the block list, the dm policy and the guest rule.
 	privacyService := privacy.NewService(privacy.NewPostgresStore(queries))
+	privacyService.SetPublisher(hub)
 	// Friendships live in their own module. Privacy asks them two questions —
 	// whether two accounts are friends, and what to withdraw when one blocks the
 	// other — so neither package imports the other's rules.

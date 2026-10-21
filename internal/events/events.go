@@ -29,6 +29,20 @@ const (
 	// former member's personal stream, so the server leaves every client's rail
 	// even where it was not the one open; the frame names it in workspaceId.
 	KindWorkspaceDeleted Kind = "workspace.deleted"
+	// KindInvitesChanged says the invite links of a server changed: one was
+	// made, used or revoked. Only admins and the owner hear it — the list is
+	// theirs. No payload: the client asks for the list again.
+	KindInvitesChanged Kind = "invites.changed"
+	// KindBansChanged says the ban list of a server changed. Admins and the
+	// owner only, like the list itself.
+	KindBansChanged Kind = "bans.changed"
+	// KindPrivacyChanged is personal: this account blocked or unblocked someone
+	// or changed who may write or send requests to it. Only its own devices
+	// hear it; the other side of a block learns nothing.
+	KindPrivacyChanged Kind = "privacy.changed"
+	// KindDevicesChanged is personal: a device of this account was registered
+	// or revoked. Only its own devices hear it.
+	KindDevicesChanged Kind = "devices.changed"
 	// KindUserUpdated says a profile changed: display name, avatar, accent,
 	// bio or custom status. The payload is the `UserProfile` the API returns, so
 	// a client replaces the author already in a loaded feed. It goes to the

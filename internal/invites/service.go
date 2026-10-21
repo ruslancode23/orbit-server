@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
+	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -84,6 +85,8 @@ type Members interface {
 	MemberCount(ctx context.Context, workspaceID uuid.UUID) (int, error)
 	// Authorize reports the role of an account on a server, or servers.ErrNotMember.
 	Authorize(ctx context.Context, workspaceID, userID uuid.UUID) (servers.Role, error)
+	// AnnounceToStaff tells the admins and the owner that the links changed.
+	AnnounceToStaff(ctx context.Context, event events.Event)
 }
 
 // Guests is what this package needs from internal/auth to let someone in by
@@ -126,7 +129,18 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, n
 	if err != nil {
 		return Invite{}, err
 	}
-	return s.store.Create(ctx, workspaceID, callerID, code, expiresAt, n.MaxUses)
+	invite, err := s.store.Create(ctx, workspaceID, callerID, code, expiresAt, n.MaxUses)
+	if err != nil {
+		return Invite{}, err
+	}
+	s.linksChanged(ctx, workspaceID)
+	return invite, nil
+}
+
+// linksChanged refreshes the invite list of the admins: a link was made, used
+// up a little or revoked.
+func (s *Service) linksChanged(ctx context.Context, workspaceID uuid.UUID) {
+	s.members.AnnounceToStaff(ctx, events.Event{Kind: events.KindInvitesChanged, WorkspaceID: workspaceID})
 }
 
 func (s *Service) List(ctx context.Context, workspaceID, callerID uuid.UUID) ([]Invite, error) {
@@ -144,7 +158,11 @@ func (s *Service) Revoke(ctx context.Context, inviteID, callerID uuid.UUID) erro
 	if err := s.requireAdmin(ctx, invite.WorkspaceID, callerID); err != nil {
 		return err
 	}
-	return s.store.Revoke(ctx, inviteID)
+	if err := s.store.Revoke(ctx, inviteID); err != nil {
+		return err
+	}
+	s.linksChanged(ctx, invite.WorkspaceID)
+	return nil
 }
 
 // Preview tells whoever holds the link what it leads to. No session: the page
@@ -228,6 +246,9 @@ func (s *Service) join(ctx context.Context, invite Invite, userID uuid.UUID) (se
 		}
 		return servers.Membership{}, err
 	}
+
+	// The link has one use less; the admins' list shows the count.
+	s.linksChanged(ctx, invite.WorkspaceID)
 
 	workspace, err := s.members.Workspace(ctx, invite.WorkspaceID)
 	if err != nil {

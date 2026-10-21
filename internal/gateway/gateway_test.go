@@ -610,3 +610,19 @@ func TestPresenceFrames(t *testing.T) {
 		return disconnections == 1
 	})
 }
+
+// The client counts itself connected once the handshake ends; an event sent
+// in that very moment must still arrive. The account stream is opened before
+// the upgrade completes, so there is no gap to fall into.
+func TestPersonalEventRightAfterTheHandshakeArrives(t *testing.T) {
+	ts := newTestServer(t)
+	conn := ts.dial(t)
+	// No waiting for the subscription: it must already exist.
+	if got := ts.hub.PersonalSubscribers(ts.user); got != 1 {
+		t.Fatalf("personal subscribers right after the handshake = %d, want 1", got)
+	}
+	ts.hub.PublishToUser(ts.user, events.Event{Kind: events.KindPrivacyChanged})
+	if frame := read(t, conn); frame["type"] != string(events.KindPrivacyChanged) {
+		t.Errorf("frame = %v, want privacy.changed", frame)
+	}
+}

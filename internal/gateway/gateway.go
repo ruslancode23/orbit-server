@@ -117,6 +117,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The account stream is opened before the upgrade completes: the client
+	// counts itself connected as soon as the handshake ends, and an event sent
+	// in that moment must wait in the subscription, not be lost.
+	personal := h.hub.SubscribeUser(session.User.ID)
+	defer personal.Close()
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.origins})
 	if err != nil {
 		h.log.InfoContext(r.Context(), "websocket upgrade failed", slog.Any("error", err))
@@ -125,14 +131,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(maxFrameBytes)
 	defer func() { _ = conn.CloseNow() }()
 
-	h.serve(r.Context(), conn, session.User.ID)
+	h.serve(r.Context(), conn, session.User.ID, personal)
 }
 
 // serve reads client frames until the connection ends. One connection watches
 // one server at a time: switching servers replaces the subscription. The
 // account stream is opened at once and lives as long as the connection, so a
 // dialogue arrives whether or not a server is being watched.
-func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.UUID) {
+func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.UUID, personal *events.Subscription) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -152,8 +158,6 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, userID uuid.U
 	// One skip table for both streams: a message replayed after a reconnect must
 	// not also arrive live, whichever pump sees it first.
 	tracker := newReplayTracker()
-	personal := h.hub.SubscribeUser(userID)
-	defer personal.Close()
 	go h.pumpPersonalEvents(ctx, personal, tracker, writes)
 
 	var current *events.Subscription
