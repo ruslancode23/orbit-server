@@ -30,6 +30,9 @@ build: ## Build the binary into bin/
 test: ## Run tests with the race detector
 	go test -race ./...
 
+test-db: ## Run tests including the PostgreSQL ones against the compose database
+	ORBIT_TEST_DATABASE_URL="$(ORBIT_DATABASE_URL)" go test -race ./...
+
 lint: ## Run golangci-lint
 	$(TOOL) golangci-lint run ./...
 

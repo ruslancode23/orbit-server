@@ -118,6 +118,10 @@ JPEG и WebP; тип определяется по первым байтам, и
 `make help` выводит все цели. Основные: `make test`, `make lint`, `make fmt`, `make sqlc`,
 `make migrate-new name=create_users`, `make check` (то же, что CI).
 
+`make test-db` запускает те же тесты вместе с интеграционными на PostgreSQL из compose
+(`make up`): каждый тест создаёт свою базу `orbit_test_*`, накатывает все миграции и удаляет её.
+Без `ORBIT_TEST_DATABASE_URL` эти тесты пропускаются.
+
 Инструменты закреплены в `tools/go.mod` и запускаются через `go tool` — ставить их отдельно не нужно ([ADR-0002](docs/adr/0002-dev-tools-module.md)).
 
 ## Структура
