@@ -5,6 +5,8 @@ package conversations
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -29,6 +31,22 @@ var (
 	ErrNoMembers = errors.New("conversations: name at least one other person")
 	// ErrRateLimited means the account opened too many new conversations lately.
 	ErrRateLimited = errors.New("conversations: too many new conversations")
+	// ErrNotGroup means a group-only operation was asked of a direct dialogue.
+	// A dialogue cannot turn into a group; a client creates a new one instead.
+	ErrNotGroup = errors.New("conversations: a direct dialogue cannot become a group")
+	// ErrInvalidName means the group title is empty or longer than its limit.
+	ErrInvalidName = errors.New("conversations: a group name must be 1 to 100 characters")
+	// ErrInvalidCursor means the page cursor was not one this server issued.
+	ErrInvalidCursor = errors.New("conversations: invalid page cursor")
+)
+
+const (
+	// defaultPageSize is one screen of a sidebar; maxPageSize caps what a client
+	// may ask for in one request.
+	defaultPageSize = 20
+	maxPageSize     = 100
+	// maxNameLength is the group title limit the API schema states too.
+	maxNameLength = 100
 )
 
 // RateLimitedError carries how long the caller should wait; the handler puts it
@@ -52,11 +70,69 @@ const (
 	KindSecret Kind = "secret"
 )
 
+// MessageKind is what a message in a conversation is. A system line is written
+// by the server when the group changes; it takes a seq and an author like any
+// message, but nobody typed it and it mentions nobody.
+type MessageKind string
+
+const (
+	MessageKindUser   MessageKind = "user"
+	MessageKindSystem MessageKind = "system"
+)
+
+// SystemType says what a system line reports. The client renders its own
+// language from this; Content carries a readable fallback.
+type SystemType string
+
+const (
+	SystemMemberAdded         SystemType = "member_added"
+	SystemMemberRemoved       SystemType = "member_removed"
+	SystemConversationRenamed SystemType = "conversation_renamed"
+)
+
+// SystemMessage is the structured part of a system line.
+type SystemMessage struct {
+	Type     SystemType
+	TargetID *uuid.UUID
+	Name     string
+}
+
+// SystemEvent is what a group operation asks internal/messages to record. The
+// conversations module builds the readable text because it already has the
+// profiles; the messages module owns the row, the seq and the live event.
+type SystemEvent struct {
+	ActorID  uuid.UUID
+	Type     SystemType
+	TargetID *uuid.UUID
+	Name     string
+	Content  string
+}
+
+// LastMessage is the newest message of a conversation, shortened for the list.
+type LastMessage struct {
+	ID      uuid.UUID
+	Seq     int64
+	Author  *profile.Public
+	Content string
+	Kind    MessageKind
+	System  *SystemMessage
+	// CreatedAt is when the message was sent.
+	CreatedAt time.Time
+	DeletedAt *time.Time
+}
+
 type Conversation struct {
 	ID        uuid.UUID
 	Kind      Kind
+	Name      string
 	Members   []Member
 	CreatedAt time.Time
+	// The fields below are filled by List, the sidebar summary. A single
+	// conversation (Get, Start) leaves them zero.
+	LastMessage *LastMessage
+	LastReadSeq int64
+	Unread      int
+	Mentions    int
 }
 
 type Member struct {
@@ -64,6 +140,27 @@ type Member struct {
 	// internal/profile in one batch per conversation list.
 	profile.Public
 	JoinedAt time.Time
+}
+
+// UnreadSummary is the badge over every ordinary conversation of one account.
+type UnreadSummary struct {
+	Unread   int
+	Mentions int
+}
+
+// Cursor is the last row of a page: the ordering key of the conversation list.
+// The seq orders it, the creation time and the id break ties between
+// conversations that never had a message, so the boundary is stable.
+type Cursor struct {
+	Seq       int64
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// Page is one page of the sidebar and the cursor for the next one.
+type Page struct {
+	Conversations []Conversation
+	NextCursor    string
 }
 
 type Store interface {
@@ -74,7 +171,11 @@ type Store interface {
 	// Secret finds the secret chat of a pair of devices, or ErrNotFound.
 	Secret(ctx context.Context, key string) (Conversation, error)
 	Conversation(ctx context.Context, id uuid.UUID) (Conversation, error)
-	List(ctx context.Context, userID uuid.UUID) ([]Conversation, error)
+	// List is one page of the caller's ordinary conversations with their newest
+	// message, unread counts and participants, loaded without a query per row.
+	List(ctx context.Context, userID uuid.UUID, before *Cursor, limit int) ([]Conversation, error)
+	// Unread sums the unread and mention counts over every visible conversation.
+	Unread(ctx context.Context, userID uuid.UUID) (UnreadSummary, error)
 	IsParticipant(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
 	// MemberIDs is who belongs to a conversation: messages go to each of them
 	// personally, because a conversation has no server to announce to.
@@ -87,12 +188,29 @@ type Store interface {
 	// Peers is everyone who shares a conversation with this account: the
 	// personal audience of user.updated.
 	Peers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// Rename sets the title of a group.
+	Rename(ctx context.Context, channelID uuid.UUID, name string) error
+	// AddMembers inserts only the people who are new, provided the group stays
+	// within maxMembers. It returns the ids that were actually added.
+	AddMembers(ctx context.Context, channelID uuid.UUID, userIDs []uuid.UUID, maxMembers int) ([]uuid.UUID, error)
+	// RemoveMember drops one participant; false means they were not in it.
+	RemoveMember(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
+	// Hide marks the conversation hidden as of its newest message.
+	Hide(ctx context.Context, channelID, userID uuid.UUID) error
+	// Unhide shows a hidden conversation again.
+	Unhide(ctx context.Context, channelID, userID uuid.UUID) error
 }
 
 // Publisher tells a person's other connections what happened. Optional: with
 // nil, everything is stored and nothing arrives live.
 type Publisher interface {
 	PublishToUser(userID uuid.UUID, event events.Event)
+}
+
+// SystemMessages records a server-written line in a conversation feed. Optional:
+// without it a group change is still applied, it just has no line in history.
+type SystemMessages interface {
+	RecordSystem(ctx context.Context, channelID uuid.UUID, event SystemEvent) error
 }
 
 // Privacy decides whether the caller may open a conversation with someone. The
@@ -123,6 +241,8 @@ type Service struct {
 	limiter *ratelimit.Limiter
 	// publisher is optional; see Publisher.
 	publisher Publisher
+	// system records group changes in the feed; optional.
+	system SystemMessages
 	// profiles is optional at construction; main wires it in. Without it a
 	// participant carries only the id, which is still enough for access checks.
 	profiles Profiles
@@ -135,8 +255,13 @@ func NewService(store Store, maxMembers int, privacy Privacy) *Service {
 // SetProfiles wires the profile module in after both exist.
 func (s *Service) SetProfiles(profiles Profiles) { s.profiles = profiles }
 
+// SetSystemMessages wires the feed in after both modules exist. A group change
+// is applied whether or not a system line can be written afterwards.
+func (s *Service) SetSystemMessages(system SystemMessages) { s.system = system }
+
 // withProfiles fills every participant of every conversation in one call, so a
-// list of ten dialogues does not cost ten profile reads.
+// list of ten dialogues does not cost ten profile reads. The author of the last
+// message is filled from the same batch.
 func (s *Service) withProfiles(ctx context.Context, conversations []Conversation) ([]Conversation, error) {
 	if s.profiles == nil || len(conversations) == 0 {
 		return conversations, nil
@@ -148,6 +273,13 @@ func (s *Service) withProfiles(ctx context.Context, conversations []Conversation
 			if !seen[member.ID] {
 				seen[member.ID] = true
 				ids = append(ids, member.ID)
+			}
+		}
+		if conversation.LastMessage != nil && conversation.LastMessage.Author != nil {
+			id := conversation.LastMessage.Author.ID
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
 			}
 		}
 	}
@@ -168,6 +300,12 @@ func (s *Service) withProfiles(ctx context.Context, conversations []Conversation
 			members = append(members, member)
 		}
 		conversation.Members = members
+		if conversation.LastMessage != nil && conversation.LastMessage.Author != nil {
+			if loaded, ok := profiles[conversation.LastMessage.Author.ID]; ok {
+				author := loaded
+				conversation.LastMessage.Author = &author
+			}
+		}
 		out = append(out, conversation)
 	}
 	return out, nil
@@ -192,29 +330,30 @@ func (s *Service) SetPublisher(p Publisher) { s.publisher = p }
 
 // Start opens a conversation with the named people, or returns the one that
 // already exists for a pair: two people have one dialogue, not a new one per
-// click.
-func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.UUID) (Conversation, error) {
+// click. The second result says whether it was created, which is what separates
+// 201 from 200.
+func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.UUID) (Conversation, bool, error) {
 	members := unique(append([]uuid.UUID{callerID}, withIDs...))
 	if len(members) < 2 {
-		return Conversation{}, ErrNoMembers
+		return Conversation{}, false, ErrNoMembers
 	}
 	if len(members) > s.maxMembers {
-		return Conversation{}, ErrTooManyMembers
+		return Conversation{}, false, ErrTooManyMembers
 	}
 	// The rules are required: a service built without them must refuse rather
 	// than open a dialogue to anyone.
 	if s.privacy == nil {
-		return Conversation{}, ErrNotFound
+		return Conversation{}, false, ErrNotFound
 	}
 
 	known, err := s.store.KnownUsers(ctx, members)
 	if err != nil {
-		return Conversation{}, err
+		return Conversation{}, false, err
 	}
 	for _, id := range members {
 		if !known[id] {
 			// Not "no such account": a refusal must look the same.
-			return Conversation{}, ErrNotFound
+			return Conversation{}, false, ErrNotFound
 		}
 	}
 
@@ -226,26 +365,27 @@ func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.
 
 		allowed, err := s.privacy.CanStartDirect(ctx, callerID, members[1])
 		if err != nil {
-			return Conversation{}, err
+			return Conversation{}, false, err
 		}
 		if !allowed {
-			return Conversation{}, ErrNotFound
+			return Conversation{}, false, ErrNotFound
 		}
 
 		existing, err := s.store.Direct(ctx, directKey)
 		switch {
 		case err == nil:
-			return s.one(ctx, existing)
+			found, err := s.one(ctx, existing)
+			return found, false, err
 		case !errors.Is(err, ErrNotFound):
-			return Conversation{}, err
+			return Conversation{}, false, err
 		}
 	} else {
 		allowed, err := s.privacy.CanStartGroup(ctx, callerID, members[1:])
 		if err != nil {
-			return Conversation{}, err
+			return Conversation{}, false, err
 		}
 		if !allowed {
-			return Conversation{}, ErrNotFound
+			return Conversation{}, false, ErrNotFound
 		}
 	}
 
@@ -254,20 +394,20 @@ func (s *Service) Start(ctx context.Context, callerID uuid.UUID, withIDs []uuid.
 	if s.limiter != nil {
 		allowed, retryAfter := s.limiter.Allow(callerID)
 		if !allowed {
-			return Conversation{}, &RateLimitedError{RetryAfter: retryAfter}
+			return Conversation{}, false, &RateLimitedError{RetryAfter: retryAfter}
 		}
 	}
 
 	created, err := s.store.Create(ctx, kind, directKey, members)
 	if err != nil {
-		return Conversation{}, err
+		return Conversation{}, false, err
 	}
 	created, err = s.one(ctx, created)
 	if err != nil {
-		return Conversation{}, err
+		return Conversation{}, false, err
 	}
-	s.publish(events.KindConversationCreated, created)
-	return created, nil
+	s.publish(events.KindConversationCreated, created, memberIDs(created))
+	return created, true, nil
 }
 
 // EnsureSecret returns the secret chat of a pair of devices, creating it when it
@@ -319,19 +459,33 @@ func (s *Service) Kind(ctx context.Context, channelID uuid.UUID) (Kind, error) {
 	return conversation.Kind, nil
 }
 
-// publish tells each participant's own connections about a new conversation.
-func (s *Service) publish(kind events.Kind, conversation Conversation) {
-	if s.publisher == nil {
+// publish tells each recipient's own connections what happened.
+func (s *Service) publish(kind events.Kind, conversation Conversation, recipients []uuid.UUID) {
+	if s.publisher == nil || len(recipients) == 0 {
 		return
 	}
 	payload := toAPIConversation(conversation)
-	for _, member := range conversation.Members {
-		s.publisher.PublishToUser(member.ID, events.Event{
+	seen := make(map[uuid.UUID]bool, len(recipients))
+	for _, memberID := range recipients {
+		if seen[memberID] {
+			continue
+		}
+		seen[memberID] = true
+		s.publisher.PublishToUser(memberID, events.Event{
 			Kind:      kind,
 			ChannelID: conversation.ID,
 			Payload:   payload,
 		})
 	}
+}
+
+// recordSystem writes a line about a group change. A failed line must not undo
+// the change itself: the group is already renamed, extended or left.
+func (s *Service) recordSystem(ctx context.Context, channelID uuid.UUID, event SystemEvent) {
+	if s.system == nil {
+		return
+	}
+	_ = s.system.RecordSystem(ctx, channelID, event)
 }
 
 // Get is one conversation the caller is in.
@@ -355,13 +509,317 @@ func (s *Service) Get(ctx context.Context, id, callerID uuid.UUID) (Conversation
 	return s.one(ctx, conversation)
 }
 
-// List is the caller's conversations, the liveliest first.
-func (s *Service) List(ctx context.Context, callerID uuid.UUID) ([]Conversation, error) {
-	conversations, err := s.store.List(ctx, callerID)
-	if err != nil {
-		return nil, err
+// List is one page of the caller's conversations, the liveliest first. A hidden
+// conversation comes back by itself once it gets a message newer than the
+// moment it was hidden; the store's query applies that rule.
+func (s *Service) List(ctx context.Context, callerID uuid.UUID, rawCursor string, limit int) (Page, error) {
+	switch {
+	case limit <= 0:
+		limit = defaultPageSize
+	case limit > maxPageSize:
+		limit = maxPageSize
 	}
-	return s.withProfiles(ctx, conversations)
+	before, err := decodeCursor(rawCursor)
+	if err != nil {
+		return Page{}, err
+	}
+
+	// One extra row tells whether another page exists without counting.
+	list, err := s.store.List(ctx, callerID, before, limit+1)
+	if err != nil {
+		return Page{}, err
+	}
+	next := ""
+	if len(list) > limit {
+		list = list[:limit]
+		next = encodeCursor(list[len(list)-1])
+	}
+	list, err = s.withProfiles(ctx, list)
+	if err != nil {
+		return Page{}, err
+	}
+	return Page{Conversations: list, NextCursor: next}, nil
+}
+
+// Unread is the badge over every ordinary conversation: hidden ones are left
+// out exactly as the list leaves them out, and secret chats have no cursor.
+func (s *Service) Unread(ctx context.Context, callerID uuid.UUID) (UnreadSummary, error) {
+	return s.store.Unread(ctx, callerID)
+}
+
+// Rename sets a group title. Any member may; a dialogue has no name to change,
+// and a secret chat is not reached through this endpoint at all.
+func (s *Service) Rename(ctx context.Context, id, callerID uuid.UUID, name string) (Conversation, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > maxNameLength {
+		return Conversation{}, ErrInvalidName
+	}
+	conversation, err := s.groupFor(ctx, id, callerID)
+	if err != nil {
+		return Conversation{}, err
+	}
+	if conversation.Name == name {
+		return conversation, nil
+	}
+	if err := s.store.Rename(ctx, id, name); err != nil {
+		return Conversation{}, err
+	}
+	reloaded, err := s.store.Conversation(ctx, id)
+	if err != nil {
+		return Conversation{}, err
+	}
+	updated, err := s.one(ctx, reloaded)
+	if err != nil {
+		return Conversation{}, err
+	}
+	s.publish(events.KindConversationUpdated, updated, memberIDs(updated))
+	s.recordSystem(ctx, id, SystemEvent{
+		ActorID: callerID,
+		Type:    SystemConversationRenamed,
+		Name:    name,
+		Content: memberName(conversation, callerID) + " renamed the group to " + name,
+	})
+	return updated, nil
+}
+
+// AddMembers puts more people into a group. Any member may add; the group limit
+// counts everyone already there. A direct dialogue refuses instead of turning
+// into a group, so the client creates a new one.
+func (s *Service) AddMembers(ctx context.Context, id, callerID uuid.UUID, userIDs []uuid.UUID) (Conversation, error) {
+	conversation, err := s.groupFor(ctx, id, callerID)
+	if err != nil {
+		return Conversation{}, err
+	}
+	add := unique(userIDs)
+	if len(add) == 0 {
+		return Conversation{}, ErrNoMembers
+	}
+	known, err := s.store.KnownUsers(ctx, add)
+	if err != nil {
+		return Conversation{}, err
+	}
+	for _, userID := range add {
+		if !known[userID] {
+			return Conversation{}, ErrNotFound
+		}
+	}
+	// Adding somebody is the same act as starting a group with them: a guest may
+	// not, and nobody may add an account blocked either way.
+	if s.privacy == nil {
+		return Conversation{}, ErrNotFound
+	}
+	allowed, err := s.privacy.CanStartGroup(ctx, callerID, add)
+	if err != nil {
+		return Conversation{}, err
+	}
+	if !allowed {
+		return Conversation{}, ErrNotFound
+	}
+
+	added, err := s.store.AddMembers(ctx, id, add, s.maxMembers)
+	if err != nil {
+		return Conversation{}, err
+	}
+	reloaded, err := s.store.Conversation(ctx, id)
+	if err != nil {
+		return Conversation{}, err
+	}
+	updated, err := s.one(ctx, reloaded)
+	if err != nil {
+		return Conversation{}, err
+	}
+	if len(added) == 0 {
+		return updated, nil
+	}
+
+	// The people who were already there see the group change; the new ones see a
+	// conversation they have just joined.
+	old := make([]uuid.UUID, 0, len(updated.Members))
+	isNew := make(map[uuid.UUID]bool, len(added))
+	for _, userID := range added {
+		isNew[userID] = true
+	}
+	for _, member := range updated.Members {
+		if !isNew[member.ID] {
+			old = append(old, member.ID)
+		}
+	}
+	s.publish(events.KindConversationUpdated, updated, old)
+	s.publish(events.KindConversationCreated, updated, added)
+
+	for _, userID := range added {
+		target := userID
+		s.recordSystem(ctx, id, SystemEvent{
+			ActorID:  callerID,
+			Type:     SystemMemberAdded,
+			TargetID: &target,
+			Content:  memberName(conversation, callerID) + " added " + memberName(updated, userID),
+		})
+	}
+	return updated, nil
+}
+
+// Leave removes the caller from a group. Every way into the history, its files
+// and the live stream goes through membership, so access ends with the row.
+func (s *Service) Leave(ctx context.Context, id, callerID uuid.UUID) error {
+	conversation, err := s.groupFor(ctx, id, callerID)
+	if err != nil {
+		return err
+	}
+	// Everyone who was in it hears about the change, the leaver included: their
+	// other devices must drop a conversation that is no longer theirs.
+	recipients := memberIDs(conversation)
+
+	removed, err := s.store.RemoveMember(ctx, id, callerID)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return ErrNotFound
+	}
+	reloaded, err := s.store.Conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	updated, err := s.one(ctx, reloaded)
+	if err != nil {
+		return err
+	}
+	s.publish(events.KindConversationUpdated, updated, recipients)
+	s.recordSystem(ctx, id, SystemEvent{
+		ActorID: callerID,
+		Type:    SystemMemberRemoved,
+		Content: memberName(conversation, callerID) + " left the group",
+	})
+	return nil
+}
+
+// SetHidden hides or shows a conversation for the caller alone. It is not a
+// group change: nobody else is told and no system line is written.
+func (s *Service) SetHidden(ctx context.Context, id, callerID uuid.UUID, hidden bool) error {
+	conversation, err := s.store.Conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	if conversation.Kind == KindSecret {
+		return ErrNotFound
+	}
+	inside, err := s.store.IsParticipant(ctx, id, callerID)
+	if err != nil {
+		return err
+	}
+	if !inside {
+		return ErrNotFound
+	}
+	if hidden {
+		err = s.store.Hide(ctx, id, callerID)
+	} else {
+		err = s.store.Unhide(ctx, id, callerID)
+	}
+	if err != nil {
+		return err
+	}
+	if s.publisher != nil {
+		s.publisher.PublishToUser(callerID, events.Event{
+			Kind:      events.KindConversationHidden,
+			ChannelID: id,
+			Payload: map[string]any{
+				"conversationId": id,
+				"hidden":         hidden,
+			},
+		})
+	}
+	return nil
+}
+
+// groupFor reads a group the caller belongs to. A secret chat answers not found
+// (it has its own endpoints), a dialogue answers ErrNotGroup, and an outsider
+// gets the same answer as an unknown id.
+func (s *Service) groupFor(ctx context.Context, id, callerID uuid.UUID) (Conversation, error) {
+	conversation, err := s.store.Conversation(ctx, id)
+	if err != nil {
+		return Conversation{}, err
+	}
+	if conversation.Kind == KindSecret {
+		return Conversation{}, ErrNotFound
+	}
+	inside, err := s.store.IsParticipant(ctx, id, callerID)
+	if err != nil {
+		return Conversation{}, err
+	}
+	if !inside {
+		return Conversation{}, ErrNotFound
+	}
+	if conversation.Kind != KindGroup {
+		return Conversation{}, ErrNotGroup
+	}
+	return s.one(ctx, conversation)
+}
+
+// memberIDs is the participant list of a conversation in memory.
+func memberIDs(conversation Conversation) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(conversation.Members))
+	for _, member := range conversation.Members {
+		out = append(out, member.ID)
+	}
+	return out
+}
+
+// memberName is what the UI calls a person in a system line.
+func memberName(conversation Conversation, userID uuid.UUID) string {
+	for _, member := range conversation.Members {
+		if member.ID != userID {
+			continue
+		}
+		if member.DisplayName != "" {
+			return member.DisplayName
+		}
+		if member.Nickname != "" {
+			return member.Nickname
+		}
+	}
+	return "Someone"
+}
+
+// cursorPayload is the JSON inside a page cursor. It is opaque to the client.
+type cursorPayload struct {
+	Seq       int64     `json:"s"`
+	CreatedAt time.Time `json:"c"`
+	ID        uuid.UUID `json:"i"`
+}
+
+// encodeCursor turns the last row of a page into an opaque cursor. It uses the
+// ordering key of the list: seq, creation time and id.
+func encodeCursor(conversation Conversation) string {
+	payload := cursorPayload{Seq: 0, CreatedAt: conversation.CreatedAt, ID: conversation.ID}
+	if conversation.LastMessage != nil {
+		payload.Seq = conversation.LastMessage.Seq
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// decodeCursor parses what encodeCursor produced. An empty string is the first
+// page. Anything else that does not decode is a client mistake, not a 500.
+func decodeCursor(raw string) (*Cursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, ErrInvalidCursor
+	}
+	var payload cursorPayload
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		return nil, ErrInvalidCursor
+	}
+	if payload.CreatedAt.IsZero() || payload.ID == uuid.Nil {
+		return nil, ErrInvalidCursor
+	}
+	return &Cursor{Seq: payload.Seq, CreatedAt: payload.CreatedAt, ID: payload.ID}, nil
 }
 
 // SharesConversation reports a common conversation, secret chats included:

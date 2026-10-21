@@ -56,6 +56,48 @@ func (ns NullChannelKind) Value() (driver.Value, error) {
 	return string(ns.ChannelKind), nil
 }
 
+type MessageKind string
+
+const (
+	MessageKindUser   MessageKind = "user"
+	MessageKindSystem MessageKind = "system"
+)
+
+func (e *MessageKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = MessageKind(s)
+	case string:
+		*e = MessageKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for MessageKind: %T", src)
+	}
+	return nil
+}
+
+type NullMessageKind struct {
+	MessageKind MessageKind `json:"message_kind"`
+	Valid       bool        `json:"valid"` // Valid is true if MessageKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullMessageKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.MessageKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.MessageKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullMessageKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.MessageKind), nil
+}
+
 type WorkspaceRole string
 
 const (
@@ -136,9 +178,10 @@ type Channel struct {
 }
 
 type ChannelMember struct {
-	ChannelID pgtype.UUID        `json:"channel_id"`
-	UserID    pgtype.UUID        `json:"user_id"`
-	JoinedAt  pgtype.Timestamptz `json:"joined_at"`
+	ChannelID      pgtype.UUID        `json:"channel_id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	JoinedAt       pgtype.Timestamptz `json:"joined_at"`
+	HiddenAfterSeq pgtype.Int8        `json:"hidden_after_seq"`
 }
 
 type ChannelRead struct {
@@ -199,6 +242,10 @@ type Message struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	EditedAt        pgtype.Timestamptz `json:"edited_at"`
 	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
+	Kind            MessageKind        `json:"kind"`
+	SystemType      pgtype.Text        `json:"system_type"`
+	SystemTargetID  pgtype.UUID        `json:"system_target_id"`
+	SystemName      pgtype.Text        `json:"system_name"`
 }
 
 type MessageMention struct {

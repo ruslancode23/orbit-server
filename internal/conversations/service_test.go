@@ -3,6 +3,7 @@ package conversations
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -12,14 +13,18 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
-// fakeStore keeps conversations in memory with the rule the database keeps:
-// one direct conversation per pair.
+// fakeStore keeps conversations in memory with the rules the database keeps:
+// one direct conversation per pair, one page of the list at a time, and hiding
+// that ends at the first newer message.
 type fakeStore struct {
 	conversations map[uuid.UUID]*Conversation
 	directKeys    map[string]uuid.UUID
 	secretKeys    map[string]uuid.UUID
 	known         map[uuid.UUID]bool
 	creates       int
+	listCalls     int
+	hidden        map[uuid.UUID]map[uuid.UUID]bool
+	hiddenAt      map[uuid.UUID]map[uuid.UUID]int64
 }
 
 func newFakeStore() *fakeStore {
@@ -28,6 +33,8 @@ func newFakeStore() *fakeStore {
 		directKeys:    map[string]uuid.UUID{},
 		secretKeys:    map[string]uuid.UUID{},
 		known:         map[uuid.UUID]bool{},
+		hidden:        map[uuid.UUID]map[uuid.UUID]bool{},
+		hiddenAt:      map[uuid.UUID]map[uuid.UUID]int64{},
 	}
 }
 
@@ -84,21 +91,60 @@ func (s *fakeStore) Conversation(_ context.Context, id uuid.UUID) (Conversation,
 	return *conversation, nil
 }
 
-func (s *fakeStore) List(_ context.Context, userID uuid.UUID) ([]Conversation, error) {
-	var out []Conversation
+// List sorts like the SQL: last message seq, then creation time, then id, all
+// descending, and applies the same hide-until-newer-message rule.
+func (s *fakeStore) List(_ context.Context, userID uuid.UUID, before *Cursor, limit int) ([]Conversation, error) {
+	s.listCalls++
+	out := make([]Conversation, 0, len(s.conversations))
 	for _, conversation := range s.conversations {
 		// The SQL list leaves secret chats out: they have their own endpoint.
-		if conversation.Kind == KindSecret {
+		if conversation.Kind == KindSecret || !isMember(conversation, userID) {
 			continue
 		}
-		for _, member := range conversation.Members {
-			if member.ID == userID {
-				out = append(out, *conversation)
-				break
+		if s.hidden[conversation.ID][userID] &&
+			lastSeq(*conversation) <= s.hiddenAt[conversation.ID][userID] {
+			continue
+		}
+		out = append(out, *conversation)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if lastSeq(out[i]) != lastSeq(out[j]) {
+			return lastSeq(out[i]) > lastSeq(out[j])
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID.String() > out[j].ID.String()
+	})
+	if before != nil {
+		filtered := out[:0]
+		for _, conversation := range out {
+			if after(conversation, before) {
+				filtered = append(filtered, conversation)
 			}
 		}
+		out = filtered
+	}
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *fakeStore) Unread(_ context.Context, userID uuid.UUID) (UnreadSummary, error) {
+	var summary UnreadSummary
+	for _, conversation := range s.conversations {
+		if conversation.Kind == KindSecret || !isMember(conversation, userID) {
+			continue
+		}
+		if s.hidden[conversation.ID][userID] &&
+			lastSeq(*conversation) <= s.hiddenAt[conversation.ID][userID] {
+			continue
+		}
+		summary.Unread += conversation.Unread
+		summary.Mentions += conversation.Mentions
+	}
+	return summary, nil
 }
 
 func (s *fakeStore) IsParticipant(_ context.Context, channelID, userID uuid.UUID) (bool, error) {
@@ -106,12 +152,7 @@ func (s *fakeStore) IsParticipant(_ context.Context, channelID, userID uuid.UUID
 	if !ok {
 		return false, nil
 	}
-	for _, member := range conversation.Members {
-		if member.ID == userID {
-			return true, nil
-		}
-	}
-	return false, nil
+	return isMember(conversation, userID), nil
 }
 
 func (s *fakeStore) KnownUsers(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
@@ -124,12 +165,7 @@ func (s *fakeStore) KnownUsers(_ context.Context, ids []uuid.UUID) (map[uuid.UUI
 
 func (s *fakeStore) SharesConversation(_ context.Context, a, b uuid.UUID) (bool, error) {
 	for _, conversation := range s.conversations {
-		var hasA, hasB bool
-		for _, member := range conversation.Members {
-			hasA = hasA || member.ID == a
-			hasB = hasB || member.ID == b
-		}
-		if hasA && hasB {
+		if isMember(conversation, a) && isMember(conversation, b) {
 			return true, nil
 		}
 	}
@@ -140,11 +176,7 @@ func (s *fakeStore) Peers(_ context.Context, userID uuid.UUID) ([]uuid.UUID, err
 	seen := map[uuid.UUID]bool{}
 	var out []uuid.UUID
 	for _, conversation := range s.conversations {
-		inside := false
-		for _, member := range conversation.Members {
-			inside = inside || member.ID == userID
-		}
-		if !inside {
+		if !isMember(conversation, userID) {
 			continue
 		}
 		for _, member := range conversation.Members {
@@ -155,6 +187,106 @@ func (s *fakeStore) Peers(_ context.Context, userID uuid.UUID) ([]uuid.UUID, err
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) Rename(_ context.Context, channelID uuid.UUID, name string) error {
+	conversation, ok := s.conversations[channelID]
+	if !ok {
+		return ErrNotFound
+	}
+	conversation.Name = name
+	return nil
+}
+
+func (s *fakeStore) AddMembers(_ context.Context, channelID uuid.UUID, userIDs []uuid.UUID, maxMembers int) ([]uuid.UUID, error) {
+	conversation, ok := s.conversations[channelID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	existing := map[uuid.UUID]bool{}
+	for _, member := range conversation.Members {
+		existing[member.ID] = true
+	}
+	added := make([]uuid.UUID, 0, len(userIDs))
+	for _, id := range userIDs {
+		if !existing[id] {
+			added = append(added, id)
+		}
+	}
+	if len(conversation.Members)+len(added) > maxMembers {
+		return nil, ErrTooManyMembers
+	}
+	for _, id := range added {
+		conversation.Members = append(conversation.Members, Member{Public: profile.Public{ID: id}, JoinedAt: time.Now()})
+	}
+	return added, nil
+}
+
+func (s *fakeStore) RemoveMember(_ context.Context, channelID, userID uuid.UUID) (bool, error) {
+	conversation, ok := s.conversations[channelID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	for i, member := range conversation.Members {
+		if member.ID == userID {
+			conversation.Members = append(conversation.Members[:i], conversation.Members[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *fakeStore) Hide(_ context.Context, channelID, userID uuid.UUID) error {
+	conversation, ok := s.conversations[channelID]
+	if !ok || !isMember(conversation, userID) {
+		return ErrNotFound
+	}
+	if s.hidden[channelID] == nil {
+		s.hidden[channelID] = map[uuid.UUID]bool{}
+		s.hiddenAt[channelID] = map[uuid.UUID]int64{}
+	}
+	s.hidden[channelID][userID] = true
+	s.hiddenAt[channelID][userID] = lastSeq(*conversation)
+	return nil
+}
+
+func (s *fakeStore) Unhide(_ context.Context, channelID, userID uuid.UUID) error {
+	conversation, ok := s.conversations[channelID]
+	if !ok || !isMember(conversation, userID) {
+		return ErrNotFound
+	}
+	delete(s.hidden[channelID], userID)
+	delete(s.hiddenAt[channelID], userID)
+	return nil
+}
+
+func isMember(conversation *Conversation, userID uuid.UUID) bool {
+	for _, member := range conversation.Members {
+		if member.ID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func lastSeq(conversation Conversation) int64 {
+	if conversation.LastMessage == nil {
+		return 0
+	}
+	return conversation.LastMessage.Seq
+}
+
+// after reports whether a conversation sorts after the cursor, matching the
+// ORDER BY last_seq DESC, created_at DESC, id DESC of the SQL.
+func after(conversation Conversation, cursor *Cursor) bool {
+	seq := lastSeq(conversation)
+	if seq != cursor.Seq {
+		return seq < cursor.Seq
+	}
+	if !conversation.CreatedAt.Equal(cursor.CreatedAt) {
+		return conversation.CreatedAt.Before(cursor.CreatedAt)
+	}
+	return conversation.ID.String() < cursor.ID.String()
 }
 
 type world struct {
@@ -206,7 +338,7 @@ func (p *fakePrivacy) CanStartGroup(_ context.Context, callerID uuid.UUID, membe
 func TestDirectConversationIsOpenedOnce(t *testing.T) {
 	w := newWorld(t)
 
-	first, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	first, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -214,7 +346,7 @@ func TestDirectConversationIsOpenedOnce(t *testing.T) {
 		t.Errorf("conversation = %+v, want a direct one with two people", first)
 	}
 
-	again, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	again, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -223,7 +355,7 @@ func TestDirectConversationIsOpenedOnce(t *testing.T) {
 	}
 
 	// The other way round names the same conversation.
-	fromBob, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna})
+	fromBob, _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -238,7 +370,7 @@ func TestDirectConversationIsOpenedOnce(t *testing.T) {
 func TestGroupConversation(t *testing.T) {
 	w := newWorld(t)
 
-	group, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.vika})
+	group, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.vika})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -247,7 +379,7 @@ func TestGroupConversation(t *testing.T) {
 	}
 
 	// A group is not deduplicated: the same people may have several.
-	another, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.vika})
+	another, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.vika})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -259,16 +391,16 @@ func TestGroupConversation(t *testing.T) {
 func TestStartRejectsNobodyUnknownAndTooMany(t *testing.T) {
 	w := newWorld(t)
 
-	if _, err := w.svc.Start(t.Context(), w.anna, nil); !errors.Is(err, ErrNoMembers) {
+	if _, _, err := w.svc.Start(t.Context(), w.anna, nil); !errors.Is(err, ErrNoMembers) {
 		t.Errorf("nobody: err = %v, want ErrNoMembers", err)
 	}
 	// Talking to yourself is not a conversation either.
-	if _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.anna}); !errors.Is(err, ErrNoMembers) {
+	if _, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.anna}); !errors.Is(err, ErrNoMembers) {
 		t.Errorf("only myself: err = %v, want ErrNoMembers", err)
 	}
 	// An unknown account and a refusal to talk to a real one are the same
 	// answer, or the API tells strangers which accounts exist.
-	if _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{uuid.New()}); !errors.Is(err, ErrNotFound) {
+	if _, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{uuid.New()}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown account: err = %v, want ErrNotFound", err)
 	}
 
@@ -278,7 +410,7 @@ func TestStartRejectsNobodyUnknownAndTooMany(t *testing.T) {
 		w.store.known[id] = true
 		many = append(many, id)
 	}
-	if _, err := w.svc.Start(t.Context(), w.anna, many); !errors.Is(err, ErrTooManyMembers) {
+	if _, _, err := w.svc.Start(t.Context(), w.anna, many); !errors.Is(err, ErrTooManyMembers) {
 		t.Errorf("too many: err = %v, want ErrTooManyMembers", err)
 	}
 }
@@ -286,7 +418,7 @@ func TestStartRejectsNobodyUnknownAndTooMany(t *testing.T) {
 // A conversation is for the people in it, and nobody else (FR-04).
 func TestOnlyParticipantsSeeAConversation(t *testing.T) {
 	w := newWorld(t)
-	conversation, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	conversation, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -312,15 +444,16 @@ func TestOnlyParticipantsSeeAConversation(t *testing.T) {
 
 func TestListShowsOnlyYourConversations(t *testing.T) {
 	w := newWorld(t)
-	mine, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	mine, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.vika}); err != nil {
+	if _, _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.vika}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	list, err := w.svc.List(t.Context(), w.anna)
+	page, err := w.svc.List(t.Context(), w.anna, "", 50)
+	list := page.Conversations
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -328,7 +461,8 @@ func TestListShowsOnlyYourConversations(t *testing.T) {
 		t.Errorf("conversations = %+v, want only Anna's own", list)
 	}
 
-	none, err := w.svc.List(t.Context(), w.outsider)
+	page, err = w.svc.List(t.Context(), w.outsider, "", 50)
+	none := page.Conversations
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -340,7 +474,7 @@ func TestListShowsOnlyYourConversations(t *testing.T) {
 func TestDuplicateNamesAreCollapsed(t *testing.T) {
 	w := newWorld(t)
 
-	conversation, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.bob, w.anna})
+	conversation, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob, w.bob, w.anna})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -367,7 +501,7 @@ func TestNewConversationIsAnnouncedPersonally(t *testing.T) {
 	recorder := &eventRecorder{}
 	w.svc.SetPublisher(recorder)
 
-	conversation, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
+	conversation, _, err := w.svc.Start(t.Context(), w.anna, []uuid.UUID{w.bob})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -389,7 +523,7 @@ func TestNewConversationIsAnnouncedPersonally(t *testing.T) {
 
 	// Reopening the same dialogue is not news.
 	recorder.events = nil
-	if _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna}); err != nil {
+	if _, _, err := w.svc.Start(t.Context(), w.bob, []uuid.UUID{w.anna}); err != nil {
 		t.Fatalf("Start again: %v", err)
 	}
 	if len(recorder.events) != 0 {
@@ -423,7 +557,8 @@ func TestSecretChatIsPerDevicePair(t *testing.T) {
 	if _, err := w.svc.Get(t.Context(), first.ID, w.anna); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get on a secret chat: err = %v, want ErrNotFound", err)
 	}
-	list, err := w.svc.List(t.Context(), w.anna)
+	page, err := w.svc.List(t.Context(), w.anna, "", 50)
+	list := page.Conversations
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

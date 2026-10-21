@@ -45,6 +45,7 @@ func (s *fakeStore) Create(_ context.Context, m NewMessage) (Message, bool, erro
 	s.seq++
 	message := Message{
 		ID: uuid.New(), ChannelID: m.ChannelID, Seq: s.seq,
+		Kind:      MessageKindUser,
 		Author:    &Author{ID: m.AuthorID, Nickname: "кто-то"},
 		Content:   m.Content,
 		ReplyToID: m.ReplyToID,
@@ -53,6 +54,20 @@ func (s *fakeStore) Create(_ context.Context, m NewMessage) (Message, bool, erro
 	s.messages[message.ID] = &message
 	s.clientIDs[s.key(m)] = message.ID
 	return message, false, nil
+}
+
+func (s *fakeStore) CreateSystem(_ context.Context, m NewSystemMessage) (Message, error) {
+	s.seq++
+	message := Message{
+		ID: uuid.New(), ChannelID: m.ChannelID, Seq: s.seq,
+		Kind:      MessageKindSystem,
+		Author:    &Author{ID: m.AuthorID, Nickname: "кто-то"},
+		Content:   m.Content,
+		System:    &System{Type: m.Type, TargetID: m.TargetID, Name: m.Name},
+		CreatedAt: time.Now(),
+	}
+	s.messages[message.ID] = &message
+	return message, nil
 }
 
 func (s *fakeStore) Message(_ context.Context, id uuid.UUID) (Message, error) {
@@ -103,7 +118,7 @@ func (s *fakeStore) Edit(_ context.Context, id, authorID uuid.UUID, content stri
 	if !ok {
 		return Message{}, ErrNotFound
 	}
-	if m.Author == nil || m.Author.ID != authorID || m.DeletedAt != nil {
+	if m.Author == nil || m.Author.ID != authorID || m.DeletedAt != nil || m.Kind == MessageKindSystem {
 		return Message{}, ErrForbidden
 	}
 	now := time.Now()
@@ -117,7 +132,7 @@ func (s *fakeStore) Delete(_ context.Context, id, authorID uuid.UUID) (Message, 
 	if !ok {
 		return Message{}, ErrNotFound
 	}
-	if m.Author == nil || m.Author.ID != authorID || m.DeletedAt != nil {
+	if m.Author == nil || m.Author.ID != authorID || m.DeletedAt != nil || m.Kind == MessageKindSystem {
 		return Message{}, ErrForbidden
 	}
 	now := time.Now()

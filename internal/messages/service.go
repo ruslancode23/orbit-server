@@ -57,13 +57,32 @@ const (
 // profile every other list returns, filled by internal/profile.
 type Author = profile.Public
 
+// MessageKind is what a message is: a person's text or a line the server wrote
+// when the group changed.
+type MessageKind string
+
+const (
+	MessageKindUser   MessageKind = "user"
+	MessageKindSystem MessageKind = "system"
+)
+
+// System is the structured part of a server-written line. Its type lets a
+// client render the line in its own language; Content is only a fallback.
+type System struct {
+	Type     conversations.SystemType
+	TargetID *uuid.UUID
+	Name     string
+}
+
 type Message struct {
 	ID        uuid.UUID
 	ChannelID uuid.UUID
 	Seq       int64
+	Kind      MessageKind
 	// Author is nil when the account has been deleted; the message stays.
 	Author    *Author
 	Content   string
+	System    *System
 	ReplyToID *uuid.UUID
 	Mentions  []uuid.UUID
 	Reactions []Reaction
@@ -109,6 +128,17 @@ type NewMessage struct {
 	AttachmentIDs []uuid.UUID
 }
 
+// NewSystemMessage is a group-change line the conversations module asks for.
+// It has no mentions and no attachments: it is not somebody's text.
+type NewSystemMessage struct {
+	ChannelID uuid.UUID
+	AuthorID  uuid.UUID
+	Content   string
+	Type      conversations.SystemType
+	TargetID  *uuid.UUID
+	Name      string
+}
+
 // Page is history, newest first.
 type Page struct {
 	Messages []Message
@@ -120,6 +150,8 @@ type Store interface {
 	// Create stores the message, or returns the one already stored for this
 	// client id — the same send twice must not make two messages.
 	Create(ctx context.Context, m NewMessage) (Message, bool, error)
+	// CreateSystem stores a server-written line and returns it with its seq.
+	CreateSystem(ctx context.Context, m NewSystemMessage) (Message, error)
 	Message(ctx context.Context, id uuid.UUID) (Message, error)
 	List(ctx context.Context, channelID uuid.UUID, before *int64, limit int, viewerID uuid.UUID) ([]Message, error)
 	// Since returns messages after a seq, oldest first: the catch-up after a reconnect.
@@ -308,6 +340,33 @@ func (s *Service) withAttachmentsPage(ctx context.Context, list []Message) ([]Me
 	return list, nil
 }
 
+// RecordSystem writes a group-change line into a conversation feed and tells
+// every current participant about it. It is called by internal/conversations
+// after the change itself is stored; a failure here leaves the change in place.
+func (s *Service) RecordSystem(ctx context.Context, channelID uuid.UUID, event conversations.SystemEvent) error {
+	created, err := s.store.CreateSystem(ctx, NewSystemMessage{
+		ChannelID: channelID,
+		AuthorID:  event.ActorID,
+		Content:   event.Content,
+		Type:      event.Type,
+		TargetID:  event.TargetID,
+		Name:      event.Name,
+	})
+	if err != nil {
+		return err
+	}
+	loaded, err := s.store.Load(ctx, created, event.ActorID)
+	if err != nil {
+		return err
+	}
+	loaded, err = s.fillAuthor(ctx, loaded)
+	if err != nil {
+		return err
+	}
+	s.publish(ctx, events.KindMessageCreated, uuid.Nil, loaded)
+	return nil
+}
+
 // Since returns what a reconnecting client missed in one channel, oldest first.
 func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afterSeq int64, limit int) ([]Message, error) {
 	view, err := s.channels.Get(ctx, channelID, callerID)
@@ -399,7 +458,8 @@ func (s *Service) publish(ctx context.Context, kind events.Kind, workspaceID uui
 		// The message is stored; a failed fan-out must not fail the send.
 		return
 	}
-	mark := s.inGroup(ctx, m.ChannelID)
+	// A system line is not its author's speech: a block changes nothing about it.
+	mark := m.Kind != MessageKindSystem && s.inGroup(ctx, m.ChannelID)
 	for _, memberID := range members {
 		personal := event
 		// A group has its own stream per participant, so the block mark can be
@@ -538,7 +598,7 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 		}
 	}
 
-	mentions, err := s.knownMembers(ctx, channel.WorkspaceID, m.Mentions)
+	mentions, err := s.knownMembers(ctx, channel, m.Mentions)
 	if err != nil {
 		return Message{}, false, err
 	}
@@ -803,24 +863,55 @@ func (s *Service) readable(ctx context.Context, messageID, callerID uuid.UUID) (
 // knownMembers drops mentions of accounts outside the server: a notification to
 // someone who cannot open the channel is noise at best. The client sends ids,
 // never text, so a display name cannot redirect a mention: @nickname stays the
-// handle even when the profile shows another name.
-func (s *Service) knownMembers(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
-	seen := make(map[uuid.UUID]bool, len(ids))
+// handle even when the profile shows another name. A conversation has no server,
+// so its people are the audience instead.
+func (s *Service) knownMembers(ctx context.Context, channel channels.Channel, ids []uuid.UUID) ([]uuid.UUID, error) {
+	allowed := make(map[uuid.UUID]bool, len(ids))
+	if channel.WorkspaceID == uuid.Nil {
+		// Without the conversations module nobody counts as a member, so no
+		// mention is stored; the message itself is not refused.
+		if s.conversations != nil {
+			members, err := s.conversations.MemberIDs(ctx, channel.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, memberID := range members {
+				allowed[memberID] = true
+			}
+		}
+	} else {
+		for _, id := range uniqueIDs(ids) {
+			member, err := s.members.IsMember(ctx, channel.WorkspaceID, id)
+			if err != nil {
+				return nil, err
+			}
+			if member {
+				allowed[id] = true
+			}
+		}
+	}
+
 	out := make([]uuid.UUID, 0, len(ids))
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		member, err := s.members.IsMember(ctx, workspaceID, id)
-		if err != nil {
-			return nil, err
-		}
-		if member {
+	for _, id := range uniqueIDs(ids) {
+		if allowed[id] {
 			out = append(out, id)
 		}
 	}
 	return out, nil
+}
+
+// uniqueIDs keeps the first occurrence of every id, in order.
+func uniqueIDs(ids []uuid.UUID) []uuid.UUID {
+	seen := make(map[uuid.UUID]bool, len(ids))
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] || id == uuid.Nil {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // mapAccessError keeps this package's errors: a channel the caller may not read

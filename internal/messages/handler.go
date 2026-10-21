@@ -193,10 +193,15 @@ func (h *Handler) RemoveReaction(ctx context.Context, req api.RemoveReactionRequ
 // APIMessage is the shape a message takes on the wire, for HTTP and for the
 // live stream alike: the client parses one thing.
 func APIMessage(m Message) api.Message {
+	kind := m.Kind
+	if kind == "" {
+		kind = MessageKindUser
+	}
 	message := api.Message{
 		Id:          m.ID,
 		ChannelId:   m.ChannelID,
 		Seq:         m.Seq,
+		Kind:        api.MessageKind(kind),
 		Content:     m.Content,
 		ReplyToId:   m.ReplyToID,
 		Mentions:    m.Mentions,
@@ -205,6 +210,18 @@ func APIMessage(m Message) api.Message {
 		CreatedAt:   m.CreatedAt,
 		EditedAt:    m.EditedAt,
 		DeletedAt:   m.DeletedAt,
+	}
+	if m.System != nil {
+		system := api.SystemMessage{Type: api.SystemMessageType(m.System.Type)}
+		if m.System.TargetID != nil {
+			target := *m.System.TargetID
+			system.TargetId = &target
+		}
+		if m.System.Name != "" {
+			name := m.System.Name
+			system.Name = &name
+		}
+		message.System = &system
 	}
 	if message.Mentions == nil {
 		message.Mentions = []openapi_types.UUID{}

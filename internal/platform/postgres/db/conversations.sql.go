@@ -27,6 +27,38 @@ func (q *Queries) AddChannelMember(ctx context.Context, arg AddChannelMemberPara
 	return err
 }
 
+const addConversationMembers = `-- name: AddConversationMembers :many
+INSERT INTO channel_members (channel_id, user_id)
+SELECT $1::uuid, unnest($2::uuid[])
+ON CONFLICT DO NOTHING
+RETURNING user_id
+`
+
+type AddConversationMembersParams struct {
+	ChannelID pgtype.UUID   `json:"channel_id"`
+	UserIds   []pgtype.UUID `json:"user_ids"`
+}
+
+func (q *Queries) AddConversationMembers(ctx context.Context, arg AddConversationMembersParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, addConversationMembers, arg.ChannelID, arg.UserIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countChannelMembers = `-- name: CountChannelMembers :one
 SELECT count(*) FROM channel_members WHERE channel_id = $1
 `
@@ -36,6 +68,51 @@ func (q *Queries) CountChannelMembers(ctx context.Context, channelID pgtype.UUID
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countConversationUnread = `-- name: CountConversationUnread :one
+SELECT
+    coalesce(count(messages.seq), 0)::bigint AS unread,
+    coalesce(count(message_mentions.user_id), 0)::bigint AS mentions
+FROM channel_members
+    JOIN channels ON channels.id = channel_members.channel_id
+    LEFT JOIN channel_reads
+        ON channel_reads.channel_id = channels.id
+       AND channel_reads.user_id = $1::uuid
+    LEFT JOIN messages
+        ON messages.channel_id = channels.id
+       AND messages.deleted_at IS NULL
+       AND messages.author_id IS DISTINCT FROM $1::uuid
+       AND messages.seq > coalesce(channel_reads.last_read_seq, 0)
+    LEFT JOIN message_mentions
+        ON message_mentions.message_id = messages.id
+       AND message_mentions.user_id = $1::uuid
+WHERE channel_members.user_id = $1::uuid
+  AND channels.workspace_id IS NULL
+  AND channels.kind IN ('direct', 'group')
+  AND (
+      channel_members.hidden_after_seq IS NULL
+      OR EXISTS (
+          SELECT 1
+          FROM messages AS newer
+          WHERE newer.channel_id = channels.id
+            AND newer.seq > channel_members.hidden_after_seq
+      )
+  )
+`
+
+type CountConversationUnreadRow struct {
+	Unread   int64 `json:"unread"`
+	Mentions int64 `json:"mentions"`
+}
+
+// The badge of "direct messages": unread and mentions over all ordinary
+// conversations, with hidden ones left out exactly as the list leaves them out.
+func (q *Queries) CountConversationUnread(ctx context.Context, userID pgtype.UUID) (CountConversationUnreadRow, error) {
+	row := q.db.QueryRow(ctx, countConversationUnread, userID)
+	var i CountConversationUnreadRow
+	err := row.Scan(&i.Unread, &i.Mentions)
+	return i, err
 }
 
 const createConversation = `-- name: CreateConversation :one
@@ -141,6 +218,30 @@ func (q *Queries) HasSharedConversation(ctx context.Context, arg HasSharedConver
 	return exists, err
 }
 
+const hideConversation = `-- name: HideConversation :execrows
+UPDATE channel_members
+SET hidden_after_seq = coalesce((
+    SELECT max(messages.seq) FROM messages WHERE messages.channel_id = channel_members.channel_id
+), 0)
+WHERE channel_id = $1::uuid
+  AND user_id = $2::uuid
+`
+
+type HideConversationParams struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+// Hiding stores the newest seq at that moment; a later message is greater and
+// shows the conversation again without a write on every send.
+func (q *Queries) HideConversation(ctx context.Context, arg HideConversationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, hideConversation, arg.ChannelID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const isChannelMember = `-- name: IsChannelMember :one
 SELECT EXISTS (
     SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2
@@ -219,6 +320,41 @@ func (q *Queries) ListConversationMembers(ctx context.Context, channelID pgtype.
 	return items, nil
 }
 
+const listConversationMembersForChannels = `-- name: ListConversationMembersForChannels :many
+SELECT channel_members.channel_id, channel_members.user_id, channel_members.joined_at
+FROM channel_members
+WHERE channel_members.channel_id = ANY($1::uuid[])
+ORDER BY channel_members.channel_id, channel_members.joined_at
+`
+
+type ListConversationMembersForChannelsRow struct {
+	ChannelID pgtype.UUID        `json:"channel_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	JoinedAt  pgtype.Timestamptz `json:"joined_at"`
+}
+
+// The participants of a whole page of conversations in one query: internal/profile
+// then fills their public part in one batch, so a list never reads per row.
+func (q *Queries) ListConversationMembersForChannels(ctx context.Context, channelIds []pgtype.UUID) ([]ListConversationMembersForChannelsRow, error) {
+	rows, err := q.db.Query(ctx, listConversationMembersForChannels, channelIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConversationMembersForChannelsRow{}
+	for rows.Next() {
+		var i ListConversationMembersForChannelsRow
+		if err := rows.Scan(&i.ChannelID, &i.UserID, &i.JoinedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConversationPeers = `-- name: ListConversationPeers :many
 SELECT DISTINCT theirs.user_id
 FROM channel_members mine
@@ -253,48 +389,148 @@ func (q *Queries) ListConversationPeers(ctx context.Context, userID pgtype.UUID)
 	return items, nil
 }
 
-const listUserConversations = `-- name: ListUserConversations :many
-SELECT channels.id, channels.workspace_id, channels.kind, channels.name, channels.topic, channels.position, channels.created_at, channels.updated_at, channels.is_read_only, channels.direct_key, coalesce(max(messages.seq), 0)::bigint AS last_seq
-FROM channel_members
-    JOIN channels ON channels.id = channel_members.channel_id
-    LEFT JOIN messages ON messages.channel_id = channels.id
-WHERE channel_members.user_id = $1
-  AND channels.workspace_id IS NULL
-  -- A secret chat is not a dialogue in the ordinary sense: it lives on one
-  -- device and has its own endpoints, so the conversation list leaves it out.
-  AND channels.kind IN ('direct', 'group')
-GROUP BY channels.id
-ORDER BY last_seq DESC, channels.created_at DESC
+const listConversationSummaries = `-- name: ListConversationSummaries :many
+WITH visible AS (
+    SELECT
+        channels.id,
+        channels.kind,
+        channels.name,
+        channels.created_at,
+        coalesce(last_message.seq, 0)::bigint AS last_seq,
+        last_message.id AS last_message_id,
+        last_message.seq AS last_message_seq,
+        last_message.author_id AS last_message_author_id,
+        left(coalesce(last_message.content, ''), 120)::text AS last_message_content,
+        coalesce(last_message.kind, 'user')::message_kind AS last_message_kind,
+        coalesce(last_message.system_type, '')::text AS last_message_system_type,
+        last_message.system_target_id AS last_message_system_target_id,
+        coalesce(last_message.system_name, '')::text AS last_message_system_name,
+        last_message.created_at AS last_message_created_at,
+        last_message.deleted_at AS last_message_deleted_at,
+        coalesce(channel_reads.last_read_seq, 0)::bigint AS last_read_seq,
+        coalesce(counts.unread, 0)::bigint AS unread,
+        coalesce(counts.mentions, 0)::bigint AS mentions
+    FROM channel_members
+        JOIN channels ON channels.id = channel_members.channel_id
+        LEFT JOIN channel_reads
+            ON channel_reads.channel_id = channels.id
+           AND channel_reads.user_id = $5::uuid
+        LEFT JOIN LATERAL (
+            SELECT messages.id, messages.seq, messages.author_id, messages.content,
+                   messages.kind, messages.system_type, messages.system_target_id,
+                   messages.system_name, messages.created_at, messages.deleted_at
+            FROM messages
+            WHERE messages.channel_id = channels.id
+            ORDER BY messages.seq DESC
+            LIMIT 1
+        ) AS last_message ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                count(*)::bigint AS unread,
+                count(message_mentions.user_id)::bigint AS mentions
+            FROM messages
+                LEFT JOIN message_mentions
+                    ON message_mentions.message_id = messages.id
+                   AND message_mentions.user_id = $5::uuid
+            WHERE messages.channel_id = channels.id
+              AND messages.deleted_at IS NULL
+              AND messages.author_id IS DISTINCT FROM $5::uuid
+              AND messages.seq > coalesce(channel_reads.last_read_seq, 0)
+        ) AS counts ON true
+    WHERE channel_members.user_id = $5::uuid
+      AND channels.workspace_id IS NULL
+      -- A secret chat is not a dialogue in the ordinary sense: it lives on one
+      -- device and has its own endpoints, so the conversation list leaves it out.
+      AND channels.kind IN ('direct', 'group')
+      -- Hiding is "from this message on": one that arrives later is newer than
+      -- hidden_after_seq and brings the conversation back by itself.
+      AND (
+          channel_members.hidden_after_seq IS NULL
+          OR coalesce(last_message.seq, 0) > channel_members.hidden_after_seq
+      )
+)
+SELECT id, kind, name, created_at, last_seq, last_message_id, last_message_seq, last_message_author_id, last_message_content, last_message_kind, last_message_system_type, last_message_system_target_id, last_message_system_name, last_message_created_at, last_message_deleted_at, last_read_seq, unread, mentions
+FROM visible
+WHERE $1::bigint IS NULL
+   OR last_seq < $1::bigint
+   OR (last_seq = $1::bigint AND created_at < $2::timestamptz)
+   OR (last_seq = $1::bigint
+       AND created_at = $2::timestamptz
+       AND id < $3::uuid)
+ORDER BY last_seq DESC, created_at DESC, id DESC
+LIMIT $4::integer
 `
 
-type ListUserConversationsRow struct {
-	Channel Channel `json:"channel"`
-	LastSeq int64   `json:"last_seq"`
+type ListConversationSummariesParams struct {
+	CursorSeq       pgtype.Int8        `json:"cursor_seq"`
+	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID        pgtype.UUID        `json:"cursor_id"`
+	PageSize        int32              `json:"page_size"`
+	UserID          pgtype.UUID        `json:"user_id"`
 }
 
-// The conversations of one account, most recently used first, so the list
-// reads like a messenger's.
-func (q *Queries) ListUserConversations(ctx context.Context, userID pgtype.UUID) ([]ListUserConversationsRow, error) {
-	rows, err := q.db.Query(ctx, listUserConversations, userID)
+type ListConversationSummariesRow struct {
+	ID                        pgtype.UUID        `json:"id"`
+	Kind                      ChannelKind        `json:"kind"`
+	Name                      pgtype.Text        `json:"name"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	LastSeq                   int64              `json:"last_seq"`
+	LastMessageID             pgtype.UUID        `json:"last_message_id"`
+	LastMessageSeq            int64              `json:"last_message_seq"`
+	LastMessageAuthorID       pgtype.UUID        `json:"last_message_author_id"`
+	LastMessageContent        string             `json:"last_message_content"`
+	LastMessageKind           MessageKind        `json:"last_message_kind"`
+	LastMessageSystemType     string             `json:"last_message_system_type"`
+	LastMessageSystemTargetID pgtype.UUID        `json:"last_message_system_target_id"`
+	LastMessageSystemName     string             `json:"last_message_system_name"`
+	LastMessageCreatedAt      pgtype.Timestamptz `json:"last_message_created_at"`
+	LastMessageDeletedAt      pgtype.Timestamptz `json:"last_message_deleted_at"`
+	LastReadSeq               int64              `json:"last_read_seq"`
+	Unread                    int64              `json:"unread"`
+	Mentions                  int64              `json:"mentions"`
+}
+
+// One page of the conversation list with everything a sidebar row needs: the
+// newest message, the unread and mention counts after this account's cursor,
+// and the group name. It is one query for the whole page; the store then loads
+// the members of these conversations in one more, never one per conversation.
+// The cursor is (last_seq, created_at, id): a message seq orders the list, the
+// other two break ties between conversations that never had a message, so a
+// page boundary is stable even when activity is equal.
+func (q *Queries) ListConversationSummaries(ctx context.Context, arg ListConversationSummariesParams) ([]ListConversationSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listConversationSummaries,
+		arg.CursorSeq,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageSize,
+		arg.UserID,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListUserConversationsRow{}
+	items := []ListConversationSummariesRow{}
 	for rows.Next() {
-		var i ListUserConversationsRow
+		var i ListConversationSummariesRow
 		if err := rows.Scan(
-			&i.Channel.ID,
-			&i.Channel.WorkspaceID,
-			&i.Channel.Kind,
-			&i.Channel.Name,
-			&i.Channel.Topic,
-			&i.Channel.Position,
-			&i.Channel.CreatedAt,
-			&i.Channel.UpdatedAt,
-			&i.Channel.IsReadOnly,
-			&i.Channel.DirectKey,
+			&i.ID,
+			&i.Kind,
+			&i.Name,
+			&i.CreatedAt,
 			&i.LastSeq,
+			&i.LastMessageID,
+			&i.LastMessageSeq,
+			&i.LastMessageAuthorID,
+			&i.LastMessageContent,
+			&i.LastMessageKind,
+			&i.LastMessageSystemType,
+			&i.LastMessageSystemTargetID,
+			&i.LastMessageSystemName,
+			&i.LastMessageCreatedAt,
+			&i.LastMessageDeletedAt,
+			&i.LastReadSeq,
+			&i.Unread,
+			&i.Mentions,
 		); err != nil {
 			return nil, err
 		}
@@ -304,4 +540,108 @@ func (q *Queries) ListUserConversations(ctx context.Context, userID pgtype.UUID)
 		return nil, err
 	}
 	return items, nil
+}
+
+const listExistingConversationMembers = `-- name: ListExistingConversationMembers :many
+SELECT user_id
+FROM channel_members
+WHERE channel_id = $1::uuid
+  AND user_id = ANY($2::uuid[])
+`
+
+type ListExistingConversationMembersParams struct {
+	ChannelID pgtype.UUID   `json:"channel_id"`
+	UserIds   []pgtype.UUID `json:"user_ids"`
+}
+
+// Who is in the conversation among the candidate ids: adding only counts the
+// people who are actually new against maxMembers.
+func (q *Queries) ListExistingConversationMembers(ctx context.Context, arg ListExistingConversationMembersParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listExistingConversationMembers, arg.ChannelID, arg.UserIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockConversation = `-- name: LockConversation :one
+SELECT id FROM channels WHERE id = $1::uuid FOR UPDATE
+`
+
+// The row lock serialises two additions to one group, so both cannot pass the
+// same maxMembers count.
+func (q *Queries) LockConversation(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockConversation, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const removeConversationMember = `-- name: RemoveConversationMember :execrows
+DELETE FROM channel_members
+WHERE channel_id = $1::uuid
+  AND user_id = $2::uuid
+`
+
+type RemoveConversationMemberParams struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) RemoveConversationMember(ctx context.Context, arg RemoveConversationMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeConversationMember, arg.ChannelID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameConversation = `-- name: RenameConversation :exec
+UPDATE channels
+SET name = $1, updated_at = now()
+WHERE id = $2::uuid
+  AND workspace_id IS NULL
+  AND kind = 'group'
+`
+
+type RenameConversationParams struct {
+	Name pgtype.Text `json:"name"`
+	ID   pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) RenameConversation(ctx context.Context, arg RenameConversationParams) error {
+	_, err := q.db.Exec(ctx, renameConversation, arg.Name, arg.ID)
+	return err
+}
+
+const unhideConversation = `-- name: UnhideConversation :execrows
+UPDATE channel_members
+SET hidden_after_seq = NULL
+WHERE channel_id = $1::uuid
+  AND user_id = $2::uuid
+`
+
+type UnhideConversationParams struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) UnhideConversation(ctx context.Context, arg UnhideConversationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, unhideConversation, arg.ChannelID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

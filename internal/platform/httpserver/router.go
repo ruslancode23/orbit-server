@@ -449,6 +449,30 @@ func (s *server) GetConversation(ctx context.Context, req api.GetConversationReq
 	return s.conversations.GetConversation(ctx, req)
 }
 
+func (s *server) GetConversationUnread(ctx context.Context, req api.GetConversationUnreadRequestObject) (api.GetConversationUnreadResponseObject, error) {
+	return s.conversations.GetConversationUnread(ctx, req)
+}
+
+func (s *server) UpdateConversation(ctx context.Context, req api.UpdateConversationRequestObject) (api.UpdateConversationResponseObject, error) {
+	return s.conversations.UpdateConversation(ctx, req)
+}
+
+func (s *server) AddConversationMembers(ctx context.Context, req api.AddConversationMembersRequestObject) (api.AddConversationMembersResponseObject, error) {
+	return s.conversations.AddConversationMembers(ctx, req)
+}
+
+func (s *server) LeaveConversation(ctx context.Context, req api.LeaveConversationRequestObject) (api.LeaveConversationResponseObject, error) {
+	return s.conversations.LeaveConversation(ctx, req)
+}
+
+func (s *server) HideConversation(ctx context.Context, req api.HideConversationRequestObject) (api.HideConversationResponseObject, error) {
+	return s.conversations.HideConversation(ctx, req)
+}
+
+func (s *server) UnhideConversation(ctx context.Context, req api.UnhideConversationRequestObject) (api.UnhideConversationResponseObject, error) {
+	return s.conversations.UnhideConversation(ctx, req)
+}
+
 func (s *server) ListUserBlocks(ctx context.Context, req api.ListUserBlocksRequestObject) (api.ListUserBlocksResponseObject, error) {
 	return s.privacy.ListUserBlocks(ctx, req)
 }
