@@ -223,6 +223,11 @@ type Querier interface {
 	ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error)
 	// The cursor only moves forward: a stale device cannot mark messages unread again.
 	MarkChannelRead(ctx context.Context, arg MarkChannelReadParams) (ChannelRead, error)
+	// The first timestamp stays: a retry after a dropped response changes nothing,
+	// so "save" and "skip" can both call this without a check. This is not profile
+	// content, so neither updated_at nor profile_updated_at moves, and nobody else
+	// hears about it.
+	MarkUserProfileOnboarded(ctx context.Context, arg MarkUserProfileOnboardedParams) (int64, error)
 	// A released nickname stays unclaimable for seven days. The check is here for a
 	// clear 409; the trigger on users is what makes it race-free.
 	NicknameIsHeld(ctx context.Context, arg NicknameIsHeldParams) (bool, error)

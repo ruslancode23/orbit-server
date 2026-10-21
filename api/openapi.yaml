@@ -1215,6 +1215,29 @@ paths:
           description: Unblocked.
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me/onboarding:
+    post:
+      operationId: completeMyProfileOnboarding
+      tags: [profile]
+      summary: Mark the one-time profile step as passed. Needs a session.
+      description: |
+        Both "save" and "skip" call this, so the step is shown once and never
+        again — on this device or another, because `GET /auth/me` answers with
+        `profileOnboardedAt`. The call has no body and is idempotent: repeating it
+        keeps the first timestamp and still answers 204. A guest is refused with
+        403: the step belongs to the flow after signing up or after claiming the
+        guest account, and claiming turns the account into a regular one before
+        the step runs.
+      responses:
+        "204":
+          description: The step is passed (or was already). Repeating the call changes nothing.
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: A guest account cannot pass the profile step before it signs up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/me/profile:
     patch:
       operationId: updateMyProfile
@@ -2118,6 +2141,7 @@ components:
         - $ref: "#/components/schemas/UserProfile"
         - type: object
           additionalProperties: false
+          required: [profileOnboardedAt]
           properties:
             email:
               type: string
@@ -2127,6 +2151,17 @@ components:
                 The address of this account, or null for a guest. Only ever
                 returned about yourself: the public `UserProfile` has no email,
                 so nobody else can read it.
+            profileOnboardedAt:
+              type: string
+              format: date-time
+              nullable: true
+              description: |
+                When the one-time "fill in your profile" step was passed, by
+                saving or by skipping; null until then, and so null on every new
+                account. Only ever returned about yourself: the step must not be
+                shown twice, on this device or another, and nobody else needs to
+                know it. Clients decide whether to show the step from this field
+                alone and mark it with `POST /users/me/onboarding`.
     UserProfile:
       type: object
       additionalProperties: false

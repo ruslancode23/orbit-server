@@ -59,6 +59,27 @@ func (h *Handler) UpdateMyProfile(ctx context.Context, req api.UpdateMyProfileRe
 	return api.UpdateMyProfile200JSONResponse(APIProfile(profile)), nil
 }
 
+// CompleteMyProfileOnboarding marks the one-time profile step as passed. The
+// client calls it for both "save" and "skip", and a retry is fine: the service
+// keeps the first timestamp. A guest is refused until it signs up or claims the
+// account, because the step belongs to the flow that starts after that.
+func (h *Handler) CompleteMyProfileOnboarding(ctx context.Context, _ api.CompleteMyProfileOnboardingRequestObject) (api.CompleteMyProfileOnboardingResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.CompleteMyProfileOnboarding401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+
+	err := h.svc.CompleteOnboarding(ctx, userID)
+	switch {
+	case errors.Is(err, ErrGuestOnboarding):
+		return api.CompleteMyProfileOnboarding403JSONResponse(api.Error(errorBody(httpx.CodeForbidden, err.Error()))), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "complete profile onboarding", slog.Any("error", err))
+		return api.CompleteMyProfileOnboarding500JSONResponse(internal("could not mark the profile step as passed")), nil
+	}
+	return api.CompleteMyProfileOnboarding204Response{}, nil
+}
+
 func (h *Handler) SetMyStatus(ctx context.Context, req api.SetMyStatusRequestObject) (api.SetMyStatusResponseObject, error) {
 	userID, ok := caller(ctx)
 	if !ok {

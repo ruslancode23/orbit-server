@@ -266,6 +266,7 @@ type User struct {
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
 	ProfileUpdatedAt      pgtype.Timestamptz `json:"profile_updated_at"`
 	EmailVerifiedAt       pgtype.Timestamptz `json:"email_verified_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 }
 
 type UserBlock struct {

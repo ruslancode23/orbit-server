@@ -34,7 +34,8 @@ func (s *PostgresStore) Profile(ctx context.Context, userID uuid.UUID) (Stored, 
 		id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
 		bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
 		statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
-		statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+		statusExpiresAt: row.CustomStatusExpiresAt, profileOnboardedAt: row.ProfileOnboardedAt,
+		isGuest: row.IsGuest, createdAt: row.CreatedAt,
 	}), nil
 }
 
@@ -49,7 +50,8 @@ func (s *PostgresStore) Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid
 			id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
 			bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
 			statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
-			statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+			statusExpiresAt: row.CustomStatusExpiresAt, profileOnboardedAt: row.ProfileOnboardedAt,
+			isGuest: row.IsGuest, createdAt: row.CreatedAt,
 		})
 		out[profile.ID] = profile
 	}
@@ -83,7 +85,8 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, userID uuid.UUID, u U
 		id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
 		bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
 		statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
-		statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+		statusExpiresAt: row.CustomStatusExpiresAt, profileOnboardedAt: row.ProfileOnboardedAt,
+		isGuest: row.IsGuest, createdAt: row.CreatedAt,
 	}), nil
 }
 
@@ -102,7 +105,8 @@ func (s *PostgresStore) SetAvatar(ctx context.Context, userID uuid.UUID, key str
 		id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
 		bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
 		statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
-		statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+		statusExpiresAt: row.CustomStatusExpiresAt, profileOnboardedAt: row.ProfileOnboardedAt,
+		isGuest: row.IsGuest, createdAt: row.CreatedAt,
 	}), row.PreviousAvatarKey.String, nil
 }
 
@@ -123,7 +127,8 @@ func (s *PostgresStore) SetStatus(ctx context.Context, userID uuid.UUID, emoji, 
 		id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
 		bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
 		statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
-		statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+		statusExpiresAt: row.CustomStatusExpiresAt, profileOnboardedAt: row.ProfileOnboardedAt,
+		isGuest: row.IsGuest, createdAt: row.CreatedAt,
 	}), nil
 }
 
@@ -139,24 +144,43 @@ func (s *PostgresStore) ClearStatus(ctx context.Context, userID uuid.UUID) (Stor
 		id: row.ID, nickname: row.Nickname, displayName: row.DisplayName,
 		bio: row.Bio, accentColor: row.AccentColor, avatarKey: row.AvatarKey,
 		statusEmoji: row.CustomStatusEmoji, statusText: row.CustomStatusText,
-		statusExpiresAt: row.CustomStatusExpiresAt, isGuest: row.IsGuest, createdAt: row.CreatedAt,
+		statusExpiresAt: row.CustomStatusExpiresAt, profileOnboardedAt: row.ProfileOnboardedAt,
+		isGuest: row.IsGuest, createdAt: row.CreatedAt,
 	}), nil
+}
+
+// MarkOnboarded records the one-time profile step. The first timestamp stays:
+// the query keeps the old value, so a retry after a dropped response changes
+// nothing. ErrNotFound means there is no such account.
+func (s *PostgresStore) MarkOnboarded(ctx context.Context, userID uuid.UUID, at time.Time) error {
+	rows, err := s.q.MarkUserProfileOnboarded(ctx, db.MarkUserProfileOnboardedParams{
+		At: pgTimePtr(&at),
+		ID: pgUUID(userID),
+	})
+	if err != nil {
+		return fmt.Errorf("mark profile onboarded: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // columns is the list every profile query selects. Keeping the mapping in one
 // place means a new column changes one function, not five.
 type columns struct {
-	id              pgtype.UUID
-	nickname        string
-	displayName     pgtype.Text
-	bio             string
-	accentColor     string
-	avatarKey       pgtype.Text
-	statusEmoji     pgtype.Text
-	statusText      pgtype.Text
-	statusExpiresAt pgtype.Timestamptz
-	isGuest         bool
-	createdAt       pgtype.Timestamptz
+	id                 pgtype.UUID
+	nickname           string
+	displayName        pgtype.Text
+	bio                string
+	accentColor        string
+	avatarKey          pgtype.Text
+	statusEmoji        pgtype.Text
+	statusText         pgtype.Text
+	statusExpiresAt    pgtype.Timestamptz
+	profileOnboardedAt pgtype.Timestamptz
+	isGuest            bool
+	createdAt          pgtype.Timestamptz
 }
 
 func stored(c columns) Stored {
@@ -171,6 +195,10 @@ func stored(c columns) Stored {
 			CreatedAt:   c.createdAt.Time,
 		},
 		AvatarKey: c.avatarKey.String,
+	}
+	if c.profileOnboardedAt.Valid {
+		at := c.profileOnboardedAt.Time
+		out.ProfileOnboardedAt = &at
 	}
 	if c.displayName.Valid {
 		out.DisplayName = c.displayName.String

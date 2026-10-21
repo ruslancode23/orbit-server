@@ -19,7 +19,15 @@ import (
 // handler reads sessions from this package, so this package must not import it
 // back. One call serves a whole list, which is how /auth/me stays one query.
 type Profiles interface {
-	UserProfiles(ctx context.Context, ids []openapi_types.UUID) (map[openapi_types.UUID]api.UserProfile, error)
+	OwnProfiles(ctx context.Context, ids []openapi_types.UUID) (map[openapi_types.UUID]OwnProfile, error)
+}
+
+// OwnProfile is one account's profile as its owner sees it: the public part and
+// the data only the owner may read. OnboardedAt is when the one-time "fill in
+// your profile" step was passed; nil means the client still has to show it.
+type OwnProfile struct {
+	Profile     api.UserProfile
+	OnboardedAt *time.Time
 }
 
 // ProfileEvents is the profile module's announcement scheduler. A nickname
@@ -118,7 +126,7 @@ func (h *Handler) GetCurrentUser(ctx context.Context, _ api.GetCurrentUserReques
 	}
 
 	if h.profiles != nil {
-		profiles, err := h.profiles.UserProfiles(ctx, []openapi_types.UUID{session.User.ID})
+		profiles, err := h.profiles.OwnProfiles(ctx, []openapi_types.UUID{session.User.ID})
 		if err != nil {
 			h.log.ErrorContext(ctx, "read own profile", slog.Any("error", err))
 			return api.GetCurrentUser500JSONResponse(errorBody(httpx.CodeInternal, "could not read the account")), nil
@@ -129,22 +137,26 @@ func (h *Handler) GetCurrentUser(ctx context.Context, _ api.GetCurrentUserReques
 	}
 	// Without the profile module the account itself is still known: answer the
 	// auth part, with the nickname standing in for the display name.
-	return api.GetCurrentUser200JSONResponse(selfProfile(toAPIProfile(session.User), session.User.Email)), nil
+	return api.GetCurrentUser200JSONResponse(selfProfile(
+		OwnProfile{Profile: toAPIProfile(session.User)}, session.User.Email)), nil
 }
 
 // selfProfile is the answer about oneself: the public profile plus the email,
-// which nobody else may read. A guest has no address, so the field is null.
-func selfProfile(profile api.UserProfile, email string) api.SelfProfile {
+// which nobody else may read, and the onboarding flag, which only the owner
+// needs. A guest has no address, so the field is null.
+func selfProfile(own OwnProfile, email string) api.SelfProfile {
+	profile := own.Profile
 	self := api.SelfProfile{
-		AccentColor:  profile.AccentColor,
-		AvatarUrl:    profile.AvatarUrl,
-		Bio:          profile.Bio,
-		CreatedAt:    profile.CreatedAt,
-		CustomStatus: profile.CustomStatus,
-		DisplayName:  profile.DisplayName,
-		Id:           profile.Id,
-		IsGuest:      profile.IsGuest,
-		Nickname:     profile.Nickname,
+		AccentColor:        profile.AccentColor,
+		AvatarUrl:          profile.AvatarUrl,
+		Bio:                profile.Bio,
+		CreatedAt:          profile.CreatedAt,
+		CustomStatus:       profile.CustomStatus,
+		DisplayName:        profile.DisplayName,
+		Id:                 profile.Id,
+		IsGuest:            profile.IsGuest,
+		Nickname:           profile.Nickname,
+		ProfileOnboardedAt: own.OnboardedAt,
 	}
 	if email != "" {
 		address := openapi_types.Email(email)
@@ -280,7 +292,7 @@ func (h *Handler) UpdateMyEmail(ctx context.Context, req api.UpdateMyEmailReques
 // the public profile comes from the profile module, the email from the account.
 func (h *Handler) selfProfileFor(ctx context.Context, user User) (api.SelfProfile, error) {
 	if h.profiles != nil {
-		profiles, err := h.profiles.UserProfiles(ctx, []openapi_types.UUID{user.ID})
+		profiles, err := h.profiles.OwnProfiles(ctx, []openapi_types.UUID{user.ID})
 		if err != nil {
 			return api.SelfProfile{}, err
 		}
@@ -288,7 +300,7 @@ func (h *Handler) selfProfileFor(ctx context.Context, user User) (api.SelfProfil
 			return selfProfile(profile, user.Email), nil
 		}
 	}
-	return selfProfile(toAPIProfile(user), user.Email), nil
+	return selfProfile(OwnProfile{Profile: toAPIProfile(user)}, user.Email), nil
 }
 
 // changed asks the profile module to announce the account once the debounce

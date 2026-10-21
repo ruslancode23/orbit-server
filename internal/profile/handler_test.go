@@ -66,6 +66,16 @@ func TestHandlerRequiresASession(t *testing.T) {
 			t.Errorf("response = %T, want 401", resp)
 		}
 	})
+
+	t.Run("complete onboarding", func(t *testing.T) {
+		resp, err := h.CompleteMyProfileOnboarding(ctx, api.CompleteMyProfileOnboardingRequestObject{})
+		if err != nil {
+			t.Fatalf("CompleteMyProfileOnboarding: %v", err)
+		}
+		if _, ok := resp.(api.CompleteMyProfileOnboarding401JSONResponse); !ok {
+			t.Errorf("response = %T, want 401", resp)
+		}
+	})
 }
 
 func TestHandlerUpdatesProfile(t *testing.T) {
@@ -186,6 +196,63 @@ func TestHandlerSetsAndClearsStatus(t *testing.T) {
 	}
 	if cleared.CustomStatus != nil {
 		t.Errorf("custom status = %+v, want it removed", cleared.CustomStatus)
+	}
+}
+
+// Both "save" and "skip" end here: the first call marks the step, and a retry
+// answers the same 204 without moving the timestamp.
+func TestHandlerMarksOnboardingOnce(t *testing.T) {
+	h := newHarness(t)
+	user := uuid.New()
+	h.seed(user, "anna")
+	handler := NewHandler(h.svc, testLogger())
+
+	resp, err := handler.CompleteMyProfileOnboarding(sessionFor(user), api.CompleteMyProfileOnboardingRequestObject{})
+	if err != nil {
+		t.Fatalf("CompleteMyProfileOnboarding: %v", err)
+	}
+	if _, ok := resp.(api.CompleteMyProfileOnboarding204Response); !ok {
+		t.Fatalf("response = %T, want 204", resp)
+	}
+	first := h.store.profiles[user].ProfileOnboardedAt
+	if first == nil || !first.Equal(h.clock.Now()) {
+		t.Fatalf("onboardedAt = %v, want %v", first, h.clock.Now())
+	}
+
+	h.clock.advance(time.Hour)
+	resp, err = handler.CompleteMyProfileOnboarding(sessionFor(user), api.CompleteMyProfileOnboardingRequestObject{})
+	if err != nil {
+		t.Fatalf("repeated CompleteMyProfileOnboarding: %v", err)
+	}
+	if _, ok := resp.(api.CompleteMyProfileOnboarding204Response); !ok {
+		t.Fatalf("response = %T, want 204 again", resp)
+	}
+	if again := h.store.profiles[user].ProfileOnboardedAt; again == nil || !again.Equal(*first) {
+		t.Errorf("onboardedAt = %v, want the first timestamp %v", again, *first)
+	}
+}
+
+func TestHandlerRefusesOnboardingForAGuest(t *testing.T) {
+	h := newHarness(t)
+	guest := uuid.New()
+	seed := h.seed(guest, "Guest")
+	seed.IsGuest = true
+	h.store.profiles[guest] = seed
+	handler := NewHandler(h.svc, testLogger())
+
+	resp, err := handler.CompleteMyProfileOnboarding(sessionFor(guest), api.CompleteMyProfileOnboardingRequestObject{})
+	if err != nil {
+		t.Fatalf("CompleteMyProfileOnboarding: %v", err)
+	}
+	refused, ok := resp.(api.CompleteMyProfileOnboarding403JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 403", resp)
+	}
+	if refused.Error.Code != httpx.CodeForbidden || refused.Error.Message == "" {
+		t.Errorf("error = %+v, want forbidden with a message", refused.Error)
+	}
+	if at := h.store.profiles[guest].ProfileOnboardedAt; at != nil {
+		t.Errorf("onboardedAt = %v, want a guest to stay unpassed", at)
 	}
 }
 

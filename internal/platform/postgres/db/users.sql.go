@@ -28,7 +28,7 @@ SET nickname = $1::text,
     profile_updated_at = now(),
     updated_at = now()
 WHERE users.id = $2
-RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at
 `
 
 type ChangeUserNicknameParams struct {
@@ -62,6 +62,7 @@ func (q *Queries) ChangeUserNickname(ctx context.Context, arg ChangeUserNickname
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
@@ -69,7 +70,7 @@ func (q *Queries) ChangeUserNickname(ctx context.Context, arg ChangeUserNickname
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (nickname, email, password_hash, is_guest)
 VALUES ($1, $2, $3, $4)
-RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at
 `
 
 type CreateUserParams struct {
@@ -106,12 +107,13 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users WHERE id = $1
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUser(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -136,12 +138,13 @@ func (q *Queries) GetUser(ctx context.Context, id pgtype.UUID) (User, error) {
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users WHERE lower(email) = lower($1)
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at FROM users WHERE lower(email) = lower($1)
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error) {
@@ -166,12 +169,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
 
 const getUserByLogin = `-- name: GetUserByLogin :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at FROM users
 WHERE lower(nickname) = lower($1) OR lower(email) = lower($1)
 `
 
@@ -198,12 +202,13 @@ func (q *Queries) GetUserByLogin(ctx context.Context, lower string) (User, error
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
 
 const getUserByNickname = `-- name: GetUserByNickname :one
-SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at FROM users WHERE lower(nickname) = lower($1)
+SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at FROM users WHERE lower(nickname) = lower($1)
 `
 
 func (q *Queries) GetUserByNickname(ctx context.Context, lower string) (User, error) {
@@ -228,6 +233,7 @@ func (q *Queries) GetUserByNickname(ctx context.Context, lower string) (User, er
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
@@ -283,7 +289,7 @@ const promoteGuest = `-- name: PromoteGuest :one
 UPDATE users
 SET nickname = $2, email = $3, password_hash = $4, is_guest = false, updated_at = now()
 WHERE id = $1 AND is_guest
-RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at
 `
 
 type PromoteGuestParams struct {
@@ -321,6 +327,7 @@ func (q *Queries) PromoteGuest(ctx context.Context, arg PromoteGuestParams) (Use
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }
@@ -331,7 +338,7 @@ SET email = $1::text,
     email_verified_at = NULL,
     updated_at = now()
 WHERE users.id = $2
-RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at
+RETURNING id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at
 `
 
 type SetUserEmailParams struct {
@@ -363,6 +370,7 @@ func (q *Queries) SetUserEmail(ctx context.Context, arg SetUserEmailParams) (Use
 		&i.CustomStatusExpiresAt,
 		&i.ProfileUpdatedAt,
 		&i.EmailVerifiedAt,
+		&i.ProfileOnboardedAt,
 	)
 	return i, err
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
@@ -133,6 +134,23 @@ func (s *fakeStore) ClearStatus(_ context.Context, userID uuid.UUID) (Stored, er
 	profile.CustomStatus = nil
 	s.profiles[userID] = profile
 	return profile, nil
+}
+
+// MarkOnboarded mirrors the SQL: the first timestamp stays, so a repeated call
+// cannot move the step.
+func (s *fakeStore) MarkOnboarded(_ context.Context, userID uuid.UUID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profile, ok := s.profiles[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	if profile.ProfileOnboardedAt == nil {
+		when := at
+		profile.ProfileOnboardedAt = &when
+	}
+	s.profiles[userID] = profile
+	return nil
 }
 
 type personal struct {
@@ -561,7 +579,7 @@ func TestStatusIsStoredWithItsDeadline(t *testing.T) {
 	}
 }
 
-func TestUserProfilesAreInTheAPIshape(t *testing.T) {
+func TestOwnProfilesAreInTheAPIshape(t *testing.T) {
 	h := newHarness(t)
 	user := uuid.New()
 	seed := h.seed(user, "anna")
@@ -569,18 +587,85 @@ func TestUserProfilesAreInTheAPIshape(t *testing.T) {
 	seed.CustomStatus = &CustomStatus{Emoji: "🎧"}
 	h.store.profiles[user] = seed
 
-	profiles, err := h.svc.UserProfiles(t.Context(), []uuid.UUID{user})
+	profiles, err := h.svc.OwnProfiles(t.Context(), []uuid.UUID{user})
 	if err != nil {
-		t.Fatalf("UserProfiles: %v", err)
+		t.Fatalf("OwnProfiles: %v", err)
 	}
-	card, ok := profiles[user]
+	own, ok := profiles[user]
 	if !ok {
 		t.Fatal("the account is missing from the result")
 	}
+	if own.OnboardedAt != nil {
+		t.Errorf("onboardedAt = %v, want nil on a new account", own.OnboardedAt)
+	}
+	card := own.Profile
 	if card.DisplayName != "anna" || card.Bio != "hello" || card.AccentColor != api.Slate {
 		t.Errorf("card = %+v, want the public fields", card)
 	}
 	if card.CustomStatus == nil || card.CustomStatus.Emoji == nil || *card.CustomStatus.Emoji != "🎧" {
 		t.Errorf("custom status = %+v, want the emoji", card.CustomStatus)
+	}
+}
+
+// The step starts unset for every account and keeps the first timestamp: both
+// "save" and "skip" call it, and a retry after a dropped response must not
+// reopen the step or move it in time.
+func TestOnboardingKeepsTheFirstTimestamp(t *testing.T) {
+	h := newHarness(t)
+	user := uuid.New()
+	h.seed(user, "anna")
+
+	own := func() auth.OwnProfile {
+		t.Helper()
+		profiles, err := h.svc.OwnProfiles(t.Context(), []uuid.UUID{user})
+		if err != nil {
+			t.Fatalf("OwnProfiles: %v", err)
+		}
+		return profiles[user]
+	}
+
+	if at := own().OnboardedAt; at != nil {
+		t.Fatalf("onboardedAt = %v, want nil before the step", at)
+	}
+
+	if err := h.svc.CompleteOnboarding(t.Context(), user); err != nil {
+		t.Fatalf("CompleteOnboarding: %v", err)
+	}
+	first := own().OnboardedAt
+	if first == nil {
+		t.Fatal("onboardedAt = nil, want the time of the first call")
+	}
+	if !first.Equal(h.clock.Now()) {
+		t.Errorf("onboardedAt = %v, want %v", first, h.clock.Now())
+	}
+
+	h.clock.advance(2 * time.Hour)
+	if err := h.svc.CompleteOnboarding(t.Context(), user); err != nil {
+		t.Fatalf("repeated CompleteOnboarding: %v", err)
+	}
+	if again := own().OnboardedAt; again == nil || !again.Equal(*first) {
+		t.Errorf("onboardedAt = %v, want the first timestamp %v", again, *first)
+	}
+}
+
+// A guest has not signed up yet, so the step must stay unpassed until it
+// claims the account; the client gets a refusal rather than a silent mark.
+func TestOnboardingRefusesAGuest(t *testing.T) {
+	h := newHarness(t)
+	guest := uuid.New()
+	seed := h.seed(guest, "Guest")
+	seed.IsGuest = true
+	h.store.profiles[guest] = seed
+
+	err := h.svc.CompleteOnboarding(t.Context(), guest)
+	if !errors.Is(err, ErrGuestOnboarding) {
+		t.Fatalf("error = %v, want ErrGuestOnboarding", err)
+	}
+	if at := h.store.profiles[guest].ProfileOnboardedAt; at != nil {
+		t.Errorf("onboardedAt = %v, want a guest to stay unpassed", at)
+	}
+
+	if err := h.svc.CompleteOnboarding(t.Context(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("error = %v, want ErrNotFound for an unknown account", err)
 	}
 }

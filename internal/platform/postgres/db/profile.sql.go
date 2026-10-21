@@ -21,7 +21,7 @@ SET custom_status_emoji      = NULL,
 WHERE id = $1
 RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
           custom_status_emoji, custom_status_text, custom_status_expires_at,
-          is_guest, created_at
+          profile_onboarded_at, is_guest, created_at
 `
 
 type ClearUserStatusRow struct {
@@ -34,6 +34,7 @@ type ClearUserStatusRow struct {
 	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 	IsGuest               bool               `json:"is_guest"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 }
@@ -51,6 +52,7 @@ func (q *Queries) ClearUserStatus(ctx context.Context, id pgtype.UUID) (ClearUse
 		&i.CustomStatusEmoji,
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
+		&i.ProfileOnboardedAt,
 		&i.IsGuest,
 		&i.CreatedAt,
 	)
@@ -61,7 +63,7 @@ const getUserProfile = `-- name: GetUserProfile :one
 
 SELECT id, nickname, display_name, bio, accent_color, avatar_key,
        custom_status_emoji, custom_status_text, custom_status_expires_at,
-       is_guest, created_at
+       profile_onboarded_at, is_guest, created_at
 FROM users
 WHERE id = $1
 `
@@ -76,6 +78,7 @@ type GetUserProfileRow struct {
 	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 	IsGuest               bool               `json:"is_guest"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 }
@@ -97,6 +100,7 @@ func (q *Queries) GetUserProfile(ctx context.Context, id pgtype.UUID) (GetUserPr
 		&i.CustomStatusEmoji,
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
+		&i.ProfileOnboardedAt,
 		&i.IsGuest,
 		&i.CreatedAt,
 	)
@@ -106,7 +110,7 @@ func (q *Queries) GetUserProfile(ctx context.Context, id pgtype.UUID) (GetUserPr
 const listUserProfiles = `-- name: ListUserProfiles :many
 SELECT id, nickname, display_name, bio, accent_color, avatar_key,
        custom_status_emoji, custom_status_text, custom_status_expires_at,
-       is_guest, created_at
+       profile_onboarded_at, is_guest, created_at
 FROM users
 WHERE id = ANY($1::uuid[])
 `
@@ -121,6 +125,7 @@ type ListUserProfilesRow struct {
 	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 	IsGuest               bool               `json:"is_guest"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 }
@@ -146,6 +151,7 @@ func (q *Queries) ListUserProfiles(ctx context.Context, ids []pgtype.UUID) ([]Li
 			&i.CustomStatusEmoji,
 			&i.CustomStatusText,
 			&i.CustomStatusExpiresAt,
+			&i.ProfileOnboardedAt,
 			&i.IsGuest,
 			&i.CreatedAt,
 		); err != nil {
@@ -159,6 +165,29 @@ func (q *Queries) ListUserProfiles(ctx context.Context, ids []pgtype.UUID) ([]Li
 	return items, nil
 }
 
+const markUserProfileOnboarded = `-- name: MarkUserProfileOnboarded :execrows
+UPDATE users
+SET profile_onboarded_at = coalesce(profile_onboarded_at, $1)
+WHERE id = $2
+`
+
+type MarkUserProfileOnboardedParams struct {
+	At pgtype.Timestamptz `json:"at"`
+	ID pgtype.UUID        `json:"id"`
+}
+
+// The first timestamp stays: a retry after a dropped response changes nothing,
+// so "save" and "skip" can both call this without a check. This is not profile
+// content, so neither updated_at nor profile_updated_at moves, and nobody else
+// hears about it.
+func (q *Queries) MarkUserProfileOnboarded(ctx context.Context, arg MarkUserProfileOnboardedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markUserProfileOnboarded, arg.At, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setUserAvatar = `-- name: SetUserAvatar :one
 WITH previous AS (
     SELECT avatar_key FROM users WHERE users.id = $2
@@ -170,7 +199,7 @@ SET avatar_key = $1::text,
 WHERE users.id = $2
 RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
           custom_status_emoji, custom_status_text, custom_status_expires_at,
-          is_guest, created_at,
+          profile_onboarded_at, is_guest, created_at,
           (SELECT avatar_key FROM previous) AS previous_avatar_key
 `
 
@@ -189,6 +218,7 @@ type SetUserAvatarRow struct {
 	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 	IsGuest               bool               `json:"is_guest"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 	PreviousAvatarKey     pgtype.Text        `json:"previous_avatar_key"`
@@ -209,6 +239,7 @@ func (q *Queries) SetUserAvatar(ctx context.Context, arg SetUserAvatarParams) (S
 		&i.CustomStatusEmoji,
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
+		&i.ProfileOnboardedAt,
 		&i.IsGuest,
 		&i.CreatedAt,
 		&i.PreviousAvatarKey,
@@ -226,7 +257,7 @@ SET custom_status_emoji      = $1,
 WHERE id = $4
 RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
           custom_status_emoji, custom_status_text, custom_status_expires_at,
-          is_guest, created_at
+          profile_onboarded_at, is_guest, created_at
 `
 
 type SetUserStatusParams struct {
@@ -246,6 +277,7 @@ type SetUserStatusRow struct {
 	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 	IsGuest               bool               `json:"is_guest"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 }
@@ -271,6 +303,7 @@ func (q *Queries) SetUserStatus(ctx context.Context, arg SetUserStatusParams) (S
 		&i.CustomStatusEmoji,
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
+		&i.ProfileOnboardedAt,
 		&i.IsGuest,
 		&i.CreatedAt,
 	)
@@ -287,7 +320,7 @@ SET display_name     = CASE WHEN $1::bool THEN $2 ELSE display_name END,
 WHERE id = $6
 RETURNING id, nickname, display_name, bio, accent_color, avatar_key,
           custom_status_emoji, custom_status_text, custom_status_expires_at,
-          is_guest, created_at
+          profile_onboarded_at, is_guest, created_at
 `
 
 type UpdateUserProfileParams struct {
@@ -309,6 +342,7 @@ type UpdateUserProfileRow struct {
 	CustomStatusEmoji     pgtype.Text        `json:"custom_status_emoji"`
 	CustomStatusText      pgtype.Text        `json:"custom_status_text"`
 	CustomStatusExpiresAt pgtype.Timestamptz `json:"custom_status_expires_at"`
+	ProfileOnboardedAt    pgtype.Timestamptz `json:"profile_onboarded_at"`
 	IsGuest               bool               `json:"is_guest"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 }
@@ -336,6 +370,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.CustomStatusEmoji,
 		&i.CustomStatusText,
 		&i.CustomStatusExpiresAt,
+		&i.ProfileOnboardedAt,
 		&i.IsGuest,
 		&i.CreatedAt,
 	)

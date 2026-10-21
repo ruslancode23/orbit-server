@@ -59,6 +59,10 @@ var (
 	// ErrSelf means the caller asked for a mutual list with their own account:
 	// a mutual list needs two different accounts.
 	ErrSelf = errors.New("profile: a mutual list needs two different accounts")
+	// ErrGuestOnboarding means a guest tried to pass the one-time profile step.
+	// The step belongs to the flow after signing up or after claiming the guest
+	// account, and claiming turns the account into a regular one before it runs.
+	ErrGuestOnboarding = errors.New("profile: a guest cannot pass the profile step before signing up")
 )
 
 // AccentColor is one of the product's named palette tokens. A raw hex colour is
@@ -115,10 +119,15 @@ type Public struct {
 }
 
 // Stored is a profile as the database keeps it: the public part plus the avatar
-// key, which the service signs into a link but never returns as a value.
+// key, which the service signs into a link but never returns as a value, and
+// the onboarding timestamp, which only the owner may see.
 type Stored struct {
 	Public
 	AvatarKey string
+	// ProfileOnboardedAt is when the account passed the one-time "fill in your
+	// profile" step, by saving or by skipping. nil means it has not passed it.
+	// It stays out of Public on purpose: nobody else needs it.
+	ProfileOnboardedAt *time.Time
 }
 
 // MutualServer is one server two accounts are on, as the caller sees it. The
