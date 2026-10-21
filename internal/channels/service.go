@@ -125,10 +125,11 @@ type Authorizer interface {
 	RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error)
 }
 
-// Watchers is the live stream of a server. Optional: with nil the API behaves the
-// same and the other members see the change on their next load.
+// Watchers tells the members of a server what changed in it (internal/servers
+// fans it out to each member's own stream). Optional: with nil the API behaves
+// the same and the other members see the change on their next load.
 type Watchers interface {
-	Publish(event events.Event)
+	Announce(ctx context.Context, event events.Event, also ...uuid.UUID)
 }
 
 type Service struct {
@@ -155,7 +156,7 @@ func (s *Service) SetWatchers(w Watchers) { s.watchers = w }
 // the channel only: the channel as the API shows it carries canWrite, which
 // depends on who reads it, so each client asks for its own view. A zero
 // channelID means the whole list changed — a new order.
-func (s *Service) announce(kind events.Kind, workspaceID, channelID uuid.UUID) {
+func (s *Service) announce(ctx context.Context, kind events.Kind, workspaceID, channelID uuid.UUID) {
 	if s.watchers == nil {
 		return
 	}
@@ -163,7 +164,7 @@ func (s *Service) announce(kind events.Kind, workspaceID, channelID uuid.UUID) {
 	if channelID != uuid.Nil {
 		event.Payload = map[string]any{"channelId": channelID}
 	}
-	s.watchers.Publish(event)
+	s.watchers.Announce(ctx, event)
 }
 
 // View is a channel as one caller sees it: the channel plus whether they may write.
@@ -227,7 +228,7 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c
 	if err != nil {
 		return View{}, err
 	}
-	s.announce(events.KindChannelChanged, workspaceID, created.ID)
+	s.announce(ctx, events.KindChannelChanged, workspaceID, created.ID)
 	return View{Channel: created, CanWrite: created.CanWrite(role)}, nil
 }
 
@@ -256,7 +257,7 @@ func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u U
 	if err != nil {
 		return View{}, err
 	}
-	s.announce(events.KindChannelChanged, updated.WorkspaceID, updated.ID)
+	s.announce(ctx, events.KindChannelChanged, updated.WorkspaceID, updated.ID)
 	return View{Channel: updated, CanWrite: updated.CanWrite(role)}, nil
 }
 
@@ -270,7 +271,7 @@ func (s *Service) Delete(ctx context.Context, channelID, callerID uuid.UUID) err
 	if err := s.store.Delete(ctx, channelID); err != nil {
 		return err
 	}
-	s.announce(events.KindChannelDeleted, channel.WorkspaceID, channelID)
+	s.announce(ctx, events.KindChannelDeleted, channel.WorkspaceID, channelID)
 	return nil
 }
 
@@ -293,7 +294,7 @@ func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, 
 	if err := s.store.Reorder(ctx, workspaceID, ids); err != nil {
 		return nil, err
 	}
-	s.announce(events.KindChannelChanged, workspaceID, uuid.Nil)
+	s.announce(ctx, events.KindChannelChanged, workspaceID, uuid.Nil)
 	list, err := s.store.List(ctx, workspaceID)
 	if err != nil {
 		return nil, err

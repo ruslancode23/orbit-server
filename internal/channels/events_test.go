@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -11,7 +12,9 @@ import (
 
 type recordingWatchers struct{ events []events.Event }
 
-func (r *recordingWatchers) Publish(event events.Event) { r.events = append(r.events, event) }
+func (r *recordingWatchers) Announce(_ context.Context, event events.Event, _ ...uuid.UUID) {
+	r.events = append(r.events, event)
+}
 
 // Every change to the channel list reaches the server's stream, so the other
 // members see it without reloading. The payload names the channel only: the
