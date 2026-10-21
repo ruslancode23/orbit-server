@@ -72,7 +72,8 @@ func run() error {
 		Storage: storage, MaxBytes: cfg.Storage.MaxIconBytes, LinkTTL: cfg.Storage.IconLinkTTL,
 	})
 	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
-	channelService.SetWatchers(hub)
+	// Channel events reach every member through the servers module.
+	channelService.SetWatchers(workspaces)
 
 	// Who may write to whom: the block list, the dm policy and the guest rule.
 	privacyService := privacy.NewService(privacy.NewPostgresStore(queries))

@@ -62,6 +62,9 @@ type fakeWatchers struct {
 	published []events.Event
 	personal  map[uuid.UUID][]events.Event
 	revoked   []uuid.UUID
+	// viewer is the member whose own stream updates() reads: every member hears
+	// a server event once, so one member's stream counts the announcements.
+	viewer uuid.UUID
 }
 
 func (f *fakeWatchers) PublishToUser(userID uuid.UUID, event events.Event) {
@@ -85,12 +88,13 @@ func (f *fakeWatchers) Revoke(_, userID uuid.UUID) {
 	f.revoked = append(f.revoked, userID)
 }
 
-// updates are the workspace.updated events, the ones these tests look at.
+// updates are the workspace.updated events one member heard, the ones these
+// tests look at.
 func (f *fakeWatchers) updates() []events.Event {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []events.Event
-	for _, e := range f.published {
+	for _, e := range f.personal[f.viewer] {
 		if e.Kind == events.KindWorkspaceUpdated {
 			out = append(out, e)
 		}
@@ -114,7 +118,7 @@ func newProfileWorld(t *testing.T) (world, *fakeStorage, *fakeWatchers) {
 	t.Helper()
 	w := newWorld(t)
 	storage := newFakeStorage()
-	watchers := &fakeWatchers{}
+	watchers := &fakeWatchers{viewer: w.owner}
 	w.svc = NewService(w.store, watchers, Icons{Storage: storage, MaxBytes: iconLimit, LinkTTL: time.Minute})
 	return w, storage, watchers
 }

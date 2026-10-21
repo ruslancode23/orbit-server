@@ -239,25 +239,21 @@ func (s *Service) withProfile(ctx context.Context, account *profile.Public) erro
 	return nil
 }
 
-// changed tells everyone watching the server that the server itself changed.
-// The payload is the server as a member sees it, icon link included.
+// changed tells every member that the server itself changed. The payload is
+// the server as a member sees it, icon link included.
 func (s *Service) changed(ctx context.Context, workspace Workspace) {
-	if s.watchers == nil {
-		return
-	}
-	s.watchers.Publish(events.Event{
+	s.Announce(ctx, events.Event{
 		Kind:        events.KindWorkspaceUpdated,
 		WorkspaceID: workspace.ID,
 		Payload:     APIWorkspace(s.present(ctx, workspace)),
 	})
 }
 
-// announce tells the watchers that the membership of one account changed.
-func (s *Service) announce(workspaceID, userID uuid.UUID, role Role, present bool) {
-	if s.watchers == nil {
-		return
-	}
-	s.watchers.Publish(events.Event{
+// announce tells every member that the membership of one account changed. The
+// account itself hears it too, even when it has just left: its rail must lose
+// the server.
+func (s *Service) announce(ctx context.Context, workspaceID, userID uuid.UUID, role Role, present bool) {
+	s.Announce(ctx, events.Event{
 		Kind:        events.KindMemberChanged,
 		WorkspaceID: workspaceID,
 		Payload: map[string]any{
@@ -265,7 +261,36 @@ func (s *Service) announce(workspaceID, userID uuid.UUID, role Role, present boo
 			"role":    string(role),
 			"present": present,
 		},
-	})
+	}, userID)
+}
+
+// Announce sends an event about a server to the personal stream of each of
+// its members (and of anyone in also). The server's own stream reaches only
+// the connections watching it right now, and most members watch another
+// server or none: a rename, a new channel or a new member must reach their
+// rails too. Each connection hears it once. Other modules (channels) announce
+// through here, so the audience of a server event has one definition.
+func (s *Service) Announce(ctx context.Context, event events.Event, also ...uuid.UUID) {
+	if s.watchers == nil {
+		return
+	}
+	members, err := s.store.ListMembers(ctx, event.WorkspaceID)
+	if err != nil {
+		// Better the watchers of the server than nobody.
+		s.watchers.Publish(event)
+		return
+	}
+	told := make(map[uuid.UUID]bool, len(members)+len(also))
+	for _, member := range members {
+		told[member.User.ID] = true
+		s.watchers.PublishToUser(member.User.ID, event)
+	}
+	for _, id := range also {
+		if !told[id] {
+			told[id] = true
+			s.watchers.PublishToUser(id, event)
+		}
+	}
 }
 
 // cutOff ends the live connections of an account that is no longer on the
@@ -507,7 +532,7 @@ func (s *Service) Join(ctx context.Context, workspaceID, userID uuid.UUID) (Memb
 	if err := s.withProfile(ctx, &member.User); err != nil {
 		return Member{}, err
 	}
-	s.announce(workspaceID, userID, RoleMember, true)
+	s.announce(ctx, workspaceID, userID, RoleMember, true)
 	return member, nil
 }
 
@@ -553,14 +578,14 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 	if err := s.withProfile(ctx, &member.User); err != nil {
 		return Member{}, err
 	}
-	s.announce(workspaceID, targetID, role, true)
+	s.announce(ctx, workspaceID, targetID, role, true)
 	// Handing over ownership: the previous owner stays as an admin, so the server
 	// never has two owners and the caller does not lock themselves out of the room.
 	if role == RoleOwner && callerID != targetID {
 		if _, err := s.store.SetRole(ctx, workspaceID, callerID, RoleAdmin); err != nil {
 			return Member{}, err
 		}
-		s.announce(workspaceID, callerID, RoleAdmin, true)
+		s.announce(ctx, workspaceID, callerID, RoleAdmin, true)
 	}
 	return member, nil
 }
@@ -601,7 +626,7 @@ func (s *Service) removeMember(ctx context.Context, workspaceID, userID uuid.UUI
 	if err := s.store.RemoveMember(ctx, workspaceID, userID); err != nil {
 		return err
 	}
-	s.announce(workspaceID, userID, "", false)
+	s.announce(ctx, workspaceID, userID, "", false)
 	s.cutOff(workspaceID, userID)
 	return nil
 }
@@ -635,7 +660,7 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 	if err := s.withProfile(ctx, &ban.User); err != nil {
 		return Ban{}, err
 	}
-	s.announce(workspaceID, targetID, "", false)
+	s.announce(ctx, workspaceID, targetID, "", false)
 	s.cutOff(workspaceID, targetID)
 	return ban, nil
 }
