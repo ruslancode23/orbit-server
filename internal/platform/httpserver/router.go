@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
+	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
 	"github.com/ruslancode23/orbit-server/internal/profile"
@@ -59,7 +61,10 @@ const voiceWebhookPath = "/api/v1/livekit/webhook"
 type Deps struct {
 	Logger      *slog.Logger
 	CORSOrigins []string
-	Health      *health.Handler
+	// TrustedProxies are the peers whose X-Forwarded-For names the client; the
+	// limits keyed by address read the result (internal/platform/clientip).
+	TrustedProxies []netip.Prefix
+	Health         *health.Handler
 	// Auth serves accounts and sessions; its middleware resolves the session cookie.
 	Auth     *auth.Handler
 	Sessions auth.Resolver
@@ -119,12 +124,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(clientip.Middleware(d.TrustedProxies))
 	r.Use(requestLogger(d.Logger))
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   d.CORSOrigins,
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Orbit-Device"},
+		AllowedOrigins: d.CORSOrigins,
+		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
+		AllowedHeaders: []string{"Authorization", "Content-Type", "X-Orbit-Device"},
+		// The web client lives on another origin; without this the browser hides
+		// Retry-After, and a 429 could not say how long to wait.
+		ExposedHeaders:   []string{"Retry-After"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))

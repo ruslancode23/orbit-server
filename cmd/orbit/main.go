@@ -148,7 +148,17 @@ func run() error {
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
 	authHandler.SetProfiles(profileService)
 	authHandler.SetProfileEvents(profileService)
+	// One budget for both doors that create an account: registration and the
+	// guest entrance by invite link.
+	signups := ratelimit.NewHourly(cfg.SignupsPerHourPerIP)
+	authHandler.SetLimits(auth.Limits{
+		LoginPerIP:    ratelimit.New(cfg.LoginPerMinutePerIP),
+		LoginFailures: ratelimit.NewHourly(cfg.LoginFailuresPerHour),
+		Signups:       signups,
+	})
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
+	inviteHandler := invites.NewHandler(inviteService, invites.NewCookies(authHandler), log)
+	inviteHandler.SetSignupLimiter(signups)
 
 	workspaceHandler := servers.NewHandler(workspaces, log)
 
@@ -175,12 +185,13 @@ func run() error {
 	}
 
 	deps := httpserver.Deps{
-		Logger:      log,
-		CORSOrigins: cfg.CORSOrigins,
-		Health:      health.NewHandler(pool),
+		Logger:         log,
+		CORSOrigins:    cfg.CORSOrigins,
+		TrustedProxies: cfg.TrustedProxies,
+		Health:         health.NewHandler(pool),
 		// Cookies go over TLS everywhere but local development.
 		Auth:           authHandler,
-		Invites:        invites.NewHandler(inviteService, invites.NewCookies(authHandler), log),
+		Invites:        inviteHandler,
 		Files:          files.NewHandler(fileService, log),
 		Conversations:  conversations.NewHandler(conversationService, log),
 		Secrets:        secrets.NewHandler(secretService, log),

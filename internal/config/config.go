@@ -4,10 +4,13 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 )
 
 type Config struct {
@@ -34,8 +37,19 @@ type Config struct {
 	// NicknameChangeHourlyLimit caps nickname changes per account per hour;
 	// zero turns the guard off.
 	NicknameChangeHourlyLimit int
-	LiveKit                   LiveKit
-	Storage                   Storage
+	// TrustedProxies are the addresses whose X-Forwarded-For is believed; empty
+	// means the connection's peer is the client.
+	TrustedProxies []netip.Prefix
+	// LoginPerMinutePerIP caps sign-in attempts from one address per minute.
+	LoginPerMinutePerIP int
+	// LoginFailuresPerHour caps wrong passwords for one login name per hour;
+	// a successful sign-in costs nothing.
+	LoginFailuresPerHour int
+	// SignupsPerHourPerIP caps new accounts, registered or guest, from one
+	// address per hour.
+	SignupsPerHourPerIP int
+	LiveKit             LiveKit
+	Storage             Storage
 }
 
 // Storage is the object store for attachments (SeaweedFS locally, S3 elsewhere).
@@ -128,6 +142,29 @@ func Load() (Config, error) {
 			os.Getenv("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT")))
 	}
 
+	trustedProxies, err := clientip.ParseTrusted(splitList(os.Getenv("ORBIT_TRUSTED_PROXIES")))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_TRUSTED_PROXIES: %w", err))
+	}
+
+	loginPerIP, err := strconv.Atoi(getenv("ORBIT_LOGIN_PER_MINUTE_PER_IP", "20"))
+	if err != nil || loginPerIP < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_LOGIN_PER_MINUTE_PER_IP must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_LOGIN_PER_MINUTE_PER_IP")))
+	}
+
+	loginFailures, err := strconv.Atoi(getenv("ORBIT_LOGIN_FAILURES_PER_HOUR", "10"))
+	if err != nil || loginFailures < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_LOGIN_FAILURES_PER_HOUR must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_LOGIN_FAILURES_PER_HOUR")))
+	}
+
+	signupsPerIP, err := strconv.Atoi(getenv("ORBIT_SIGNUPS_PER_HOUR_PER_IP", "30"))
+	if err != nil || signupsPerIP < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_SIGNUPS_PER_HOUR_PER_IP must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_SIGNUPS_PER_HOUR_PER_IP")))
+	}
+
 	maxUpload, err := strconv.ParseInt(getenv("ORBIT_MAX_UPLOAD_BYTES", "26214400"), 10, 64)
 	if err != nil || maxUpload <= 0 {
 		errs = append(errs, fmt.Errorf("ORBIT_MAX_UPLOAD_BYTES must be a positive number of bytes, got %q",
@@ -184,6 +221,10 @@ func Load() (Config, error) {
 		FriendRequestDailyLimit:   friendRequestDaily,
 		FriendRequestPendingLimit: friendRequestPending,
 		NicknameChangeHourlyLimit: nicknameChanges,
+		TrustedProxies:            trustedProxies,
+		LoginPerMinutePerIP:       loginPerIP,
+		LoginFailuresPerHour:      loginFailures,
+		SignupsPerHourPerIP:       signupsPerIP,
 		Storage: Storage{
 			Endpoint:       required("ORBIT_S3_ENDPOINT"),
 			Bucket:         required("ORBIT_S3_BUCKET"),

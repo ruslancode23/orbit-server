@@ -75,7 +75,7 @@ func TestIdleBucketsAreForgotten(t *testing.T) {
 	clock = clock.Add(idleFor + time.Minute)
 	limiter.mu.Lock()
 	limiter.forgetIdle(clock)
-	_, kept := limiter.buckets[anna]
+	_, kept := limiter.buckets[anna.String()]
 	limiter.mu.Unlock()
 	if kept {
 		t.Error("an idle bucket survived the sweep")
@@ -170,5 +170,41 @@ func TestIdleSweepKeepsAPartialBucket(t *testing.T) {
 
 	if allowed, _ := limiter.Allow(anna); allowed {
 		t.Error("the sweep reset a partly refilled hourly bucket")
+	}
+}
+
+// Check looks without spending: only the failures the caller reports with
+// AllowKey use up the budget.
+func TestLimiterCheckDoesNotSpend(t *testing.T) {
+	limiter := NewHourly(2)
+	clock := time.Now()
+	limiter.now = func() time.Time { return clock }
+
+	for range 5 {
+		if ok, _ := limiter.Check("anna"); !ok {
+			t.Fatal("Check spent a token")
+		}
+	}
+	limiter.AllowKey("anna")
+	limiter.AllowKey("anna")
+	ok, wait := limiter.Check("anna")
+	if ok {
+		t.Fatal("Check passed with the budget spent")
+	}
+	if wait <= 0 || wait > 30*time.Minute {
+		t.Errorf("wait = %v, want up to half an hour for two per hour", wait)
+	}
+	if ok, _ := limiter.Check("bob"); !ok {
+		t.Error("another key shared the budget")
+	}
+}
+
+func TestNilLimiterAllowsKeys(t *testing.T) {
+	var limiter *Limiter
+	if ok, _ := limiter.AllowKey("x"); !ok {
+		t.Error("nil AllowKey refused")
+	}
+	if ok, _ := limiter.Check("x"); !ok {
+		t.Error("nil Check refused")
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
 	"github.com/ruslancode23/orbit-server/internal/profile"
+	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -33,7 +34,7 @@ type pinger struct{ err error }
 
 func (p pinger) Ping(context.Context) error { return p.err }
 
-func newRouter(t *testing.T, dbErr error) http.Handler {
+func newRouter(t *testing.T, dbErr error, adjust ...func(*Deps)) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The auth store is never reached here: these tests send no session cookie.
@@ -62,6 +63,9 @@ func newRouter(t *testing.T, dbErr error) http.Handler {
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 		Voice: voice.NewHandler(
 			voice.NewTokenIssuer("devkey", "a-secret-that-is-long-enough-for-hs256", "ws://lk"), nil, log),
+	}
+	for _, change := range adjust {
+		change(&d)
 	}
 	h, err := NewRouter(d)
 	if err != nil {
@@ -241,5 +245,34 @@ func TestIdentityRoutesExist(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s = %d, want 401 (route missing?), body %s", route.method, route.path, rec.Code, rec.Body)
 		}
+	}
+}
+
+// A refused sign-in reaches the browser with its wait: the web client lives on
+// another origin, so Retry-After must be exposed through CORS or the page could
+// only say "later".
+func TestTooManyRequestsExposesRetryAfter(t *testing.T) {
+	failures := ratelimit.NewHourly(1)
+	failures.AllowKey("anna") // the one wrong password this hour is spent
+	h := newRouter(t, nil, func(d *Deps) {
+		d.CORSOrigins = []string{"http://web.test"}
+		d.Auth.SetLimits(auth.Limits{LoginFailures: failures})
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/auth/login",
+		strings.NewReader(`{"login":"Anna","password":"whatever-it-is"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://web.test")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body %s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After header")
+	}
+	if exposed := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(exposed, "Retry-After") {
+		t.Errorf("Access-Control-Expose-Headers = %q, want Retry-After in it", exposed)
 	}
 }
