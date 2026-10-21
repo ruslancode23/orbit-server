@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
 )
 
@@ -40,6 +40,9 @@ type Store interface {
 	// SetAvatar points the account at a new avatar key and returns the key it
 	// pointed at before, so the caller can delete the old objects.
 	SetAvatar(ctx context.Context, userID uuid.UUID, key string) (Stored, string, error)
+	// MarkOnboarded records the one-time profile step at at. The query keeps the
+	// first timestamp, so a repeat changes nothing.
+	MarkOnboarded(ctx context.Context, userID uuid.UUID, at time.Time) error
 }
 
 // Servers tells which servers an account is on: everyone there may see its
@@ -184,17 +187,24 @@ func (s *Service) Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]
 	return out, nil
 }
 
-// UserProfiles is Profiles in the API shape. It exists for internal/auth: the
-// profile handler reads sessions from auth, so auth cannot import this package
-// back and asks in terms of the generated type instead.
-func (s *Service) UserProfiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]api.UserProfile, error) {
-	profiles, err := s.Profiles(ctx, ids)
+// OwnProfiles is the profile of each id as its owner sees it: the public part
+// plus the onboarding timestamp, which nobody else may read. It exists for
+// internal/auth: the profile handler reads sessions from auth, so auth cannot
+// import this package back and asks in terms of the generated types instead.
+func (s *Service) OwnProfiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]auth.OwnProfile, error) {
+	if len(ids) == 0 {
+		return map[uuid.UUID]auth.OwnProfile{}, nil
+	}
+	stored, err := s.store.Profiles(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[uuid.UUID]api.UserProfile, len(profiles))
-	for id, profile := range profiles {
-		out[id] = APIProfile(profile)
+	out := make(map[uuid.UUID]auth.OwnProfile, len(stored))
+	for id, profile := range stored {
+		out[id] = auth.OwnProfile{
+			Profile:     APIProfile(s.present(ctx, profile)),
+			OnboardedAt: profile.ProfileOnboardedAt,
+		}
 	}
 	return out, nil
 }
@@ -401,6 +411,24 @@ func (s *Service) ClearStatus(ctx context.Context, userID uuid.UUID) (Public, er
 	}
 	s.schedule(userID)
 	return s.present(ctx, stored), nil
+}
+
+// CompleteOnboarding records that the account has passed the one-time "fill in
+// your profile" step. Saving and skipping both call it, and so may a retry: the
+// store keeps the first timestamp, so the step can neither be reopened nor
+// moved. A guest is refused: the step belongs to the flow after signing up or
+// after claiming the guest account, and claiming is what turns a guest into an
+// account that can pass it. Nothing is announced: the flag is about its owner
+// only, so nobody else hears about it.
+func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID) error {
+	stored, err := s.store.Profile(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if stored.IsGuest {
+		return ErrGuestOnboarding
+	}
+	return s.store.MarkOnboarded(ctx, userID, s.now())
 }
 
 // Run sends what is due until the server stops. The debounce has no other clock:

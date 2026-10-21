@@ -267,6 +267,59 @@ func TestMeCarriesTheEmailAndAGuestHasNone(t *testing.T) {
 	}
 }
 
+// /auth/me says whether the one-time profile step is passed, so a client on
+// another device does not show it again. A new account answers null.
+func TestMeCarriesTheProfileOnboardingFlag(t *testing.T) {
+	h, svc, _ := newTestHandler(t, false)
+	user, creds := registerTestUser(t, svc)
+	session, err := svc.Authenticate(context.Background(), creds.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	ctx := WithSession(context.Background(), session)
+
+	profiles := &fakeProfiles{byID: map[uuid.UUID]OwnProfile{
+		user.ID: {Profile: api.UserProfile{
+			Id:          user.ID,
+			Nickname:    user.Nickname,
+			DisplayName: user.Nickname,
+			AccentColor: api.Slate,
+			IsGuest:     user.IsGuest,
+			CreatedAt:   user.CreatedAt,
+		}},
+	}}
+	h.SetProfiles(profiles)
+
+	resp, err := h.GetCurrentUser(ctx, api.GetCurrentUserRequestObject{})
+	if err != nil {
+		t.Fatalf("GetCurrentUser: %v", err)
+	}
+	me, ok := resp.(api.GetCurrentUser200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	if me.ProfileOnboardedAt != nil {
+		t.Fatalf("profileOnboardedAt = %v, want nil on a new account", me.ProfileOnboardedAt)
+	}
+
+	onboardedAt := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	own := profiles.byID[user.ID]
+	own.OnboardedAt = &onboardedAt
+	profiles.byID[user.ID] = own
+
+	resp, err = h.GetCurrentUser(ctx, api.GetCurrentUserRequestObject{})
+	if err != nil {
+		t.Fatalf("GetCurrentUser: %v", err)
+	}
+	me, ok = resp.(api.GetCurrentUser200JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 200", resp)
+	}
+	if me.ProfileOnboardedAt == nil || !me.ProfileOnboardedAt.Equal(onboardedAt) {
+		t.Errorf("profileOnboardedAt = %v, want %v", me.ProfileOnboardedAt, onboardedAt)
+	}
+}
+
 func TestLogoutAndPasswordChangeClearTheCookie(t *testing.T) {
 	h, svc, _ := newTestHandler(t, true)
 	user, creds := registerTestUser(t, svc)
@@ -345,6 +398,22 @@ func TestChangePasswordWrongCurrentIsUnauthorized(t *testing.T) {
 	if _, err := svc.Authenticate(context.Background(), creds.Token); err != nil {
 		t.Errorf("a failed change revoked the session: %v", err)
 	}
+}
+
+// fakeProfiles stands in for internal/profile: the handler asks for the owner's
+// view, which also carries the onboarding timestamp.
+type fakeProfiles struct {
+	byID map[uuid.UUID]OwnProfile
+}
+
+func (f *fakeProfiles) OwnProfiles(_ context.Context, ids []openapi_types.UUID) (map[openapi_types.UUID]OwnProfile, error) {
+	out := make(map[openapi_types.UUID]OwnProfile, len(ids))
+	for _, id := range ids {
+		if profile, ok := f.byID[id]; ok {
+			out[id] = profile
+		}
+	}
+	return out, nil
 }
 
 type fakeProfileEvents struct {

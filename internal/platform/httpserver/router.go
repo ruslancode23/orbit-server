@@ -473,6 +473,10 @@ func (s *server) UpdateMyProfile(ctx context.Context, req api.UpdateMyProfileReq
 	return s.profiles.UpdateMyProfile(ctx, req)
 }
 
+func (s *server) CompleteMyProfileOnboarding(ctx context.Context, req api.CompleteMyProfileOnboardingRequestObject) (api.CompleteMyProfileOnboardingResponseObject, error) {
+	return s.profiles.CompleteMyProfileOnboarding(ctx, req)
+}
+
 func (s *server) SetMyStatus(ctx context.Context, req api.SetMyStatusRequestObject) (api.SetMyStatusResponseObject, error) {
 	return s.profiles.SetMyStatus(ctx, req)
 }
