@@ -577,6 +577,209 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/roles:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listRoles
+      tags: [roles]
+      summary: The roles of a server, highest first. Any member.
+      responses:
+        "200":
+          description: Every role, @everyone last.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Role" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createRole
+      tags: [roles]
+      summary: Create a role just above @everyone. manageRoles.
+      description: |
+        The new role grants only permissions the caller has. It starts at the
+        bottom of the order, above @everyone; move it with the order endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleCreateRequest" }
+      responses:
+        "201":
+          description: The role.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/roles/order:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    put:
+      operationId: reorderRoles
+      tags: [roles]
+      summary: Set the order of every role but @everyone. manageRoles.
+      description: |
+        A role the caller may not manage — at or above their highest — must keep
+        its place, and no managed role may end up above the caller's highest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleOrderRequest" }
+      responses:
+        "200":
+          description: Every role in the new order, highest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/roles/{roleId}:
+    parameters:
+      - $ref: "#/components/parameters/RoleId"
+    patch:
+      operationId: updateRole
+      tags: [roles]
+      summary: Rename, recolour, hoist or change the permissions of a role. manageRoles.
+      description: Only a role below the caller's highest, and only permissions the caller has.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleUpdateRequest" }
+      responses:
+        "200":
+          description: The role.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteRole
+      tags: [roles]
+      summary: Delete a role below the caller's highest. manageRoles. Not @everyone.
+      responses:
+        "204":
+          description: Deleted; it is taken from everyone who held it.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/members/{userId}/roles/{roleId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/UserId"
+      - $ref: "#/components/parameters/RoleId"
+    put:
+      operationId: grantRole
+      tags: [roles]
+      summary: Give a member a role. manageRoles, the role below the caller's highest.
+      description: The target must rank below the caller, or be the caller themselves.
+      responses:
+        "200":
+          description: The member with their roles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMember" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: revokeRole
+      tags: [roles]
+      summary: Take a role from a member. Same rules as giving it.
+      responses:
+        "200":
+          description: The member with their roles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMember" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}/overrides:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    get:
+      operationId: listChannelOverrides
+      tags: [roles]
+      summary: What roles may do differently in this channel. manageChannels there.
+      responses:
+        "200":
+          description: One entry per role with an override.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChannelOverride" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/channels/{channelId}/overrides/{roleId}:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - $ref: "#/components/parameters/RoleId"
+    put:
+      operationId: setChannelOverride
+      tags: [roles]
+      summary: Set what one role may do differently here. manageChannels there.
+      description: |
+        Only permissions that may change per channel, and only ones the caller
+        has; for a role other than @everyone, only one below the caller's highest.
+        Empty allow and deny remove the override.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelOverrideRequest" }
+      responses:
+        "200":
+          description: Every override of the channel after the change.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChannelOverride" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteChannelOverride
+      tags: [roles]
+      summary: Remove one role's override here. Same rules as setting it.
+      responses:
+        "204":
+          description: Removed.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/channels/{channelId}:
     parameters:
       - $ref: "#/components/parameters/ChannelId"
@@ -2117,6 +2320,11 @@ components:
       required: true
       description: Server identifier.
       schema: { type: string, format: uuid }
+    RoleId:
+      name: roleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     ChannelId:
       name: channelId
       in: path
@@ -2247,6 +2455,110 @@ components:
         createdAt:
           type: string
           format: date-time
+    Permission:
+      type: string
+      enum:
+        - administrator
+        - manageServer
+        - manageRoles
+        - manageChannels
+        - createChannels
+        - kickMembers
+        - banMembers
+        - manageMessages
+        - createInvite
+        - attachFiles
+        - viewChannel
+        - sendMessages
+        - speak
+      description: |
+        One permission a role may grant. administrator grants all of them; the
+        last seven may also be changed per channel by an override.
+    Role:
+      type: object
+      additionalProperties: false
+      required: [id, name, hoist, position, permissions, isDefault]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 32 }
+        color:
+          $ref: "#/components/schemas/AccentColor"
+        hoist:
+          type: boolean
+          description: Members holding it are shown as their own group.
+        position:
+          type: integer
+          description: Higher is more senior; @everyone is 0.
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+        isDefault:
+          type: boolean
+          description: "@everyone: every member holds it without being granted it."
+    RoleCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 32 }
+        color: { $ref: "#/components/schemas/AccentColor" }
+        hoist: { type: boolean }
+        permissions:
+          type: array
+          maxItems: 13
+          items: { $ref: "#/components/schemas/Permission" }
+    RoleUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        Only what is sent changes. clearColor removes the colour. The name,
+        colour and hoist of @everyone cannot change.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 32 }
+        color: { $ref: "#/components/schemas/AccentColor" }
+        clearColor: { type: boolean }
+        hoist: { type: boolean }
+        permissions:
+          type: array
+          maxItems: 13
+          items: { $ref: "#/components/schemas/Permission" }
+    RoleOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [roleIds]
+      properties:
+        roleIds:
+          type: array
+          maxItems: 250
+          items: { type: string, format: uuid }
+          description: Every role but @everyone, highest first.
+    ChannelOverride:
+      type: object
+      additionalProperties: false
+      required: [roleId, allow, deny]
+      properties:
+        roleId: { type: string, format: uuid }
+        allow:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+        deny:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+    ChannelOverrideRequest:
+      type: object
+      additionalProperties: false
+      required: [allow, deny]
+      description: Only permissions that may change per channel; a permission in both is refused.
+      properties:
+        allow:
+          type: array
+          maxItems: 7
+          items: { $ref: "#/components/schemas/Permission" }
+        deny:
+          type: array
+          maxItems: 7
+          items: { $ref: "#/components/schemas/Permission" }
     AccentColor:
       type: string
       enum: [slate, red, amber, green, teal, sky, indigo, violet, pink]
@@ -2583,6 +2895,12 @@ components:
       properties:
         workspace: { $ref: "#/components/schemas/Workspace" }
         role: { $ref: "#/components/schemas/WorkspaceRole" }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+          description: |
+            What the caller may do on this server before any channel: @everyone
+            plus their roles; everything for the owner and administrators.
         voice:
           type: array
           items: { $ref: "#/components/schemas/VoicePresence" }
@@ -2597,6 +2915,10 @@ components:
         user: { $ref: "#/components/schemas/UserProfile" }
         role: { $ref: "#/components/schemas/WorkspaceRole" }
         joinedAt: { type: string, format: date-time }
+        roleIds:
+          type: array
+          items: { type: string, format: uuid }
+          description: The roles granted to the member; @everyone is implied and not listed.
         presence:
           $ref: "#/components/schemas/PresenceStatus"
     WorkspaceBan:
@@ -2687,10 +3009,17 @@ components:
           description: Place in the server's list, from 0.
         isReadOnly:
           type: boolean
-          description: Only admins and the owner may write here.
+          description: |
+            @everyone may not write or speak here: an override of @everyone that
+            denies sendMessages and speak. Kept for clients that do not edit
+            overrides yet.
         canWrite:
           type: boolean
           description: Whether the caller may write in this channel right now.
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+          description: What the caller may do in this channel, overrides applied.
         createdAt: { type: string, format: date-time }
     ChannelCreateRequest:
       type: object

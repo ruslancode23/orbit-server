@@ -212,6 +212,147 @@ func (s *PostgresStore) Access(ctx context.Context, workspaceID, userID uuid.UUI
 	return access, nil
 }
 
+func (s *PostgresStore) Roles(ctx context.Context, workspaceID uuid.UUID) ([]ServerRole, error) {
+	rows, err := s.q.ListWorkspaceRoles(ctx, pgUUID(workspaceID))
+	if err != nil {
+		return nil, fmt.Errorf("list server roles: %w", err)
+	}
+	out := make([]ServerRole, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toServerRole(row))
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) RoleByID(ctx context.Context, roleID uuid.UUID) (ServerRole, error) {
+	row, err := s.q.GetRole(ctx, pgUUID(roleID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ServerRole{}, ErrRoleNotFound
+		}
+		return ServerRole{}, fmt.Errorf("get role: %w", err)
+	}
+	return toServerRole(row), nil
+}
+
+func (s *PostgresStore) CreateRole(ctx context.Context, workspaceID uuid.UUID, n NewRole) (ServerRole, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ServerRole{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+	if err := q.ShiftRolesUp(ctx, pgUUID(workspaceID)); err != nil {
+		return ServerRole{}, fmt.Errorf("make room for a role: %w", err)
+	}
+	row, err := q.CreateRole(ctx, db.CreateRoleParams{
+		WorkspaceID: pgUUID(workspaceID),
+		Name:        n.Name,
+		Color:       text(n.Color),
+		Hoist:       n.Hoist,
+		Position:    1,
+		Permissions: int64(n.Permissions), //nolint:gosec // perms.Set fits in 13 bits
+	})
+	if err != nil {
+		return ServerRole{}, fmt.Errorf("create role: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ServerRole{}, fmt.Errorf("commit: %w", err)
+	}
+	return toServerRole(row), nil
+}
+
+func (s *PostgresStore) UpdateRole(ctx context.Context, roleID uuid.UUID, u RoleUpdate) (ServerRole, error) {
+	params := db.UpdateRoleParams{ID: pgUUID(roleID), ClearColor: u.ClearColor}
+	if u.Name != nil {
+		params.Name = pgtype.Text{String: *u.Name, Valid: true}
+	}
+	if u.Color != nil {
+		params.Color = text(*u.Color)
+	}
+	if u.Hoist != nil {
+		params.Hoist = pgtype.Bool{Bool: *u.Hoist, Valid: true}
+	}
+	if u.Permissions != nil {
+		params.Permissions = pgtype.Int8{Int64: int64(*u.Permissions), Valid: true} //nolint:gosec // perms.Set fits in 13 bits
+	}
+	row, err := s.q.UpdateRole(ctx, params)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ServerRole{}, ErrRoleNotFound
+		}
+		return ServerRole{}, fmt.Errorf("update role: %w", err)
+	}
+	return toServerRole(row), nil
+}
+
+func (s *PostgresStore) DeleteRole(ctx context.Context, workspaceID, roleID uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+	deleted, err := q.DeleteRole(ctx, pgUUID(roleID))
+	if err != nil {
+		return fmt.Errorf("delete role: %w", err)
+	}
+	if deleted == 0 {
+		return ErrRoleNotFound
+	}
+	if err := q.CompactRolePositions(ctx, pgUUID(workspaceID)); err != nil {
+		return fmt.Errorf("close the gap in the roles: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) SetRoleOrder(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+	for i, id := range ids {
+		moved, err := q.SetRolePosition(ctx, db.SetRolePositionParams{
+			Position:    int32(len(ids) - i), //nolint:gosec // a few hundred roles at most
+			ID:          pgUUID(id),
+			WorkspaceID: pgUUID(workspaceID),
+		})
+		if err != nil {
+			return fmt.Errorf("set role position: %w", err)
+		}
+		if moved == 0 {
+			return ErrIncompleteRoleOrder
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GrantRole(ctx context.Context, workspaceID, userID, roleID uuid.UUID) error {
+	if err := s.q.GrantRole(ctx, db.GrantRoleParams{
+		WorkspaceID: pgUUID(workspaceID), UserID: pgUUID(userID), RoleID: pgUUID(roleID),
+	}); err != nil {
+		return fmt.Errorf("grant role: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) RevokeRole(ctx context.Context, workspaceID, userID, roleID uuid.UUID) error {
+	if _, err := s.q.RevokeRole(ctx, db.RevokeRoleParams{
+		WorkspaceID: pgUUID(workspaceID), UserID: pgUUID(userID), RoleID: pgUUID(roleID),
+	}); err != nil {
+		return fmt.Errorf("revoke role: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) GrantAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -317,6 +458,15 @@ func (s *PostgresStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) 
 	if err != nil {
 		return nil, fmt.Errorf("list workspace members: %w", err)
 	}
+	held, err := s.q.ListWorkspaceMemberRoles(ctx, pgUUID(workspaceID))
+	if err != nil {
+		return nil, fmt.Errorf("list member roles: %w", err)
+	}
+	roleIDs := map[uuid.UUID][]uuid.UUID{}
+	for _, h := range held {
+		user := uuid.UUID(h.UserID.Bytes)
+		roleIDs[user] = append(roleIDs[user], uuid.UUID(h.RoleID.Bytes))
+	}
 	out := make([]Member, 0, len(rows))
 	for _, row := range rows {
 		owner := Role(row.Role) == RoleOwner
@@ -330,6 +480,7 @@ func (s *PostgresStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) 
 			Role:        roleOf(owner, base),
 			JoinedAt:    row.JoinedAt.Time,
 			Permissions: base,
+			RoleIDs:     roleIDs[uuid.UUID(row.UserID.Bytes)],
 		})
 	}
 	return out, nil
@@ -454,6 +605,19 @@ func toWorkspace(row db.Workspace, everyone int64) Workspace {
 		Everyone:          perms.Set(everyone),                //nolint:gosec // stored from a perms.Set
 		OwnerID:           uuid.UUID(row.OwnerID.Bytes),
 		CreatedAt:         row.CreatedAt.Time,
+	}
+}
+
+func toServerRole(row db.ServerRole) ServerRole {
+	return ServerRole{
+		ID:          uuid.UUID(row.ID.Bytes),
+		WorkspaceID: uuid.UUID(row.WorkspaceID.Bytes),
+		Name:        row.Name,
+		Color:       row.Color.String,
+		Hoist:       row.Hoist,
+		Position:    int(row.Position),
+		Permissions: perms.Set(row.Permissions), //nolint:gosec // stored from a perms.Set
+		Default:     row.IsDefault,
 	}
 }
 

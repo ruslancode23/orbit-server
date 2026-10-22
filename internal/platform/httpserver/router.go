@@ -636,3 +636,43 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+func (s *server) ListRoles(ctx context.Context, req api.ListRolesRequestObject) (api.ListRolesResponseObject, error) {
+	return s.workspaces.ListRoles(ctx, req)
+}
+
+func (s *server) CreateRole(ctx context.Context, req api.CreateRoleRequestObject) (api.CreateRoleResponseObject, error) {
+	return s.workspaces.CreateRole(ctx, req)
+}
+
+func (s *server) ReorderRoles(ctx context.Context, req api.ReorderRolesRequestObject) (api.ReorderRolesResponseObject, error) {
+	return s.workspaces.ReorderRoles(ctx, req)
+}
+
+func (s *server) UpdateRole(ctx context.Context, req api.UpdateRoleRequestObject) (api.UpdateRoleResponseObject, error) {
+	return s.workspaces.UpdateRole(ctx, req)
+}
+
+func (s *server) DeleteRole(ctx context.Context, req api.DeleteRoleRequestObject) (api.DeleteRoleResponseObject, error) {
+	return s.workspaces.DeleteRole(ctx, req)
+}
+
+func (s *server) GrantRole(ctx context.Context, req api.GrantRoleRequestObject) (api.GrantRoleResponseObject, error) {
+	return s.workspaces.GrantRole(ctx, req)
+}
+
+func (s *server) RevokeRole(ctx context.Context, req api.RevokeRoleRequestObject) (api.RevokeRoleResponseObject, error) {
+	return s.workspaces.RevokeRole(ctx, req)
+}
+
+func (s *server) ListChannelOverrides(ctx context.Context, req api.ListChannelOverridesRequestObject) (api.ListChannelOverridesResponseObject, error) {
+	return s.channels.ListChannelOverrides(ctx, req)
+}
+
+func (s *server) SetChannelOverride(ctx context.Context, req api.SetChannelOverrideRequestObject) (api.SetChannelOverrideResponseObject, error) {
+	return s.channels.SetChannelOverride(ctx, req)
+}
+
+func (s *server) DeleteChannelOverride(ctx context.Context, req api.DeleteChannelOverrideRequestObject) (api.DeleteChannelOverrideResponseObject, error) {
+	return s.channels.DeleteChannelOverride(ctx, req)
+}

@@ -41,6 +41,8 @@ type Querier interface {
 	ChannelHasMessages(ctx context.Context, channelID pgtype.UUID) (bool, error)
 	ClaimOneTimeKey(ctx context.Context, deviceID pgtype.UUID) (ClaimOneTimeKeyRow, error)
 	ClearUserStatus(ctx context.Context, id pgtype.UUID) (ClearUserStatusRow, error)
+	// Closes the gap a deleted role leaves, so positions stay 1..n.
+	CompactRolePositions(ctx context.Context, workspaceID pgtype.UUID) error
 	CountChannelMembers(ctx context.Context, channelID pgtype.UUID) (int64, error)
 	// The counts of one channel, for the answer after the cursor moved.
 	CountChannelUnread(ctx context.Context, arg CountChannelUnreadParams) (CountChannelUnreadRow, error)
@@ -105,6 +107,7 @@ type Querier interface {
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
 	DeletePendingFriendship(ctx context.Context, arg DeletePendingFriendshipParams) (int64, error)
+	DeleteRole(ctx context.Context, id pgtype.UUID) (int64, error)
 	DeleteSecretChatChannel(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretEnvelope(ctx context.Context, id pgtype.UUID) error
 	DeleteWorkspace(ctx context.Context, id pgtype.UUID) error
@@ -132,6 +135,7 @@ type Querier interface {
 	// The author's public part comes from internal/profile in one batch per page:
 	// this module never reads auth's table.
 	GetMessage(ctx context.Context, id pgtype.UUID) (Message, error)
+	GetRole(ctx context.Context, id pgtype.UUID) (ServerRole, error)
 	GetSecretConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetSecretEnvelope(ctx context.Context, id pgtype.UUID) (SecretEnvelope, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)
@@ -284,6 +288,7 @@ type Querier interface {
 	RenameConversation(ctx context.Context, arg RenameConversationParams) error
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) (int64, error)
 	RevokeInvite(ctx context.Context, id pgtype.UUID) (int64, error)
+	RevokeRole(ctx context.Context, arg RevokeRoleParams) (int64, error)
 	// Takes away every role of the member that carries any of these bits.
 	RevokeRolesWithPermissions(ctx context.Context, arg RevokeRolesWithPermissionsParams) (int64, error)
 	RevokeSession(ctx context.Context, id pgtype.UUID) error
@@ -294,6 +299,7 @@ type Querier interface {
 	SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error
 	SetDefaultRolePermissions(ctx context.Context, arg SetDefaultRolePermissionsParams) error
 	SetFriendRequestPolicy(ctx context.Context, arg SetFriendRequestPolicyParams) error
+	SetRolePosition(ctx context.Context, arg SetRolePositionParams) (int64, error)
 	// One statement reads the old key and writes the new one, so two uploads racing
 	// cannot both report the same previous key and leave one object alive.
 	SetUserAvatar(ctx context.Context, arg SetUserAvatarParams) (SetUserAvatarRow, error)
@@ -309,12 +315,16 @@ type Querier interface {
 	// object. The row lock keeps two uploads at once from losing track of one.
 	SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconParams) (SetWorkspaceIconRow, error)
 	SetWorkspaceRole(ctx context.Context, arg SetWorkspaceRoleParams) (WorkspaceMember, error)
+	// Makes room just above @everyone for a new role.
+	ShiftRolesUp(ctx context.Context, workspaceID pgtype.UUID) error
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
 	TouchSession(ctx context.Context, id pgtype.UUID) error
 	UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMemberParams) (int64, error)
 	UnblockUser(ctx context.Context, arg UnblockUserParams) error
 	UnhideConversation(ctx context.Context, arg UnhideConversationParams) (int64, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)
+	// Only what is sent changes; clear_color removes the colour.
+	UpdateRole(ctx context.Context, arg UpdateRoleParams) (ServerRole, error)
 	// Only the fields the caller sent change. An empty display_name or bio clears
 	// it; the display name then falls back to the nickname. An accent color is a
 	// complete replacement, never a partial one.

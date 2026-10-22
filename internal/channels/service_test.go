@@ -82,6 +82,23 @@ func (s *fakeStore) Update(_ context.Context, id uuid.UUID, u Update) (Channel, 
 	return channel, nil
 }
 
+// SetOverride replaces one role's override; empty allow and deny remove it.
+func (s *fakeStore) SetOverride(_ context.Context, channelID uuid.UUID, o perms.Override) error {
+	stored := s.channels[channelID]
+	kept := stored.Overrides[:0:0]
+	for _, existing := range stored.Overrides {
+		if existing.RoleID != o.RoleID {
+			kept = append(kept, existing)
+		}
+	}
+	if o.Allow != 0 || o.Deny != 0 {
+		kept = append(kept, o)
+	}
+	stored.Overrides = kept
+	s.channels[channelID] = stored
+	return nil
+}
+
 // SetReadOnly writes the @everyone override the way the database does.
 func (s *fakeStore) SetReadOnly(_ context.Context, channel Channel, readOnly bool) error {
 	stored := s.channels[channel.ID]

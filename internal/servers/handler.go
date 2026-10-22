@@ -383,9 +383,11 @@ func (h *Handler) ListWorkspaceBans(ctx context.Context, req api.ListWorkspaceBa
 }
 
 func toAPIMembership(m Membership) api.WorkspaceMembership {
+	permissions := APIPermissions(m.Permissions)
 	return api.WorkspaceMembership{
-		Workspace: APIWorkspace(m.Workspace),
-		Role:      api.WorkspaceRole(m.Role),
+		Workspace:   APIWorkspace(m.Workspace),
+		Role:        api.WorkspaceRole(m.Role),
+		Permissions: &permissions,
 	}
 }
 
@@ -434,10 +436,15 @@ func value(s *string) string {
 }
 
 func toAPIMember(m Member) api.WorkspaceMember {
+	roleIDs := m.RoleIDs
+	if roleIDs == nil {
+		roleIDs = []uuid.UUID{}
+	}
 	return api.WorkspaceMember{
 		User:     profile.APIProfile(m.User),
 		Role:     api.WorkspaceRole(m.Role),
 		JoinedAt: m.JoinedAt,
+		RoleIds:  &roleIDs,
 	}
 }
 
