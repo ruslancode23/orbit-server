@@ -37,6 +37,9 @@ type Config struct {
 	// NicknameChangeHourlyLimit caps nickname changes per account per hour;
 	// zero turns the guard off.
 	NicknameChangeHourlyLimit int
+	// BugReportsPerHour caps bug reports per account per hour; zero turns the
+	// guard off.
+	BugReportsPerHour int
 	// TrustedProxies are the addresses whose X-Forwarded-For is believed; empty
 	// means the connection's peer is the client.
 	TrustedProxies []netip.Prefix
@@ -73,6 +76,8 @@ type Storage struct {
 	// AvatarLinkTTL is how long the signed link to an avatar stays valid. S3
 	// refuses a presigned link longer than seven days.
 	AvatarLinkTTL time.Duration
+	// MaxScreenshotBytes caps the screenshot attached to one bug report.
+	MaxScreenshotBytes int64
 }
 
 type LiveKit struct {
@@ -142,6 +147,12 @@ func Load() (Config, error) {
 			os.Getenv("ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT")))
 	}
 
+	bugReports, err := strconv.Atoi(getenv("ORBIT_BUG_REPORTS_PER_HOUR", "5"))
+	if err != nil || bugReports < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_BUG_REPORTS_PER_HOUR must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_BUG_REPORTS_PER_HOUR")))
+	}
+
 	trustedProxies, err := clientip.ParseTrusted(splitList(os.Getenv("ORBIT_TRUSTED_PROXIES")))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("ORBIT_TRUSTED_PROXIES: %w", err))
@@ -198,6 +209,12 @@ func Load() (Config, error) {
 			os.Getenv("ORBIT_MAX_AVATAR_BYTES")))
 	}
 
+	maxScreenshot, err := strconv.ParseInt(getenv("ORBIT_MAX_SCREENSHOT_BYTES", "5242880"), 10, 64)
+	if err != nil || maxScreenshot <= 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_MAX_SCREENSHOT_BYTES must be a positive number of bytes, got %q",
+			os.Getenv("ORBIT_MAX_SCREENSHOT_BYTES")))
+	}
+
 	avatarLinkTTL, err := time.ParseDuration(getenv("ORBIT_AVATAR_LINK_TTL", "168h"))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("ORBIT_AVATAR_LINK_TTL: %w", err))
@@ -221,22 +238,24 @@ func Load() (Config, error) {
 		FriendRequestDailyLimit:   friendRequestDaily,
 		FriendRequestPendingLimit: friendRequestPending,
 		NicknameChangeHourlyLimit: nicknameChanges,
+		BugReportsPerHour:         bugReports,
 		TrustedProxies:            trustedProxies,
 		LoginPerMinutePerIP:       loginPerIP,
 		LoginFailuresPerHour:      loginFailures,
 		SignupsPerHourPerIP:       signupsPerIP,
 		Storage: Storage{
-			Endpoint:       required("ORBIT_S3_ENDPOINT"),
-			Bucket:         required("ORBIT_S3_BUCKET"),
-			AccessKey:      required("ORBIT_S3_ACCESS_KEY"),
-			SecretKey:      required("ORBIT_S3_SECRET_KEY"),
-			MaxUploadBytes: maxUpload,
-			LinkTTL:        linkTTL,
-			OrphanAge:      orphanAge,
-			MaxIconBytes:   maxIcon,
-			IconLinkTTL:    iconLinkTTL,
-			MaxAvatarBytes: maxAvatar,
-			AvatarLinkTTL:  avatarLinkTTL,
+			Endpoint:           required("ORBIT_S3_ENDPOINT"),
+			Bucket:             required("ORBIT_S3_BUCKET"),
+			AccessKey:          required("ORBIT_S3_ACCESS_KEY"),
+			SecretKey:          required("ORBIT_S3_SECRET_KEY"),
+			MaxUploadBytes:     maxUpload,
+			LinkTTL:            linkTTL,
+			OrphanAge:          orphanAge,
+			MaxIconBytes:       maxIcon,
+			IconLinkTTL:        iconLinkTTL,
+			MaxAvatarBytes:     maxAvatar,
+			AvatarLinkTTL:      avatarLinkTTL,
+			MaxScreenshotBytes: maxScreenshot,
 		},
 		LiveKit: LiveKit{
 			URL:       required("LIVEKIT_URL"),

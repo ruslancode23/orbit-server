@@ -22,6 +22,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
+	"github.com/ruslancode23/orbit-server/internal/feedback"
 	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/health"
@@ -49,6 +50,14 @@ const envelopeBodyBytes = 128 << 10
 // of exactly the limit is refused by the icon rule, with its own message, and
 // not by the body cap.
 const multipartSlack = 4 << 10
+
+// bugReportsPath takes a screenshot and up to two long texts in one form.
+const bugReportsPath = "/api/v1/bug-reports"
+
+// bugReportTextBytes is room for the text fields of a bug report around its
+// screenshot: two texts of 4000 characters of up to four bytes each, the short
+// context fields and the multipart headers.
+const bugReportTextBytes = 40 << 10
 
 // wsPath is the live stream. It is not in api/openapi.yaml: the spec describes
 // HTTP requests and responses, and a WebSocket is neither.
@@ -91,6 +100,8 @@ type Deps struct {
 	Profiles *profile.Handler
 	// Friends serves friendship requests and the friend list.
 	Friends *friends.Handler
+	// Feedback serves bug reports sent from inside the app.
+	Feedback *feedback.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -98,6 +109,9 @@ type Deps struct {
 	MaxIconBytes int64
 	// MaxAvatarBytes is how large an avatar may be, the same way.
 	MaxAvatarBytes int64
+	// MaxScreenshotBytes is how large the screenshot of a bug report may be;
+	// the text fields of the report fit in the slack around it.
+	MaxScreenshotBytes int64
 	// Gateway serves the WebSocket stream; it is outside the OpenAPI contract,
 	// so it is mounted beside the generated routes, not through them.
 	Gateway http.Handler
@@ -112,7 +126,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -162,7 +176,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -175,7 +189,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Group(func(apiRoutes chi.Router) {
 		// JSON bodies stay tiny; only an upload may be large, and never larger
 		// than this instance allows.
-		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes, d.MaxIconBytes, d.MaxAvatarBytes))
+		apiRoutes.Use(limitBody(maxBodyBytes, d.MaxUploadBytes, d.MaxIconBytes, d.MaxAvatarBytes, d.MaxScreenshotBytes))
 		apiRoutes.Use(nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
 			DoNotValidateServers: true,
 			ErrorHandlerWithOpts: validationError,
@@ -209,6 +223,7 @@ type server struct {
 	privacy       *privacy.Handler
 	profiles      *profile.Handler
 	friends       *friends.Handler
+	feedback      *feedback.Handler
 	voice         *voice.Handler
 }
 
@@ -593,7 +608,7 @@ func validationError(_ context.Context, err error, w http.ResponseWriter, _ *htt
 // limitBody caps the request body. An upload of an attachment, a server icon or
 // an avatar gets its own, larger cap: everything else here is small JSON. The
 // multipart envelope counts too, so the cap leaves room for it.
-func limitBody(normal, upload, icon, avatar int64) func(http.Handler) http.Handler {
+func limitBody(normal, upload, icon, avatar, screenshot int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			limit := normal
@@ -607,6 +622,8 @@ func limitBody(normal, upload, icon, avatar int64) func(http.Handler) http.Handl
 				limit = icon + multipartSlack
 			case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/avatar"):
 				limit = avatar + multipartSlack
+			case r.Method == http.MethodPost && r.URL.Path == bugReportsPath:
+				limit = screenshot + bugReportTextBytes
 			}
 			// A declared size over the limit is refused before a byte is read.
 			if r.ContentLength > limit {
@@ -675,4 +692,8 @@ func (s *server) SetChannelOverride(ctx context.Context, req api.SetChannelOverr
 
 func (s *server) DeleteChannelOverride(ctx context.Context, req api.DeleteChannelOverrideRequestObject) (api.DeleteChannelOverrideResponseObject, error) {
 	return s.channels.DeleteChannelOverride(ctx, req)
+}
+
+func (s *server) CreateBugReport(ctx context.Context, req api.CreateBugReportRequestObject) (api.CreateBugReportResponseObject, error) {
+	return s.feedback.CreateBugReport(ctx, req)
 }

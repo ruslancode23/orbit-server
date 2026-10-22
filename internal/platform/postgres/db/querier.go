@@ -62,6 +62,9 @@ type Querier interface {
 	// Unread and mention counts for every channel of one workspace in a single query (task 2.8).
 	CountWorkspaceUnread(ctx context.Context, arg CountWorkspaceUnreadParams) ([]CountWorkspaceUnreadRow, error)
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (Attachment, error)
+	// Bug reports (internal/feedback). The module only writes them; the team reads
+	// the table directly, so there is no list query here yet.
+	CreateBugReport(ctx context.Context, arg CreateBugReportParams) (BugReport, error)
 	// A new channel goes to the end of the list: position is one past the current last.
 	CreateChannel(ctx context.Context, arg CreateChannelParams) (Channel, error)
 	// A conversation is a channel without a server: the same messages, attachments

@@ -17,6 +17,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/config"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/feedback"
 	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/gateway"
@@ -188,23 +189,30 @@ func run() error {
 		voiceWebhook = voice.NewWebhook(cfg.LiveKit.APIKey, cfg.LiveKit.APISecret, presence, log)
 	}
 
+	// Bug reports from inside the app; the screenshot goes to the same bucket
+	// under bug-reports/, and an account has a small hourly budget.
+	feedbackService := feedback.NewService(feedback.NewPostgresStore(queries), storage, cfg.Storage.MaxScreenshotBytes)
+	feedbackService.SetLimiter(ratelimit.NewHourly(cfg.BugReportsPerHour))
+
 	deps := httpserver.Deps{
 		Logger:         log,
 		CORSOrigins:    cfg.CORSOrigins,
 		TrustedProxies: cfg.TrustedProxies,
 		Health:         health.NewHandler(pool),
 		// Cookies go over TLS everywhere but local development.
-		Auth:           authHandler,
-		Invites:        inviteHandler,
-		Files:          files.NewHandler(fileService, log),
-		Conversations:  conversations.NewHandler(conversationService, log),
-		Secrets:        secrets.NewHandler(secretService, log),
-		Privacy:        privacy.NewHandler(privacyService, log),
-		Friends:        friends.NewHandler(friendService, log),
-		Profiles:       profile.NewHandler(profileService, log),
-		MaxUploadBytes: cfg.Storage.MaxUploadBytes,
-		MaxIconBytes:   cfg.Storage.MaxIconBytes,
-		MaxAvatarBytes: cfg.Storage.MaxAvatarBytes,
+		Auth:               authHandler,
+		Invites:            inviteHandler,
+		Files:              files.NewHandler(fileService, log),
+		Conversations:      conversations.NewHandler(conversationService, log),
+		Secrets:            secrets.NewHandler(secretService, log),
+		Privacy:            privacy.NewHandler(privacyService, log),
+		Friends:            friends.NewHandler(friendService, log),
+		Profiles:           profile.NewHandler(profileService, log),
+		MaxUploadBytes:     cfg.Storage.MaxUploadBytes,
+		MaxIconBytes:       cfg.Storage.MaxIconBytes,
+		MaxAvatarBytes:     cfg.Storage.MaxAvatarBytes,
+		Feedback:           feedback.NewHandler(feedbackService, log),
+		MaxScreenshotBytes: cfg.Storage.MaxScreenshotBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,
