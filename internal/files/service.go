@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -137,14 +138,18 @@ func (s *Service) MayAttach(ctx context.Context, channel channels.Channel, calle
 		// Unwired means unknown, and unknown is no.
 		return ErrAttachNotAllowed
 	}
-	_, err := s.permissions.RequirePermission(ctx, channel.WorkspaceID, callerID, servers.PermissionAttachFiles)
+	// The channel's own permissions: an override may allow or deny files here.
+	view, err := s.channels.Get(ctx, channel.ID, callerID)
 	switch {
-	case errors.Is(err, servers.ErrNotMember):
+	case errors.Is(err, channels.ErrNotFound), errors.Is(err, channels.ErrForbidden):
 		return ErrNotFound
-	case errors.Is(err, servers.ErrForbidden):
+	case err != nil:
+		return err
+	}
+	if !view.Permissions.Has(perms.AttachFiles) {
 		return ErrAttachNotAllowed
 	}
-	return err
+	return nil
 }
 
 // MaxBytes is this instance's upload limit, so the API can say it plainly.

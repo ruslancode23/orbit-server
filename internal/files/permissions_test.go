@@ -47,7 +47,9 @@ func TestAttachFlagIsPerServer(t *testing.T) {
 	if _, err := w.svc.Upload(t.Context(), w.channel, w.anna, "f.png", bytes.NewReader(pngBytes), nil); err != nil {
 		t.Errorf("own server unaffected by the other: %v", err)
 	}
-	if err := w.svc.MayAttach(t.Context(), channels.Channel{ID: uuid.New(), WorkspaceID: other}, w.anna); !errors.Is(err, ErrAttachNotAllowed) {
+	otherChannel := channels.Channel{ID: uuid.New(), WorkspaceID: other}
+	w.access.others = map[uuid.UUID]channels.Channel{otherChannel.ID: otherChannel}
+	if err := w.svc.MayAttach(t.Context(), otherChannel, w.anna); !errors.Is(err, ErrAttachNotAllowed) {
 		t.Errorf("other server: err = %v, want ErrAttachNotAllowed", err)
 	}
 	if err := w.svc.MayAttach(t.Context(), channels.Channel{ID: uuid.New(), WorkspaceID: uuid.New()}, w.anna); !errors.Is(err, ErrNotFound) {
