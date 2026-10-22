@@ -308,3 +308,48 @@ func TestLoadAuthLimits(t *testing.T) {
 		t.Errorf("Load() error = %v, want one about ORBIT_LOGIN_FAILURES_PER_HOUR", err)
 	}
 }
+
+func TestLoadBugReportSettings(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		setRequired(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.BugReportsPerHour != 5 {
+			t.Errorf("BugReportsPerHour = %d, want 5", cfg.BugReportsPerHour)
+		}
+		if cfg.Storage.MaxScreenshotBytes != 5<<20 {
+			t.Errorf("MaxScreenshotBytes = %d, want 5 MiB", cfg.Storage.MaxScreenshotBytes)
+		}
+	})
+
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"negative report limit", "ORBIT_BUG_REPORTS_PER_HOUR", "-1"},
+		{"report limit not a number", "ORBIT_BUG_REPORTS_PER_HOUR", "many"},
+		{"zero screenshot size", "ORBIT_MAX_SCREENSHOT_BYTES", "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(tt.key, tt.value)
+			if _, err := Load(); err == nil {
+				t.Errorf("Load() with %s=%q succeeded, want an error", tt.key, tt.value)
+			}
+		})
+	}
+
+	t.Run("report limit off", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_BUG_REPORTS_PER_HOUR", "0")
+		cfg, err := Load()
+		if err != nil || cfg.BugReportsPerHour != 0 {
+			t.Errorf("Load() = %d, %v; want 0 and no error", cfg.BugReportsPerHour, err)
+		}
+	})
+}

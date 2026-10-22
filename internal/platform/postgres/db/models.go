@@ -164,6 +164,20 @@ type Ban struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type BugReport struct {
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	Description     string             `json:"description"`
+	Steps           string             `json:"steps"`
+	AppVersion      string             `json:"app_version"`
+	UserAgent       string             `json:"user_agent"`
+	Route           string             `json:"route"`
+	ScreenshotKey   pgtype.Text        `json:"screenshot_key"`
+	ScreenshotType  pgtype.Text        `json:"screenshot_type"`
+	ScreenshotBytes pgtype.Int8        `json:"screenshot_bytes"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
 type Channel struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`

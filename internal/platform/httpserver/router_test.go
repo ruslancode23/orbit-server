@@ -1,11 +1,13 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
+	"github.com/ruslancode23/orbit-server/internal/feedback"
 	"github.com/ruslancode23/orbit-server/internal/files"
 	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/health"
@@ -51,14 +54,16 @@ func newRouter(t *testing.T, dbErr error, adjust ...func(*Deps)) http.Handler {
 		Reads:      reads.NewHandler(reads.NewService(nil, nil, nil, nil), log),
 		Files: files.NewHandler(
 			files.NewService(nil, nil, nil, nil, nil, 1<<20, time.Minute), log),
-		MaxUploadBytes: 1 << 20,
-		MaxIconBytes:   1 << 16,
-		MaxAvatarBytes: 1 << 15,
-		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
-		Secrets:        secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
-		Privacy:        privacy.NewHandler(privacy.NewService(nil), log),
-		Profiles:       profile.NewHandler(profile.NewService(nil, nil, log), log),
-		Friends:        friends.NewHandler(friends.NewService(nil, nil, friends.Limits{}), log),
+		MaxUploadBytes:     1 << 20,
+		MaxIconBytes:       1 << 16,
+		MaxAvatarBytes:     1 << 15,
+		Conversations:      conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
+		Secrets:            secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
+		Privacy:            privacy.NewHandler(privacy.NewService(nil), log),
+		Profiles:           profile.NewHandler(profile.NewService(nil, nil, log), log),
+		Friends:            friends.NewHandler(friends.NewService(nil, nil, friends.Limits{}), log),
+		Feedback:           feedback.NewHandler(feedback.NewService(nil, nil, 1<<14), log),
+		MaxScreenshotBytes: 1 << 14,
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
 		Voice: voice.NewHandler(
@@ -191,6 +196,95 @@ func TestBodyLimits(t *testing.T) {
 		rec := do(t, h, http.MethodPost, "/api/v1/workspaces", body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
+		}
+	})
+}
+
+// bugReportForm is a multipart bug report with the given text fields.
+func bugReportForm(t *testing.T, fields map[string]string) (*bytes.Buffer, string) {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	for name, value := range fields {
+		if err := form.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &body, form.FormDataContentType()
+}
+
+// The bug report form passes the schema as multipart and reaches the handler,
+// which wants a session; what the schema refuses never gets that far.
+func TestBugReportRoute(t *testing.T) {
+	router := newRouter(t, nil)
+	valid := map[string]string{"description": "Кнопка не нажимается", "appVersion": "0.1.0", "route": "/s/1/2"}
+	tests := []struct {
+		name   string
+		change func(map[string]string)
+		status int
+	}{
+		{"a valid form needs a session", func(map[string]string) {}, http.StatusUnauthorized},
+		{"description is required", func(f map[string]string) { delete(f, "description") }, http.StatusBadRequest},
+		{"description over 4000 characters", func(f map[string]string) { f["description"] = strings.Repeat("я", 4001) }, http.StatusBadRequest},
+		{"route must be a path", func(f map[string]string) { f["route"] = "https://evil.test/" }, http.StatusBadRequest},
+		{"unknown field", func(f map[string]string) { f["token"] = "secret" }, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fields := map[string]string{}
+			for k, v := range valid {
+				fields[k] = v
+			}
+			tt.change(fields)
+			body, contentType := bugReportForm(t, fields)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/bug-reports", body)
+			req.Header.Set("Content-Type", contentType)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.status {
+				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.status, rec.Body)
+			}
+		})
+	}
+
+	t.Run("a screenshot passes the schema as a file", func(t *testing.T) {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		for name, value := range valid {
+			if err := form.WriteField(name, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		file, err := form.CreateFormFile("screenshot", "shot.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("\x89PNG\r\n\x1a\n binary \x00\xff")); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/bug-reports", &body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401 (the schema refused the file?); body %s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("over the screenshot limit and the text room", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/bug-reports", strings.NewReader(""))
+		req.ContentLength = 1<<14 + bugReportTextBytes + 1
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", rec.Code)
 		}
 	})
 }

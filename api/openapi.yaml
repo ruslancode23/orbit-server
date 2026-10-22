@@ -95,6 +95,13 @@ tags:
       with the same body whether the account exists, whether the recipient
       allows requests and whether a block stands — otherwise the endpoint would
       become a way to check who is here. Lists are always the caller's own.
+  - name: feedback
+    description: |
+      Bug reports sent from inside the app. The report carries what the person
+      wrote, an optional screenshot and the technical context the client attaches
+      by itself: the build, the browser and system, and the route without its
+      query. The account comes from the session, never from the body. No message
+      text, token or secret chat content belongs in a report.
 paths:
   /healthz:
     get:
@@ -2312,6 +2319,83 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/bug-reports:
+    post:
+      operationId: createBugReport
+      tags: [feedback]
+      summary: Report a bug from inside the app. Needs a session.
+      description: |
+        `description` is what went wrong and is required; `steps` is how to repeat
+        it. `appVersion`, `userAgent` and `route` are filled in by the client, not
+        typed by the person. `route` is a path only: the server drops anything
+        after `?` or `#`, so a query cannot carry a token into the report.
+        `screenshot` is optional: a PNG, JPEG or WebP image, the type read from
+        the bytes, not from the name, and no larger than this instance allows.
+        Reports are limited per account; over the limit the answer is 429 with
+        `Retry-After`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [description, appVersion, route]
+              properties:
+                description:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                  description: What went wrong, in the person's own words.
+                steps:
+                  type: string
+                  maxLength: 4000
+                  description: How to repeat it; may be empty.
+                appVersion:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The client build, as the client knows it.
+                userAgent:
+                  type: string
+                  maxLength: 512
+                  description: The browser and system the client runs in.
+                route:
+                  type: string
+                  minLength: 1
+                  maxLength: 512
+                  pattern: "^/"
+                  description: The path the person was on, without query or fragment.
+                screenshot:
+                  type: string
+                  format: binary
+                  description: An optional PNG, JPEG or WebP image.
+      responses:
+        "201":
+          description: The report is stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BugReport" }
+        "400":
+          description: |
+            A field is missing, blank or too long. The message names the field:
+            `description`, `steps`, `appVersion`, `userAgent`, `route` or `screenshot`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413":
+          description: The screenshot is larger than this instance allows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: The screenshot is not a PNG, JPEG or WebP image.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     WorkspaceId:
@@ -2411,6 +2495,18 @@ components:
         message:
           type: string
           description: Human-readable explanation, safe to show to the user.
+    BugReport:
+      type: object
+      additionalProperties: false
+      required: [id, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Quote it when you talk to the team about this report.
+        createdAt:
+          type: string
+          format: date-time
     Liveness:
       type: object
       required: [status]
