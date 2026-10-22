@@ -1,11 +1,13 @@
 package servers
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 )
 
 // A server event reaches every member on their own stream, once, whatever
@@ -77,5 +79,32 @@ func TestUnbanReachesOnlyTheStaff(t *testing.T) {
 		if got := watchers.personal[id]; len(got) != 0 {
 			t.Errorf("non-staff %s heard %+v", id, got)
 		}
+	}
+}
+
+// A moderator role with kickMembers may kick a plain member, but not someone
+// ranked above: the administrator role sits higher.
+func TestKickFollowsPermissionAndRank(t *testing.T) {
+	w, _, _ := newProfileWorld(t)
+	store := w.store
+	// Put a moderator role below the administrator one.
+	moderatorRole := uuid.New()
+	for i, role := range store.roles[w.workspace] {
+		if !role.Default {
+			store.roles[w.workspace][i].Position = 2
+		}
+	}
+	store.roles[w.workspace] = append(store.roles[w.workspace],
+		perms.Role{ID: moderatorRole, Position: 1, Permissions: perms.KickMembers})
+	store.held[w.workspace][w.member2] = []uuid.UUID{moderatorRole}
+
+	if err := w.svc.Remove(t.Context(), w.workspace, w.member2, w.admin); !errors.Is(err, ErrForbidden) {
+		t.Errorf("moderator kicked the administrator: err = %v", err)
+	}
+	if err := w.svc.Remove(t.Context(), w.workspace, w.member2, w.member); err != nil {
+		t.Errorf("moderator could not kick a member: %v", err)
+	}
+	if err := w.svc.Remove(t.Context(), w.workspace, w.admin, w.member2); err != nil {
+		t.Errorf("administrator could not kick the moderator: %v", err)
 	}
 }

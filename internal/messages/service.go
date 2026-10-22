@@ -15,6 +15,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
@@ -743,15 +744,28 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 }
 
 func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Message, error) {
-	message, channel, err := s.readable(ctx, messageID, callerID)
+	message, err := s.store.Message(ctx, messageID)
 	if err != nil {
 		return Message{}, err
 	}
-	if message.Author == nil || message.Author.ID != callerID {
+	view, err := s.channels.Get(ctx, message.ChannelID, callerID)
+	if err != nil {
+		return Message{}, mapAccessError(err)
+	}
+	channel := view.Channel
+	if channel.Kind == channels.KindSecret || message.Author == nil {
+		// A secret chat has no plaintext messages; a system line has no author
+		// and stays.
+		return Message{}, ErrForbidden
+	}
+	// The author deletes their own; manageMessages deletes anyone's in a server
+	// channel. A conversation has no moderators.
+	if message.Author.ID != callerID &&
+		(channel.WorkspaceID == uuid.Nil || !view.Permissions.Has(perms.ManageMessages)) {
 		return Message{}, ErrForbidden
 	}
 
-	deleted, err := s.store.Delete(ctx, messageID, callerID)
+	deleted, err := s.store.Delete(ctx, messageID, message.Author.ID)
 	if err != nil {
 		return Message{}, err
 	}

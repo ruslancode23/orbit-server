@@ -40,6 +40,8 @@ type Store interface {
 // ChannelAccess is what this package needs from internal/channels.
 type ChannelAccess interface {
 	Get(ctx context.Context, channelID, callerID uuid.UUID) (channels.View, error)
+	// Visible is the channels of a server the account may see.
+	Visible(ctx context.Context, workspaceID, userID uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 // Members is what this package needs from internal/servers.
@@ -122,7 +124,22 @@ func (s *Service) Workspace(ctx context.Context, workspaceID, userID uuid.UUID) 
 		}
 		return nil, err
 	}
-	return s.store.Workspace(ctx, workspaceID, userID)
+	all, err := s.store.Workspace(ctx, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	// A channel hidden from this account counts for nothing, and is not named.
+	visible, err := s.channels.Visible(ctx, workspaceID, userID)
+	if err != nil {
+		return nil, mapAccessError(err)
+	}
+	out := make([]Unread, 0, len(all))
+	for _, unread := range all {
+		if visible[unread.ChannelID] {
+			out = append(out, unread)
+		}
+	}
+	return out, nil
 }
 
 func mapAccessError(err error) error {

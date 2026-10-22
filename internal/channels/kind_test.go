@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -112,16 +113,19 @@ func TestVoiceAccess(t *testing.T) {
 }
 
 func TestChannelKindPermissions(t *testing.T) {
-	role := servers.RoleMember
+	everything := perms.All
 	voice := Channel{Kind: KindVoice}
-	if voice.CanWrite(role) {
+	if canWrite(voice, everything) {
 		t.Error("voice channel must not be writable")
 	}
-	if !voice.CanSpeak(role) {
+	if !canSpeak(voice, everything) {
 		t.Error("voice channel must be speakable")
 	}
 	text := Channel{Kind: KindText}
-	if text.CanSpeak(role) {
+	if canSpeak(text, everything) {
 		t.Error("text channel must not be speakable")
+	}
+	if canWrite(text, perms.SendMessages) {
+		t.Error("writing without seeing the channel must not be possible")
 	}
 }

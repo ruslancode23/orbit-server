@@ -174,6 +174,7 @@ func run() error {
 	friendService.SetPresence(userPresence)
 	workspaceHandler.SetPresence(userPresence)
 	gatewayHandler := gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log)
+	gatewayHandler.SetChannels(channelService)
 	gatewayHandler.SetPresence(userPresence)
 
 	var voiceWebhook http.Handler

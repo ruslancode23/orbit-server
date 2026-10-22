@@ -39,6 +39,17 @@ type Membership interface {
 	Authorize(ctx context.Context, workspaceID, userID uuid.UUID) (servers.Role, error)
 }
 
+// Channels says which channels of a server an account may see. Optional:
+// without it every member hears every channel, as before roles.
+type Channels interface {
+	Visible(ctx context.Context, workspaceID, userID uuid.UUID) (map[uuid.UUID]bool, error)
+}
+
+// visibilityTTL is how long one connection trusts what it learned about the
+// channels it may see. A role or override change reaches the stream at most
+// this late; a new channel is asked about at once.
+const visibilityTTL = 5 * time.Second
+
 // History replays what a reconnecting client missed in one channel.
 type History interface {
 	SinceEvents(ctx context.Context, channelID, callerID uuid.UUID, afterSeq int64, limit int) ([]events.Event, error)
@@ -66,6 +77,7 @@ type Handler struct {
 	hub      Hub
 	members  Membership
 	history  History
+	channels Channels
 	presence Presence
 	log      *slog.Logger
 	// origins are the sites allowed to open a connection; same list as CORS.
@@ -74,6 +86,12 @@ type Handler struct {
 
 func NewHandler(hub Hub, members Membership, history History, origins []string, log *slog.Logger) *Handler {
 	return &Handler{hub: hub, members: members, history: history, origins: origins, log: log}
+}
+
+// SetChannels wires in channel visibility: an event of a channel goes only to
+// the connections whose account may see that channel.
+func (h *Handler) SetChannels(channels Channels) {
+	h.channels = channels
 }
 
 // SetPresence wires the presence module in after both exist. Optional: without
@@ -248,8 +266,45 @@ func (h *Handler) subscribe(ctx context.Context, userID uuid.UUID, frame clientF
 	send(ctx, writes, serverFrame{Type: "subscribed", WorkspaceID: &workspaceID})
 
 	h.replay(ctx, userID, frame.Cursors, tracker, writes)
-	go h.pumpEvents(ctx, sub, tracker, writes)
+	go h.pumpEvents(ctx, sub, tracker, writes, h.newVisibility(userID, workspaceID))
 	return sub, nil
+}
+
+// visibility remembers, for one subscription, which channels its account may
+// see. Only the pump of that subscription asks it, so it needs no lock.
+type visibility struct {
+	h           *Handler
+	userID      uuid.UUID
+	workspaceID uuid.UUID
+	visible     map[uuid.UUID]bool
+	fetched     time.Time
+}
+
+func (h *Handler) newVisibility(userID, workspaceID uuid.UUID) *visibility {
+	return &visibility{h: h, userID: userID, workspaceID: workspaceID}
+}
+
+// allows reports whether an event of this channel may go out. A server-wide
+// event (no channel) always may. On an error the event is held back: when
+// unsure whether someone may see a channel, they do not.
+func (v *visibility) allows(ctx context.Context, channelID uuid.UUID) bool {
+	if channelID == uuid.Nil || v.h.channels == nil {
+		return true
+	}
+	stale := time.Since(v.fetched) > visibilityTTL
+	if _, known := v.visible[channelID]; stale || !known {
+		visible, err := v.h.channels.Visible(ctx, v.workspaceID, v.userID)
+		if err != nil {
+			return false
+		}
+		// Unknown channels are remembered as hidden, so a channel this account
+		// never sees is not asked about on every event.
+		if !visible[channelID] {
+			visible[channelID] = false
+		}
+		v.visible, v.fetched = visible, time.Now()
+	}
+	return v.visible[channelID]
 }
 
 // resume replays what the client missed in the conversations it names. It does
@@ -285,7 +340,7 @@ func (h *Handler) replay(ctx context.Context, userID uuid.UUID, cursors map[stri
 }
 
 // pumpEvents forwards live events until the subscription ends.
-func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, tracker *replayTracker, writes chan<- serverFrame) {
+func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, tracker *replayTracker, writes chan<- serverFrame, visible *visibility) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -305,6 +360,9 @@ func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, trac
 			return
 		case event := <-sub.Events():
 			if tracker.seen(event) {
+				continue
+			}
+			if !visible.allows(ctx, event.ChannelID) {
 				continue
 			}
 			workspaceID, channelID := event.WorkspaceID, event.ChannelID

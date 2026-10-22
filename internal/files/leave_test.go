@@ -38,6 +38,10 @@ func (s *conversationChannelStore) Update(context.Context, uuid.UUID, channels.U
 
 func (s *conversationChannelStore) Delete(context.Context, uuid.UUID) error { return nil }
 
+func (s *conversationChannelStore) SetReadOnly(context.Context, channels.Channel, bool) error {
+	return nil
+}
+
 func (s *conversationChannelStore) Reorder(context.Context, uuid.UUID, []uuid.UUID) error { return nil }
 
 type participantSet map[uuid.UUID]bool

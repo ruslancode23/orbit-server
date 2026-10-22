@@ -65,6 +65,10 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 - Вложения (`internal/files`): загрузка идёт через сервер, тип определяется по содержимому
   (`http.DetectContentType`), html/svg/js не принимаем; скачивание — подписанной ссылкой из
   объектного хранилища (`internal/platform/objectstore`), не через сервер.
+- Права на сервере — только через роли: `servers.Service.Require(ctx, ws, user, perms.X)` или права в канале
+  (`channels.Service.Permissions`, `View.Permissions`). Не проверяй `role == admin`: роль `admin` в API
+  выводится из права `administrator` и нужна только старым клиентам. Скрытый канал — `ErrNotFound`, не
+  `ErrForbidden`. Правила расчёта и иерархия — `internal/perms`, README «Роли и права».
 - Новый `events.Kind` без публикатора не пройдёт `TestEveryKindHasAPublisher`; новое событие добавь и в
   `SERVER_EVENTS` web-теста `event-coverage.test.ts`, иначе клиент может его не обработать.
 - Живые события — через `internal/events` (шина в процессе) и `internal/gateway` (WebSocket,

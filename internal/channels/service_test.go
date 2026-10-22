@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -36,7 +37,7 @@ func (s *fakeStore) Create(_ context.Context, c NewChannel) (Channel, error) {
 	}
 	channel := Channel{
 		ID: uuid.New(), WorkspaceID: c.WorkspaceID, Kind: c.Kind, Name: c.Name, Topic: c.Topic,
-		Position: position, IsReadOnly: c.IsReadOnly, CreatedAt: time.Now(),
+		Position: position, CreatedAt: time.Now(),
 	}
 	s.channels[channel.ID] = channel
 	return channel, nil
@@ -77,11 +78,20 @@ func (s *fakeStore) Update(_ context.Context, id uuid.UUID, u Update) (Channel, 
 	if u.Topic != nil {
 		channel.Topic = *u.Topic
 	}
-	if u.IsReadOnly != nil {
-		channel.IsReadOnly = *u.IsReadOnly
-	}
 	s.channels[id] = channel
 	return channel, nil
+}
+
+// SetReadOnly writes the @everyone override the way the database does.
+func (s *fakeStore) SetReadOnly(_ context.Context, channel Channel, readOnly bool) error {
+	stored := s.channels[channel.ID]
+	stored.IsReadOnly = readOnly
+	stored.Overrides = nil
+	if readOnly {
+		stored.Overrides = []perms.Override{{RoleID: everyoneOf(stored.WorkspaceID), Deny: perms.SendMessages | perms.Speak}}
+	}
+	s.channels[channel.ID] = stored
+	return nil
 }
 
 func (s *fakeStore) Delete(_ context.Context, id uuid.UUID) error {
@@ -101,38 +111,51 @@ func (s *fakeStore) Reorder(_ context.Context, workspaceID uuid.UUID, ids []uuid
 	return nil
 }
 
-// fakeRoles answers like internal/servers: a role per (server, account), and
-// what each server lets its members do (the defaults when not set).
+// fakeRoles answers like internal/servers: a role per (server, account) in the
+// old words, turned into roles — @everyone with the server's flags, and an
+// administrator role for admins.
 type fakeRoles struct {
 	roles map[uuid.UUID]map[uuid.UUID]servers.Role
 	perms map[uuid.UUID]servers.Permissions
 }
 
-func (r *fakeRoles) RequirePermission(_ context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error) {
-	role, ok := r.roles[workspaceID][userID]
-	if !ok {
-		return "", servers.ErrNotMember
-	}
-	perms, ok := r.perms[workspaceID]
-	if !ok {
-		perms = servers.DefaultPermissions()
-	}
-	if !perms.Allows(role, permission) {
-		return role, servers.ErrForbidden
-	}
-	return role, nil
+// everyoneOf and adminOf are fixed role ids per server, shared by both fakes.
+func everyoneOf(workspaceID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(workspaceID, []byte("everyone"))
 }
 
-func (r *fakeRoles) RequireAtLeast(_ context.Context, workspaceID, userID uuid.UUID, least servers.Role) (servers.Role, error) {
+func adminOf(workspaceID uuid.UUID) uuid.UUID { return uuid.NewSHA1(workspaceID, []byte("admin")) }
+
+func (r *fakeRoles) Access(_ context.Context, workspaceID, userID uuid.UUID) (servers.Access, error) {
 	role, ok := r.roles[workspaceID][userID]
 	if !ok {
-		return "", servers.ErrNotMember
+		return servers.Access{}, servers.ErrNotMember
 	}
-	rank := map[servers.Role]int{servers.RoleMember: 1, servers.RoleAdmin: 2, servers.RoleOwner: 3}
-	if rank[role] < rank[least] {
-		return role, servers.ErrForbidden
+	flags, ok := r.perms[workspaceID]
+	if !ok {
+		flags = servers.DefaultPermissions()
 	}
-	return role, nil
+	everyone := perms.ViewChannel | perms.SendMessages | perms.Speak
+	if flags.Invite {
+		everyone |= perms.CreateInvite
+	}
+	if flags.CreateChannels {
+		everyone |= perms.CreateChannels
+	}
+	if flags.AttachFiles {
+		everyone |= perms.AttachFiles
+	}
+	access := servers.Access{
+		Server: perms.Server{Roles: []perms.Role{
+			{ID: everyoneOf(workspaceID), Default: true, Permissions: everyone},
+			{ID: adminOf(workspaceID), Position: 1, Permissions: perms.Administrator},
+		}},
+		Member: perms.Member{Owner: role == servers.RoleOwner},
+	}
+	if role == servers.RoleAdmin {
+		access.Member.Roles = []uuid.UUID{adminOf(workspaceID)}
+	}
+	return access, nil
 }
 
 type world struct {

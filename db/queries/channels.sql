@@ -1,6 +1,6 @@
 -- A new channel goes to the end of the list: position is one past the current last.
 -- name: CreateChannel :one
-INSERT INTO channels (workspace_id, kind, name, topic, position, is_read_only)
+INSERT INTO channels (workspace_id, kind, name, topic, position)
 VALUES (
     sqlc.arg(workspace_id),
     sqlc.arg(kind),
@@ -9,8 +9,7 @@ VALUES (
     coalesce(
         (SELECT max(position) + 1 FROM channels WHERE workspace_id = sqlc.arg(workspace_id)),
         0
-    ),
-    sqlc.arg(is_read_only)
+    )
 )
 RETURNING *;
 
@@ -26,7 +25,6 @@ ORDER BY position, created_at;
 UPDATE channels
 SET name = coalesce(sqlc.narg(name), name),
     topic = CASE WHEN sqlc.arg(clear_topic)::boolean THEN NULL ELSE coalesce(sqlc.narg(topic), topic) END,
-    is_read_only = coalesce(sqlc.narg(is_read_only), is_read_only),
     updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;

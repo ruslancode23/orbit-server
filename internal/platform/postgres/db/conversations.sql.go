@@ -118,7 +118,7 @@ func (q *Queries) CountConversationUnread(ctx context.Context, userID pgtype.UUI
 const createConversation = `-- name: CreateConversation :one
 INSERT INTO channels (kind, direct_key)
 VALUES ($1, $2)
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key
 `
 
 type CreateConversationParams struct {
@@ -140,14 +140,13 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsReadOnly,
 		&i.DirectKey,
 	)
 	return i, err
 }
 
 const getDirectConversation = `-- name: GetDirectConversation :one
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE direct_key = $1 AND kind = 'direct'
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels WHERE direct_key = $1 AND kind = 'direct'
 `
 
 func (q *Queries) GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error) {
@@ -162,14 +161,13 @@ func (q *Queries) GetDirectConversation(ctx context.Context, directKey pgtype.Te
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsReadOnly,
 		&i.DirectKey,
 	)
 	return i, err
 }
 
 const getSecretConversation = `-- name: GetSecretConversation :one
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE direct_key = $1 AND kind = 'secret'
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels WHERE direct_key = $1 AND kind = 'secret'
 `
 
 func (q *Queries) GetSecretConversation(ctx context.Context, directKey pgtype.Text) (Channel, error) {
@@ -184,7 +182,6 @@ func (q *Queries) GetSecretConversation(ctx context.Context, directKey pgtype.Te
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsReadOnly,
 		&i.DirectKey,
 	)
 	return i, err

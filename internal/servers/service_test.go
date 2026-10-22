@@ -3,11 +3,13 @@ package servers
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
@@ -15,9 +17,13 @@ import (
 // database enforces: one row per (workspace, user), and a ban drops the membership.
 type fakeStore struct {
 	workspaces map[uuid.UUID]Workspace
-	members    map[uuid.UUID]map[uuid.UUID]Member
-	bans       map[uuid.UUID]map[uuid.UUID]Ban
-	accounts   map[uuid.UUID]profile.Public
+	// members keep the stored role: owner or member, as the table does now.
+	members  map[uuid.UUID]map[uuid.UUID]Member
+	bans     map[uuid.UUID]map[uuid.UUID]Ban
+	accounts map[uuid.UUID]profile.Public
+	// roles of each server, @everyone first, and the roles each member holds.
+	roles map[uuid.UUID][]perms.Role
+	held  map[uuid.UUID]map[uuid.UUID][]uuid.UUID
 }
 
 func newFakeStore() *fakeStore {
@@ -26,7 +32,37 @@ func newFakeStore() *fakeStore {
 		members:    map[uuid.UUID]map[uuid.UUID]Member{},
 		bans:       map[uuid.UUID]map[uuid.UUID]Ban{},
 		accounts:   map[uuid.UUID]profile.Public{},
+		roles:      map[uuid.UUID][]perms.Role{},
+		held:       map[uuid.UUID]map[uuid.UUID][]uuid.UUID{},
 	}
+}
+
+func (s *fakeStore) everyone(workspaceID uuid.UUID) perms.Set {
+	for _, role := range s.roles[workspaceID] {
+		if role.Default {
+			return role.Permissions
+		}
+	}
+	return 0
+}
+
+func (s *fakeStore) access(workspaceID, userID uuid.UUID) Access {
+	return Access{
+		Server: perms.Server{Roles: s.roles[workspaceID]},
+		Member: perms.Member{
+			Owner: s.members[workspaceID][userID].Role == RoleOwner,
+			Roles: s.held[workspaceID][userID],
+		},
+	}
+}
+
+// presented is a member as the store reports it: the old role and what the
+// member may do, worked out from the roles.
+func (s *fakeStore) presented(workspaceID uuid.UUID, member Member) Member {
+	access := s.access(workspaceID, member.User.ID)
+	member.Role = access.Role()
+	member.Permissions = access.Base()
+	return member
 }
 
 func (s *fakeStore) account(id uuid.UUID) profile.Public {
@@ -38,12 +74,15 @@ func (s *fakeStore) account(id uuid.UUID) profile.Public {
 	return a
 }
 
-func (s *fakeStore) CreateWorkspace(_ context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error) {
+func (s *fakeStore) CreateWorkspace(_ context.Context, n NewWorkspace, everyone perms.Set, ownerID uuid.UUID) (Workspace, error) {
 	w := Workspace{
-		ID: uuid.New(), Name: n.Name, Description: n.Description, MemberPermissions: permissions,
+		ID: uuid.New(), Name: n.Name, Description: n.Description,
 		OwnerID: ownerID, CreatedAt: time.Now(),
 	}
 	s.workspaces[w.ID] = w
+	s.roles[w.ID] = []perms.Role{{ID: uuid.New(), Default: true, Permissions: everyone}}
+	s.held[w.ID] = map[uuid.UUID][]uuid.UUID{}
+	w.MemberPermissions, w.Everyone = permissionsOf(everyone), everyone
 	s.members[w.ID] = map[uuid.UUID]Member{
 		ownerID: {User: s.account(ownerID), Role: RoleOwner, JoinedAt: time.Now()},
 	}
@@ -56,10 +95,12 @@ func (s *fakeStore) Workspace(_ context.Context, id uuid.UUID) (Workspace, error
 	if !ok {
 		return Workspace{}, ErrNotMember
 	}
+	w.Everyone = s.everyone(id)
+	w.MemberPermissions = permissionsOf(w.Everyone)
 	return w, nil
 }
 
-func (s *fakeStore) UpdateWorkspace(_ context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
+func (s *fakeStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
 	w, ok := s.workspaces[id]
 	if !ok {
 		return Workspace{}, ErrNotMember
@@ -70,9 +111,56 @@ func (s *fakeStore) UpdateWorkspace(_ context.Context, id uuid.UUID, u Workspace
 	if u.Description != nil {
 		w.Description = *u.Description
 	}
-	w.MemberPermissions = u.Permissions.apply(w.MemberPermissions)
 	s.workspaces[id] = w
-	return w, nil
+	return s.Workspace(ctx, id)
+}
+
+func (s *fakeStore) SetEveryone(_ context.Context, workspaceID uuid.UUID, permissions perms.Set) error {
+	for i, role := range s.roles[workspaceID] {
+		if role.Default {
+			s.roles[workspaceID][i].Permissions = permissions
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) GrantAdmin(_ context.Context, workspaceID, userID uuid.UUID) error {
+	var adminID uuid.UUID
+	top := 0
+	for _, role := range s.roles[workspaceID] {
+		if !role.Default && role.Permissions == perms.Administrator {
+			adminID = role.ID
+		}
+		if role.Position > top {
+			top = role.Position
+		}
+	}
+	if adminID == uuid.Nil {
+		adminID = uuid.New()
+		s.roles[workspaceID] = append(s.roles[workspaceID],
+			perms.Role{ID: adminID, Position: top + 1, Permissions: perms.Administrator})
+	}
+	if !slices.Contains(s.held[workspaceID][userID], adminID) {
+		s.held[workspaceID][userID] = append(s.held[workspaceID][userID], adminID)
+	}
+	return nil
+}
+
+func (s *fakeStore) RevokeAdmin(_ context.Context, workspaceID, userID uuid.UUID) error {
+	kept := s.held[workspaceID][userID][:0]
+	for _, id := range s.held[workspaceID][userID] {
+		granting := false
+		for _, role := range s.roles[workspaceID] {
+			if role.ID == id && role.Permissions.Has(perms.Administrator) {
+				granting = true
+			}
+		}
+		if !granting {
+			kept = append(kept, id)
+		}
+	}
+	s.held[workspaceID][userID] = kept
+	return nil
 }
 
 func (s *fakeStore) SetIcon(_ context.Context, id uuid.UUID, key string) (string, error) {
@@ -93,11 +181,13 @@ func (s *fakeStore) DeleteWorkspace(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *fakeStore) ListMemberships(_ context.Context, userID uuid.UUID) ([]Membership, error) {
+func (s *fakeStore) ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
 	var out []Membership
 	for id, members := range s.members {
-		if member, ok := members[userID]; ok {
-			out = append(out, Membership{Workspace: s.workspaces[id], Role: member.Role})
+		if _, ok := members[userID]; ok {
+			workspace, _ := s.Workspace(ctx, id)
+			access := s.access(id, userID)
+			out = append(out, Membership{Workspace: workspace, Role: access.Role(), Permissions: access.Base()})
 		}
 	}
 	return out, nil
@@ -132,31 +222,36 @@ func (s *fakeStore) Role(_ context.Context, workspaceID, userID uuid.UUID) (Role
 	return member.Role, nil
 }
 
-func (s *fakeStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error) {
-	role, err := s.Role(ctx, workspaceID, userID)
-	if err != nil {
-		return "", Permissions{}, err
+func (s *fakeStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Access, error) {
+	if _, err := s.Role(ctx, workspaceID, userID); err != nil {
+		return Access{}, err
 	}
-	return role, s.workspaces[workspaceID].MemberPermissions, nil
+	return s.access(workspaceID, userID), nil
 }
 
-func (s *fakeStore) SetRole(_ context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
+func (s *fakeStore) SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
 	member, ok := s.members[workspaceID][userID]
 	if !ok {
 		return Member{}, ErrNotMember
 	}
+	// The table keeps owner or member; an admin is a member with the role.
 	member.Role = role
+	if role == RoleAdmin {
+		member.Role = RoleMember
+		if err := s.GrantAdmin(ctx, workspaceID, userID); err != nil {
+			return Member{}, err
+		}
+	}
 	s.members[workspaceID][userID] = member
-	return member, nil
+	return s.presented(workspaceID, member), nil
 }
 
-func (s *fakeStore) AddMember(_ context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
+func (s *fakeStore) AddMember(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
 	if _, ok := s.workspaces[workspaceID]; !ok {
 		return Member{}, ErrNotMember
 	}
-	member := Member{User: s.account(userID), Role: role, JoinedAt: time.Now()}
-	s.members[workspaceID][userID] = member
-	return member, nil
+	s.members[workspaceID][userID] = Member{User: s.account(userID), Role: RoleMember, JoinedAt: time.Now()}
+	return s.SetRole(ctx, workspaceID, userID, role)
 }
 
 func (s *fakeStore) RemoveMember(_ context.Context, workspaceID, userID uuid.UUID) error {
@@ -164,13 +259,14 @@ func (s *fakeStore) RemoveMember(_ context.Context, workspaceID, userID uuid.UUI
 		return ErrNotMember
 	}
 	delete(s.members[workspaceID], userID)
+	delete(s.held[workspaceID], userID)
 	return nil
 }
 
 func (s *fakeStore) ListMembers(_ context.Context, workspaceID uuid.UUID) ([]Member, error) {
 	out := make([]Member, 0, len(s.members[workspaceID]))
 	for _, m := range s.members[workspaceID] {
-		out = append(out, m)
+		out = append(out, s.presented(workspaceID, m))
 	}
 	return out, nil
 }
@@ -189,6 +285,7 @@ func (s *fakeStore) Ban(_ context.Context, workspaceID, userID, bannedBy uuid.UU
 	ban := Ban{User: s.account(userID), Reason: reason, BannedBy: bannedBy, CreatedAt: time.Now()}
 	s.bans[workspaceID][userID] = ban
 	delete(s.members[workspaceID], userID)
+	delete(s.held[workspaceID], userID)
 	return ban, nil
 }
 

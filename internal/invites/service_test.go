@@ -11,6 +11,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -130,10 +131,39 @@ func (m *fakeMembers) RequirePermission(_ context.Context, workspaceID, userID u
 	if !ok {
 		return "", servers.ErrNotMember
 	}
-	if !m.workspace.MemberPermissions.Allows(role, permission) {
+	// The owner and admins may always; members as the server's flags say.
+	if role == servers.RoleOwner || role == servers.RoleAdmin {
+		return role, nil
+	}
+	flags := m.workspace.MemberPermissions
+	allowed := map[servers.Permission]bool{
+		servers.PermissionInvite:         flags.Invite,
+		servers.PermissionCreateChannels: flags.CreateChannels,
+		servers.PermissionAttachFiles:    flags.AttachFiles,
+	}[permission]
+	if !allowed {
 		return role, servers.ErrForbidden
 	}
 	return role, nil
+}
+
+// Require answers like the roles would: the owner and admins hold every
+// permission, members only what @everyone has, which never includes managing.
+func (m *fakeMembers) Require(_ context.Context, workspaceID, userID uuid.UUID, want perms.Set) (servers.Access, error) {
+	if workspaceID != m.workspace.ID {
+		return servers.Access{}, servers.ErrNotMember
+	}
+	role, ok := m.roles[userID]
+	if !ok {
+		return servers.Access{}, servers.ErrNotMember
+	}
+	if role == servers.RoleOwner || role == servers.RoleAdmin {
+		return servers.Access{Member: perms.Member{Owner: role == servers.RoleOwner}}, nil
+	}
+	if want&(perms.ManageServer|perms.ManageRoles|perms.BanMembers|perms.KickMembers) != 0 {
+		return servers.Access{}, servers.ErrForbidden
+	}
+	return servers.Access{}, nil
 }
 
 func (m *fakeMembers) Authorize(_ context.Context, workspaceID, userID uuid.UUID) (servers.Role, error) {

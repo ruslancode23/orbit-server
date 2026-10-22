@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -52,35 +53,28 @@ type Channel struct {
 	Name        string
 	Topic       string
 	Position    int
-	IsReadOnly  bool
-	CreatedAt   time.Time
+	// IsReadOnly is the old API's «only admins write»: @everyone may not write
+	// or speak here. Read from the overrides, written as one.
+	IsReadOnly bool
+	// Overrides change what roles may do in this channel.
+	Overrides []perms.Override
+	CreatedAt time.Time
 }
 
-// CanWrite reports whether a role may post in this channel. A read-only channel
-// is for announcements: members read it, admins and the owner write. A voice
+// canWrite reports whether these permissions let one post here. A voice
 // channel has no messages at all, and a secret one carries only ciphertext
 // envelopes, which have their own endpoints.
-func (c Channel) CanWrite(role servers.Role) bool {
+func canWrite(c Channel, set perms.Set) bool {
 	if c.Kind == KindVoice || c.Kind == KindSecret {
 		return false
 	}
-	if !c.IsReadOnly {
-		return true
-	}
-	return role == servers.RoleAdmin || role == servers.RoleOwner
+	return set.Has(perms.ViewChannel | perms.SendMessages)
 }
 
-// CanSpeak reports whether a role may publish audio and screen in a voice
-// channel. A read-only voice channel is a broadcast: everyone listens, admins
-// and the owner speak.
-func (c Channel) CanSpeak(role servers.Role) bool {
-	if c.Kind != KindVoice {
-		return false
-	}
-	if !c.IsReadOnly {
-		return true
-	}
-	return role == servers.RoleAdmin || role == servers.RoleOwner
+// canSpeak reports whether these permissions let one publish audio and screen
+// in a voice channel.
+func canSpeak(c Channel, set perms.Set) bool {
+	return c.Kind == KindVoice && set.Has(perms.ViewChannel|perms.Speak)
 }
 
 // NewChannel is what Store.Create writes.
@@ -109,6 +103,8 @@ type Store interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	// Reorder writes the positions of every listed channel in one transaction.
 	Reorder(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) error
+	// SetReadOnly turns the @everyone «no writing, no speaking» override on or off.
+	SetReadOnly(ctx context.Context, channel Channel, readOnly bool) error
 }
 
 // Participants answers who is in a conversation — a channel without a server
@@ -117,12 +113,10 @@ type Participants interface {
 	IsParticipant(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
 }
 
-// Authorizer is the part of internal/servers this package needs: the caller's
-// role on a server, read for this request. Declared here, by the consumer.
+// Authorizer is the part of internal/servers this package needs: the roles of
+// a server and the caller's, read for this request. Declared by the consumer.
 type Authorizer interface {
-	RequireAtLeast(ctx context.Context, workspaceID, userID uuid.UUID, least servers.Role) (servers.Role, error)
-	// RequirePermission is the role when the server lets it take this action.
-	RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission servers.Permission) (servers.Role, error)
+	Access(ctx context.Context, workspaceID, userID uuid.UUID) (servers.Access, error)
 }
 
 // Watchers tells the members of a server what changed in it (internal/servers
@@ -167,14 +161,22 @@ func (s *Service) announce(ctx context.Context, kind events.Kind, workspaceID, c
 	s.watchers.Announce(ctx, event)
 }
 
-// View is a channel as one caller sees it: the channel plus whether they may write.
+// View is a channel as one caller sees it: the channel, what the caller may do
+// in it and, for the old API, whether they may write.
 type View struct {
-	Channel  Channel
-	CanWrite bool
+	Channel     Channel
+	CanWrite    bool
+	Permissions perms.Set
 }
 
+func view(channel Channel, set perms.Set) View {
+	return View{Channel: channel, CanWrite: canWrite(channel, set), Permissions: set}
+}
+
+// List is the channels of a server the caller may see, with what they may do
+// in each. A channel hidden from them is simply not there.
 func (s *Service) List(ctx context.Context, workspaceID, callerID uuid.UUID) ([]View, error) {
-	role, err := s.role(ctx, workspaceID, callerID, servers.RoleMember)
+	access, err := s.access(ctx, workspaceID, callerID)
 	if err != nil {
 		return nil, err
 	}
@@ -182,26 +184,29 @@ func (s *Service) List(ctx context.Context, workspaceID, callerID uuid.UUID) ([]
 	if err != nil {
 		return nil, err
 	}
-	return views(list, role), nil
+	return visible(list, access), nil
 }
 
 func (s *Service) Get(ctx context.Context, channelID, callerID uuid.UUID) (View, error) {
-	channel, role, err := s.channelFor(ctx, channelID, callerID, servers.RoleMember)
+	channel, set, err := s.channelFor(ctx, channelID, callerID, perms.ViewChannel)
 	if err != nil {
 		return View{}, err
 	}
-	return View{Channel: channel, CanWrite: channel.CanWrite(role)}, nil
+	return view(channel, set), nil
 }
 
-// Create adds a channel. Admins and the owner may, and members too when the
-// server lets them — but only a channel everyone writes in: a read-only one is a
-// moderation tool, and a member could not even post in it.
+// Create adds a channel: createChannels or manageChannels. A read-only channel
+// is a moderation tool, so making one takes manageChannels.
 func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c NewChannel) (View, error) {
-	role, err := mapRoleError(s.roles.RequirePermission(ctx, workspaceID, callerID, servers.PermissionCreateChannels))
+	access, err := s.access(ctx, workspaceID, callerID)
 	if err != nil {
 		return View{}, err
 	}
-	if c.IsReadOnly && role.Rank() < servers.RoleAdmin.Rank() {
+	base := access.Base()
+	if base&(perms.CreateChannels|perms.ManageChannels) == 0 {
+		return View{}, ErrForbidden
+	}
+	if c.IsReadOnly && !base.Has(perms.ManageChannels) {
 		return View{}, ErrForbidden
 	}
 	name, err := cleanName(c.Name)
@@ -223,17 +228,26 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c
 		Kind:        kind,
 		Name:        name,
 		Topic:       topic,
-		IsReadOnly:  c.IsReadOnly,
 	})
 	if err != nil {
 		return View{}, err
 	}
+	if c.IsReadOnly {
+		if err := s.store.SetReadOnly(ctx, created, true); err != nil {
+			return View{}, err
+		}
+		if created, err = s.store.Channel(ctx, created.ID); err != nil {
+			return View{}, err
+		}
+	}
 	s.announce(ctx, events.KindChannelChanged, workspaceID, created.ID)
-	return View{Channel: created, CanWrite: created.CanWrite(role)}, nil
+	return view(created, inChannel(access, created)), nil
 }
 
+// Update renames a channel, changes its topic or makes it read-only:
+// manageChannels in this channel.
 func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u Update) (View, error) {
-	_, role, err := s.channelFor(ctx, channelID, callerID, servers.RoleAdmin)
+	channel, _, err := s.channelFor(ctx, channelID, callerID, perms.ManageChannels)
 	if err != nil {
 		return View{}, err
 	}
@@ -253,18 +267,31 @@ func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u U
 		u.Topic = &topic
 	}
 
+	// The name may be taken: write it first, so a refusal leaves nothing half done.
 	updated, err := s.store.Update(ctx, channelID, u)
 	if err != nil {
 		return View{}, err
 	}
+	if u.IsReadOnly != nil && *u.IsReadOnly != channel.IsReadOnly {
+		if err := s.store.SetReadOnly(ctx, updated, *u.IsReadOnly); err != nil {
+			return View{}, err
+		}
+		if updated, err = s.store.Channel(ctx, channelID); err != nil {
+			return View{}, err
+		}
+	}
+	access, err := s.access(ctx, updated.WorkspaceID, callerID)
+	if err != nil {
+		return View{}, err
+	}
 	s.announce(ctx, events.KindChannelChanged, updated.WorkspaceID, updated.ID)
-	return View{Channel: updated, CanWrite: updated.CanWrite(role)}, nil
+	return view(updated, inChannel(access, updated)), nil
 }
 
 // Delete removes the channel; the database takes its messages and attachments
 // with it, so nothing is left pointing at a channel that is gone.
 func (s *Service) Delete(ctx context.Context, channelID, callerID uuid.UUID) error {
-	channel, _, err := s.channelFor(ctx, channelID, callerID, servers.RoleAdmin)
+	channel, _, err := s.channelFor(ctx, channelID, callerID, perms.ManageChannels)
 	if err != nil {
 		return err
 	}
@@ -275,12 +302,16 @@ func (s *Service) Delete(ctx context.Context, channelID, callerID uuid.UUID) err
 	return nil
 }
 
-// Reorder sets the order of the whole list. The new order must name every channel
-// of the server exactly once: a partial list would leave positions half applied.
+// Reorder sets the order of the whole list: manageChannels. The new order must
+// name every channel of the server exactly once: a partial list would leave
+// positions half applied.
 func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, ids []uuid.UUID) ([]View, error) {
-	role, err := s.role(ctx, workspaceID, callerID, servers.RoleAdmin)
+	access, err := s.access(ctx, workspaceID, callerID)
 	if err != nil {
 		return nil, err
+	}
+	if !access.Base().Has(perms.ManageChannels) {
+		return nil, ErrForbidden
 	}
 
 	current, err := s.store.List(ctx, workspaceID)
@@ -299,11 +330,9 @@ func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	return views(list, role), nil
+	return visible(list, access), nil
 }
 
-// MayWrite answers "can this account post in this channel" for other modules
-// (messages, the event gateway): one place for the rule.
 // Lookup returns a channel without checking who asks. Internal modules use it
 // after they have checked access themselves (a webhook has no session).
 func (s *Service) Lookup(ctx context.Context, channelID uuid.UUID) (Channel, error) {
@@ -326,59 +355,100 @@ func (s *Service) ListVoice(ctx context.Context, workspaceID uuid.UUID) ([]Chann
 }
 
 // VoiceAccess returns whether the caller may speak in this voice channel. The
-// channel must be a voice channel of a server the caller is on: anything else
-// is ErrNotFound, the same answer as a channel that does not exist.
+// channel must be a voice channel the caller may see: anything else is
+// ErrNotFound, the same answer as a channel that does not exist.
 func (s *Service) VoiceAccess(ctx context.Context, channelID, callerID uuid.UUID) (bool, error) {
-	channel, role, err := s.channelFor(ctx, channelID, callerID, servers.RoleMember)
+	channel, set, err := s.channelFor(ctx, channelID, callerID, perms.ViewChannel)
 	if err != nil {
 		return false, err
 	}
 	if channel.Kind != KindVoice {
 		return false, ErrNotFound
 	}
-	return channel.CanSpeak(role), nil
+	return canSpeak(channel, set), nil
 }
 
+// MayWrite answers "can this account post in this channel" for other modules
+// (messages, the event gateway): one place for the rule.
 func (s *Service) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (Channel, error) {
-	channel, role, err := s.channelFor(ctx, channelID, callerID, servers.RoleMember)
+	channel, set, err := s.channelFor(ctx, channelID, callerID, perms.ViewChannel)
 	if err != nil {
 		return Channel{}, err
 	}
-	if !channel.CanWrite(role) {
+	if !canWrite(channel, set) {
 		return Channel{}, ErrForbidden
 	}
 	return channel, nil
 }
 
-// channelFor reads the channel and checks the caller's role on its server.
-func (s *Service) channelFor(ctx context.Context, channelID, callerID uuid.UUID, least servers.Role) (Channel, servers.Role, error) {
+// Permissions is what the caller may do in this channel, for other modules
+// with rules of their own: deleting others' messages, attaching files.
+// ErrNotFound when the caller may not see it.
+func (s *Service) Permissions(ctx context.Context, channelID, callerID uuid.UUID) (Channel, perms.Set, error) {
+	return s.channelFor(ctx, channelID, callerID, perms.ViewChannel)
+}
+
+// Visible reports which channels of a server the account may see, for the
+// readers of a whole server at once: unread counts, the live stream.
+func (s *Service) Visible(ctx context.Context, workspaceID, userID uuid.UUID) (map[uuid.UUID]bool, error) {
+	access, err := s.access(ctx, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.store.List(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]bool, len(list))
+	for _, channel := range list {
+		if inChannel(access, channel).Has(perms.ViewChannel) {
+			out[channel.ID] = true
+		}
+	}
+	return out, nil
+}
+
+// conversationPermissions are what every participant may do in a conversation:
+// its people are equals, and nobody manages it.
+const conversationPermissions = perms.ViewChannel | perms.SendMessages | perms.AttachFiles
+
+// channelFor reads the channel and checks that the caller may do `want` in it.
+// A channel they may not see is ErrNotFound, never ErrForbidden: whether a
+// hidden channel exists is nobody's business.
+func (s *Service) channelFor(ctx context.Context, channelID, callerID uuid.UUID, want perms.Set) (Channel, perms.Set, error) {
 	channel, err := s.store.Channel(ctx, channelID)
 	if err != nil {
-		return Channel{}, "", err
+		return Channel{}, 0, err
 	}
 
-	// A conversation belongs to no server: being in it is the whole rule, and
-	// its participants are equals, so everyone there counts as a member.
+	// A conversation belongs to no server: being in it is the whole rule.
 	if channel.WorkspaceID == uuid.Nil {
 		inside, err := s.isParticipant(ctx, channelID, callerID)
 		if err != nil {
-			return Channel{}, "", err
+			return Channel{}, 0, err
 		}
 		if !inside {
-			return Channel{}, "", ErrNotFound
+			return Channel{}, 0, ErrNotFound
 		}
-		if least.Rank() > servers.RoleMember.Rank() {
+		if !conversationPermissions.Has(want) {
 			// Renaming or deleting a conversation is not a thing anyone may do.
-			return Channel{}, "", ErrForbidden
+			return Channel{}, 0, ErrForbidden
 		}
-		return channel, servers.RoleMember, nil
+		return channel, conversationPermissions, nil
 	}
 
-	role, err := s.role(ctx, channel.WorkspaceID, callerID, least)
+	access, err := s.access(ctx, channel.WorkspaceID, callerID)
 	if err != nil {
-		return Channel{}, "", err
+		return Channel{}, 0, err
 	}
-	return channel, role, nil
+	set := inChannel(access, channel)
+	if !set.Has(perms.ViewChannel) {
+		return Channel{}, 0, ErrNotFound
+	}
+	if !set.Has(want) {
+		return Channel{}, 0, ErrForbidden
+	}
+	return channel, set, nil
 }
 
 func (s *Service) isParticipant(ctx context.Context, channelID, userID uuid.UUID) (bool, error) {
@@ -388,28 +458,28 @@ func (s *Service) isParticipant(ctx context.Context, channelID, userID uuid.UUID
 	return s.participants.IsParticipant(ctx, channelID, userID)
 }
 
-// role maps the server's answers to this package's: an outsider must not be able
-// to tell "no such server" from "not your server".
-func (s *Service) role(ctx context.Context, workspaceID, callerID uuid.UUID, least servers.Role) (servers.Role, error) {
-	return mapRoleError(s.roles.RequireAtLeast(ctx, workspaceID, callerID, least))
-}
-
-func mapRoleError(role servers.Role, err error) (servers.Role, error) {
-	switch {
-	case errors.Is(err, servers.ErrNotMember):
-		return "", ErrNotFound
-	case errors.Is(err, servers.ErrForbidden):
-		return role, ErrForbidden
-	case err != nil:
-		return "", err
+// access reads the caller's standing on a server; an outsider must not be
+// able to tell "no such server" from "not your server".
+func (s *Service) access(ctx context.Context, workspaceID, callerID uuid.UUID) (servers.Access, error) {
+	access, err := s.roles.Access(ctx, workspaceID, callerID)
+	if errors.Is(err, servers.ErrNotMember) {
+		return servers.Access{}, ErrNotFound
 	}
-	return role, nil
+	return access, err
 }
 
-func views(list []Channel, role servers.Role) []View {
+func inChannel(access servers.Access, channel Channel) perms.Set {
+	return access.Server.InChannel(access.Member, channel.Overrides)
+}
+
+// visible is the channels the caller may see, as they see them.
+func visible(list []Channel, access servers.Access) []View {
 	out := make([]View, 0, len(list))
-	for _, c := range list {
-		out = append(out, View{Channel: c, CanWrite: c.CanWrite(role)})
+	for _, channel := range list {
+		set := inChannel(access, channel)
+		if set.Has(perms.ViewChannel) {
+			out = append(out, view(channel, set))
+		}
 	}
 	return out
 }

@@ -93,6 +93,17 @@ func (c *fakeChannels) Get(_ context.Context, channelID, callerID uuid.UUID) (ch
 	return channels.View{Channel: channel, CanWrite: true}, nil
 }
 
+// Visible is the channels of the server this account reads.
+func (c *fakeChannels) Visible(_ context.Context, workspaceID, userID uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	for id, channel := range c.channels {
+		if channel.WorkspaceID == workspaceID && c.readers[id][userID] {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
 type fakeMembers struct {
 	roles map[uuid.UUID]map[uuid.UUID]servers.Role
 }
@@ -126,6 +137,7 @@ type world struct {
 	anna      uuid.UUID
 	bob       uuid.UUID
 	outsider  uuid.UUID
+	access    *fakeChannels
 }
 
 func newWorld(t *testing.T) world {
@@ -151,8 +163,28 @@ func newWorld(t *testing.T) world {
 	members := &fakeMembers{roles: map[uuid.UUID]map[uuid.UUID]servers.Role{
 		w.workspace: {w.anna: servers.RoleMember, w.bob: servers.RoleMember},
 	}}
+	w.access = access
 	w.svc = NewService(w.store, access, members, w.published)
 	return w
+}
+
+// A channel hidden from an account is not counted and not even named in the
+// server's unread counters.
+func TestWorkspaceLeavesHiddenChannelsOut(t *testing.T) {
+	w := newWorld(t)
+	w.store.messages = []message{
+		{channelID: w.general, seq: 1, author: w.anna},
+		{channelID: w.tasks, seq: 2, author: w.anna},
+	}
+	delete(w.access.readers[w.tasks], w.bob)
+
+	counts, err := w.svc.Workspace(t.Context(), w.workspace, w.bob)
+	if err != nil {
+		t.Fatalf("Workspace: %v", err)
+	}
+	if len(counts) != 1 || counts[0].ChannelID != w.general {
+		t.Errorf("counts = %+v, want only the general channel", counts)
+	}
 }
 
 func TestUnreadCountsOthersMessagesOnly(t *testing.T) {

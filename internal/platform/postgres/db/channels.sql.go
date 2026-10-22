@@ -12,7 +12,7 @@ import (
 )
 
 const createChannel = `-- name: CreateChannel :one
-INSERT INTO channels (workspace_id, kind, name, topic, position, is_read_only)
+INSERT INTO channels (workspace_id, kind, name, topic, position)
 VALUES (
     $1,
     $2,
@@ -21,10 +21,9 @@ VALUES (
     coalesce(
         (SELECT max(position) + 1 FROM channels WHERE workspace_id = $1),
         0
-    ),
-    $5
+    )
 )
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key
 `
 
 type CreateChannelParams struct {
@@ -32,7 +31,6 @@ type CreateChannelParams struct {
 	Kind        ChannelKind `json:"kind"`
 	Name        pgtype.Text `json:"name"`
 	Topic       pgtype.Text `json:"topic"`
-	IsReadOnly  bool        `json:"is_read_only"`
 }
 
 // A new channel goes to the end of the list: position is one past the current last.
@@ -42,7 +40,6 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		arg.Kind,
 		arg.Name,
 		arg.Topic,
-		arg.IsReadOnly,
 	)
 	var i Channel
 	err := row.Scan(
@@ -54,7 +51,6 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsReadOnly,
 		&i.DirectKey,
 	)
 	return i, err
@@ -70,7 +66,7 @@ func (q *Queries) DeleteChannel(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getChannel = `-- name: GetChannel :one
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels WHERE id = $1
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels WHERE id = $1
 `
 
 func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error) {
@@ -85,14 +81,13 @@ func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, erro
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsReadOnly,
 		&i.DirectKey,
 	)
 	return i, err
 }
 
 const listWorkspaceChannels = `-- name: ListWorkspaceChannels :many
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key FROM channels
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels
 WHERE workspace_id = $1
 ORDER BY position, created_at
 `
@@ -115,7 +110,6 @@ func (q *Queries) ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.
 			&i.Position,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.IsReadOnly,
 			&i.DirectKey,
 		); err != nil {
 			return nil, err
@@ -153,17 +147,15 @@ const updateChannel = `-- name: UpdateChannel :one
 UPDATE channels
 SET name = coalesce($1, name),
     topic = CASE WHEN $2::boolean THEN NULL ELSE coalesce($3, topic) END,
-    is_read_only = coalesce($4, is_read_only),
     updated_at = now()
-WHERE id = $5
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, is_read_only, direct_key
+WHERE id = $4
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key
 `
 
 type UpdateChannelParams struct {
 	Name       pgtype.Text `json:"name"`
 	ClearTopic bool        `json:"clear_topic"`
 	Topic      pgtype.Text `json:"topic"`
-	IsReadOnly pgtype.Bool `json:"is_read_only"`
 	ID         pgtype.UUID `json:"id"`
 }
 
@@ -172,7 +164,6 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		arg.Name,
 		arg.ClearTopic,
 		arg.Topic,
-		arg.IsReadOnly,
 		arg.ID,
 	)
 	var i Channel
@@ -185,7 +176,6 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsReadOnly,
 		&i.DirectKey,
 	)
 	return i, err
