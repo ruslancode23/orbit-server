@@ -54,6 +54,8 @@ func (s *fakeChannelStore) Update(context.Context, uuid.UUID, channels.Update) (
 
 func (s *fakeChannelStore) Delete(context.Context, uuid.UUID) error { return nil }
 
+func (s *fakeChannelStore) SetReadOnly(context.Context, channels.Channel, bool) error { return nil }
+
 func (s *fakeChannelStore) Reorder(context.Context, uuid.UUID, []uuid.UUID) error { return nil }
 
 func groupWith(t *testing.T, w world, members ...uuid.UUID) Conversation {

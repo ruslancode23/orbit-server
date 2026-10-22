@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 )
 
@@ -40,7 +41,6 @@ func (s *PostgresStore) Create(ctx context.Context, c NewChannel) (Channel, erro
 		Kind:        db.ChannelKind(c.Kind),
 		Name:        text(c.Name),
 		Topic:       text(c.Topic),
-		IsReadOnly:  c.IsReadOnly,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -49,7 +49,7 @@ func (s *PostgresStore) Create(ctx context.Context, c NewChannel) (Channel, erro
 		}
 		return Channel{}, fmt.Errorf("create channel: %w", err)
 	}
-	return toChannel(row), nil
+	return toChannel(row, nil), nil
 }
 
 func (s *PostgresStore) Channel(ctx context.Context, id uuid.UUID) (Channel, error) {
@@ -60,19 +60,69 @@ func (s *PostgresStore) Channel(ctx context.Context, id uuid.UUID) (Channel, err
 		}
 		return Channel{}, fmt.Errorf("get channel: %w", err)
 	}
-	return toChannel(row), nil
+	rows, err := s.q.ListChannelOverrides(ctx, row.ID)
+	if err != nil {
+		return Channel{}, fmt.Errorf("list channel overrides: %w", err)
+	}
+	overrides := make([]override, 0, len(rows))
+	for _, o := range rows {
+		overrides = append(overrides, override{roleID: o.RoleID, allow: o.Allow, deny: o.Deny, everyone: o.IsDefault})
+	}
+	return toChannel(row, overrides), nil
 }
 
+// List reads the channels of a server and the overrides of all of them in two
+// queries, never one per channel.
 func (s *PostgresStore) List(ctx context.Context, workspaceID uuid.UUID) ([]Channel, error) {
 	rows, err := s.q.ListWorkspaceChannels(ctx, pgUUID(workspaceID))
 	if err != nil {
 		return nil, fmt.Errorf("list channels: %w", err)
 	}
+	overrideRows, err := s.q.ListWorkspaceOverrides(ctx, pgUUID(workspaceID))
+	if err != nil {
+		return nil, fmt.Errorf("list channel overrides: %w", err)
+	}
+	byChannel := map[uuid.UUID][]override{}
+	for _, o := range overrideRows {
+		id := uuid.UUID(o.ChannelID.Bytes)
+		byChannel[id] = append(byChannel[id], override{roleID: o.RoleID, allow: o.Allow, deny: o.Deny, everyone: o.IsDefault})
+	}
 	out := make([]Channel, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toChannel(row))
+		out = append(out, toChannel(row, byChannel[uuid.UUID(row.ID.Bytes)]))
 	}
 	return out, nil
+}
+
+// SetReadOnly turns «only those who may manage write here» on or off: an
+// @everyone override that denies writing and speaking. Other bits of that
+// override stay as they are.
+func (s *PostgresStore) SetReadOnly(ctx context.Context, channel Channel, readOnly bool) error {
+	everyone, err := s.q.GetDefaultRole(ctx, pgUUID(channel.WorkspaceID))
+	if err != nil {
+		return fmt.Errorf("get @everyone: %w", err)
+	}
+	current, err := s.q.GetChannelOverride(ctx, db.GetChannelOverrideParams{ChannelID: pgUUID(channel.ID), RoleID: everyone.ID})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("get @everyone override: %w", err)
+	}
+	quiet := int64(perms.SendMessages | perms.Speak)
+	allow, deny := current.Allow&^quiet, current.Deny&^quiet
+	if readOnly {
+		deny |= quiet
+	}
+	if allow == 0 && deny == 0 {
+		if err := s.q.DeleteChannelOverride(ctx, db.DeleteChannelOverrideParams{ChannelID: pgUUID(channel.ID), RoleID: everyone.ID}); err != nil {
+			return fmt.Errorf("delete @everyone override: %w", err)
+		}
+		return nil
+	}
+	if err := s.q.SetChannelOverride(ctx, db.SetChannelOverrideParams{
+		ChannelID: pgUUID(channel.ID), RoleID: everyone.ID, Allow: allow, Deny: deny,
+	}); err != nil {
+		return fmt.Errorf("set @everyone override: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) Update(ctx context.Context, id uuid.UUID, u Update) (Channel, error) {
@@ -86,9 +136,6 @@ func (s *PostgresStore) Update(ctx context.Context, id uuid.UUID, u Update) (Cha
 		params.ClearTopic = *u.Topic == ""
 		params.Topic = text(*u.Topic)
 	}
-	if u.IsReadOnly != nil {
-		params.IsReadOnly = pgtype.Bool{Bool: *u.IsReadOnly, Valid: true}
-	}
 
 	row, err := s.q.UpdateChannel(ctx, params)
 	if err != nil {
@@ -101,7 +148,7 @@ func (s *PostgresStore) Update(ctx context.Context, id uuid.UUID, u Update) (Cha
 		}
 		return Channel{}, fmt.Errorf("update channel: %w", err)
 	}
-	return toChannel(row), nil
+	return s.Channel(ctx, uuid.UUID(row.ID.Bytes))
 }
 
 func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
@@ -141,17 +188,36 @@ func (s *PostgresStore) Reorder(ctx context.Context, workspaceID uuid.UUID, ids 
 	return nil
 }
 
-func toChannel(row db.Channel) Channel {
-	return Channel{
+// override is one stored override with whether its role is @everyone.
+type override struct {
+	roleID      pgtype.UUID
+	allow, deny int64
+	everyone    bool
+}
+
+func toChannel(row db.Channel, overrides []override) Channel {
+	channel := Channel{
 		ID:          uuid.UUID(row.ID.Bytes),
 		WorkspaceID: uuid.UUID(row.WorkspaceID.Bytes),
 		Kind:        Kind(row.Kind),
 		Name:        row.Name.String,
 		Topic:       row.Topic.String,
 		Position:    int(row.Position),
-		IsReadOnly:  row.IsReadOnly,
 		CreatedAt:   row.CreatedAt.Time,
 	}
+	for _, o := range overrides {
+		deny := perms.Set(o.deny) //nolint:gosec // stored from a perms.Set
+		channel.Overrides = append(channel.Overrides, perms.Override{
+			RoleID: uuid.UUID(o.roleID.Bytes),
+			Allow:  perms.Set(o.allow), //nolint:gosec // stored from a perms.Set
+			Deny:   deny,
+		})
+		// The old «only admins write» is @everyone not writing here.
+		if o.everyone && deny.Has(perms.SendMessages) {
+			channel.IsReadOnly = true
+		}
+	}
+	return channel
 }
 
 func pgUUID(id uuid.UUID) pgtype.UUID {

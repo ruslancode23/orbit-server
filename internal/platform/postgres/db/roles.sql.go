@@ -77,6 +77,27 @@ func (q *Queries) DeleteChannelOverride(ctx context.Context, arg DeleteChannelOv
 	return err
 }
 
+const getChannelOverride = `-- name: GetChannelOverride :one
+SELECT allow, deny FROM channel_role_overrides WHERE channel_id = $1 AND role_id = $2
+`
+
+type GetChannelOverrideParams struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	RoleID    pgtype.UUID `json:"role_id"`
+}
+
+type GetChannelOverrideRow struct {
+	Allow int64 `json:"allow"`
+	Deny  int64 `json:"deny"`
+}
+
+func (q *Queries) GetChannelOverride(ctx context.Context, arg GetChannelOverrideParams) (GetChannelOverrideRow, error) {
+	row := q.db.QueryRow(ctx, getChannelOverride, arg.ChannelID, arg.RoleID)
+	var i GetChannelOverrideRow
+	err := row.Scan(&i.Allow, &i.Deny)
+	return i, err
+}
+
 const getDefaultRole = `-- name: GetDefaultRole :one
 SELECT id, workspace_id, name, color, hoist, position, permissions, is_default, created_at FROM server_roles WHERE workspace_id = $1 AND is_default
 `
@@ -116,13 +137,17 @@ func (q *Queries) GrantRole(ctx context.Context, arg GrantRoleParams) error {
 }
 
 const listChannelOverrides = `-- name: ListChannelOverrides :many
-SELECT role_id, allow, deny FROM channel_role_overrides WHERE channel_id = $1
+SELECT overrides.role_id, overrides.allow, overrides.deny, roles.is_default
+FROM channel_role_overrides overrides
+    JOIN server_roles roles ON roles.id = overrides.role_id
+WHERE overrides.channel_id = $1
 `
 
 type ListChannelOverridesRow struct {
-	RoleID pgtype.UUID `json:"role_id"`
-	Allow  int64       `json:"allow"`
-	Deny   int64       `json:"deny"`
+	RoleID    pgtype.UUID `json:"role_id"`
+	Allow     int64       `json:"allow"`
+	Deny      int64       `json:"deny"`
+	IsDefault bool        `json:"is_default"`
 }
 
 func (q *Queries) ListChannelOverrides(ctx context.Context, channelID pgtype.UUID) ([]ListChannelOverridesRow, error) {
@@ -134,7 +159,12 @@ func (q *Queries) ListChannelOverrides(ctx context.Context, channelID pgtype.UUI
 	items := []ListChannelOverridesRow{}
 	for rows.Next() {
 		var i ListChannelOverridesRow
-		if err := rows.Scan(&i.RoleID, &i.Allow, &i.Deny); err != nil {
+		if err := rows.Scan(
+			&i.RoleID,
+			&i.Allow,
+			&i.Deny,
+			&i.IsDefault,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -208,27 +238,37 @@ func (q *Queries) ListWorkspaceMemberRoles(ctx context.Context, workspaceID pgty
 }
 
 const listWorkspaceOverrides = `-- name: ListWorkspaceOverrides :many
-SELECT overrides.channel_id, overrides.role_id, overrides.allow, overrides.deny
+SELECT overrides.channel_id, overrides.role_id, overrides.allow, overrides.deny, roles.is_default
 FROM channel_role_overrides overrides
     JOIN channels ON channels.id = overrides.channel_id
+    JOIN server_roles roles ON roles.id = overrides.role_id
 WHERE channels.workspace_id = $1
 `
 
+type ListWorkspaceOverridesRow struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	RoleID    pgtype.UUID `json:"role_id"`
+	Allow     int64       `json:"allow"`
+	Deny      int64       `json:"deny"`
+	IsDefault bool        `json:"is_default"`
+}
+
 // The overrides of every channel of a server, for a channel list in one query.
-func (q *Queries) ListWorkspaceOverrides(ctx context.Context, workspaceID pgtype.UUID) ([]ChannelRoleOverride, error) {
+func (q *Queries) ListWorkspaceOverrides(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceOverridesRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceOverrides, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ChannelRoleOverride{}
+	items := []ListWorkspaceOverridesRow{}
 	for rows.Next() {
-		var i ChannelRoleOverride
+		var i ListWorkspaceOverridesRow
 		if err := rows.Scan(
 			&i.ChannelID,
 			&i.RoleID,
 			&i.Allow,
 			&i.Deny,
+			&i.IsDefault,
 		); err != nil {
 			return nil, err
 		}

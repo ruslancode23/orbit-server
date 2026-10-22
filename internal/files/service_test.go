@@ -174,7 +174,17 @@ func (p *fakePermissions) RequirePermission(_ context.Context, workspaceID, user
 	if !ok {
 		return "", servers.ErrNotMember
 	}
-	if !p.perms[workspaceID].Allows(role, permission) {
+	// The owner and admins may always; members as the server's flags say.
+	if role == servers.RoleOwner || role == servers.RoleAdmin {
+		return role, nil
+	}
+	flags := p.perms[workspaceID]
+	allowed := map[servers.Permission]bool{
+		servers.PermissionInvite:         flags.Invite,
+		servers.PermissionCreateChannels: flags.CreateChannels,
+		servers.PermissionAttachFiles:    flags.AttachFiles,
+	}[permission]
+	if !allowed {
 		return role, servers.ErrForbidden
 	}
 	return role, nil

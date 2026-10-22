@@ -100,7 +100,7 @@ func (s *fakeStore) Workspace(_ context.Context, id uuid.UUID) (Workspace, error
 	return w, nil
 }
 
-func (s *fakeStore) UpdateWorkspace(_ context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
+func (s *fakeStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
 	w, ok := s.workspaces[id]
 	if !ok {
 		return Workspace{}, ErrNotMember
@@ -112,7 +112,7 @@ func (s *fakeStore) UpdateWorkspace(_ context.Context, id uuid.UUID, u Workspace
 		w.Description = *u.Description
 	}
 	s.workspaces[id] = w
-	return s.Workspace(context.Background(), id)
+	return s.Workspace(ctx, id)
 }
 
 func (s *fakeStore) SetEveryone(_ context.Context, workspaceID uuid.UUID, permissions perms.Set) error {
@@ -181,11 +181,11 @@ func (s *fakeStore) DeleteWorkspace(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *fakeStore) ListMemberships(_ context.Context, userID uuid.UUID) ([]Membership, error) {
+func (s *fakeStore) ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
 	var out []Membership
 	for id, members := range s.members {
 		if _, ok := members[userID]; ok {
-			workspace, _ := s.Workspace(context.Background(), id)
+			workspace, _ := s.Workspace(ctx, id)
 			access := s.access(id, userID)
 			out = append(out, Membership{Workspace: workspace, Role: access.Role(), Permissions: access.Base()})
 		}

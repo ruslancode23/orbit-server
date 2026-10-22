@@ -13,6 +13,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 )
 
 // fakeStore keeps messages in memory with the rules the database enforces:
@@ -196,6 +197,8 @@ type fakeChannels struct {
 	// readers and writers hold who may read and write each channel.
 	readers map[uuid.UUID]map[uuid.UUID]bool
 	writers map[uuid.UUID]map[uuid.UUID]bool
+	// managers may delete anyone's messages wherever they may read.
+	managers map[uuid.UUID]bool
 }
 
 func (c *fakeChannels) Get(_ context.Context, channelID, callerID uuid.UUID) (channels.View, error) {
@@ -203,7 +206,11 @@ func (c *fakeChannels) Get(_ context.Context, channelID, callerID uuid.UUID) (ch
 	if !ok || !c.readers[channelID][callerID] {
 		return channels.View{}, channels.ErrNotFound
 	}
-	return channels.View{Channel: channel, CanWrite: c.writers[channelID][callerID]}, nil
+	view := channels.View{Channel: channel, CanWrite: c.writers[channelID][callerID], Permissions: perms.ViewChannel}
+	if c.managers[callerID] {
+		view.Permissions |= perms.ManageMessages
+	}
+	return view, nil
 }
 
 func (c *fakeChannels) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, error) {
@@ -287,6 +294,7 @@ func newWorld(t *testing.T) world {
 		store: newFakeStore(),
 	}
 	w.access = &fakeChannels{
+		managers: map[uuid.UUID]bool{w.admin: true},
 		channels: map[uuid.UUID]channels.Channel{
 			w.channel:  {ID: w.channel, WorkspaceID: w.workspace, Name: "общий"},
 			w.readOnly: {ID: w.readOnly, WorkspaceID: w.workspace, Name: "объявления", IsReadOnly: true},
@@ -542,6 +550,31 @@ func TestDeletedMessageStaysInHistory(t *testing.T) {
 	}
 	if page.Messages[0].Content != "" {
 		t.Errorf("content = %q, want it empty", page.Messages[0].Content)
+	}
+}
+
+// manageMessages lets a moderator delete anyone's message in a server channel;
+// without it only the author may. A conversation has no moderators.
+func TestModeratorDeletesOthersMessages(t *testing.T) {
+	w := newWorld(t)
+	annas := send(t, w, w.anna, "c-1", "спам")
+	if _, err := w.svc.Delete(t.Context(), annas.ID, w.bob); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("a member deleted another's message: err = %v", err)
+	}
+	deleted, err := w.svc.Delete(t.Context(), annas.ID, w.admin)
+	if err != nil {
+		t.Fatalf("moderator Delete: %v", err)
+	}
+	if deleted.DeletedAt == nil {
+		t.Error("the message is not marked deleted")
+	}
+
+	direct, _, err := w.svc.Send(t.Context(), w.bob, NewMessage{ChannelID: w.direct, ClientMessageID: "d-1", Content: "лично"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := w.svc.Delete(t.Context(), direct.ID, w.anna); !errors.Is(err, ErrForbidden) {
+		t.Errorf("a participant deleted the other's message in a dialogue: err = %v", err)
 	}
 }
 

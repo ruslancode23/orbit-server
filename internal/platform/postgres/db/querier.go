@@ -118,6 +118,7 @@ type Querier interface {
 	FriendshipPair(ctx context.Context, arg FriendshipPairParams) (FriendshipPairRow, error)
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
+	GetChannelOverride(ctx context.Context, arg GetChannelOverrideParams) (GetChannelOverrideRow, error)
 	GetDMPolicy(ctx context.Context, id pgtype.UUID) (string, error)
 	GetDefaultRole(ctx context.Context, workspaceID pgtype.UUID) (ServerRole, error)
 	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
@@ -258,7 +259,7 @@ type Querier interface {
 	// plus their own roles.
 	ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error)
 	// The overrides of every channel of a server, for a channel list in one query.
-	ListWorkspaceOverrides(ctx context.Context, workspaceID pgtype.UUID) ([]ChannelRoleOverride, error)
+	ListWorkspaceOverrides(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceOverridesRow, error)
 	ListWorkspaceRoles(ctx context.Context, workspaceID pgtype.UUID) ([]ServerRole, error)
 	// The row lock serialises two additions to one group, so both cannot pass the
 	// same maxMembers count.

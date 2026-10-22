@@ -626,3 +626,45 @@ func TestPersonalEventRightAfterTheHandshakeArrives(t *testing.T) {
 		t.Errorf("frame = %v, want privacy.changed", frame)
 	}
 }
+
+type fakeVisibility map[uuid.UUID]bool
+
+func (v fakeVisibility) Visible(context.Context, uuid.UUID, uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(v))
+	for id, seen := range v {
+		out[id] = seen
+	}
+	return out, nil
+}
+
+// A channel hidden from this account sends it nothing, not even that something
+// happened there; a channel it sees and a server-wide event go through.
+func TestEventsOfHiddenChannelsStayBack(t *testing.T) {
+	ts := newTestServer(t)
+	hidden := uuid.New()
+	handler := NewHandler(ts.hub, ts.members, ts.history, []string{"*"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler.SetChannels(fakeVisibility{ts.channel: true})
+	withSession := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := auth.WithSession(r.Context(), auth.Session{ID: uuid.New(), User: auth.User{ID: ts.user}})
+		handler.ServeHTTP(w, r.WithContext(ctx))
+	})
+	srv := httptest.NewServer(withSession)
+	t.Cleanup(srv.Close)
+	ts.url = "ws" + srv.URL[len("http"):]
+	conn := ts.dial(t)
+
+	write(t, conn, map[string]any{"type": "subscribe", "workspaceId": ts.workspace})
+	read(t, conn) // subscribed
+	waitFor(t, func() bool { return ts.hub.Subscribers(ts.workspace) == 1 })
+
+	ts.hub.Publish(events.Event{Kind: events.KindMessageCreated, WorkspaceID: ts.workspace, ChannelID: hidden, Seq: 1})
+	ts.hub.Publish(events.Event{Kind: events.KindMessageCreated, WorkspaceID: ts.workspace, ChannelID: ts.channel, Seq: 2})
+	ts.hub.Publish(events.Event{Kind: events.KindPresenceUpdated, WorkspaceID: ts.workspace})
+
+	if frame := read(t, conn); frame["channelId"] != ts.channel.String() {
+		t.Fatalf("first frame = %v, want the visible channel's message", frame)
+	}
+	if frame := read(t, conn); frame["type"] != string(events.KindPresenceUpdated) {
+		t.Errorf("second frame = %v, want the server-wide presence event", frame)
+	}
+}

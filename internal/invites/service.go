@@ -14,6 +14,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -85,6 +86,9 @@ type Members interface {
 	MemberCount(ctx context.Context, workspaceID uuid.UUID) (int, error)
 	// Authorize reports the role of an account on a server, or servers.ErrNotMember.
 	Authorize(ctx context.Context, workspaceID, userID uuid.UUID) (servers.Role, error)
+	// Require is the caller's standing when their roles grant every permission
+	// in want: servers.ErrNotMember or servers.ErrForbidden otherwise.
+	Require(ctx context.Context, workspaceID, userID uuid.UUID, want perms.Set) (servers.Access, error)
 	// AnnounceToStaff tells the admins and the owner that the links changed.
 	AnnounceToStaff(ctx context.Context, event events.Event)
 }
@@ -257,8 +261,9 @@ func (s *Service) join(ctx context.Context, invite Invite, userID uuid.UUID) (se
 	return servers.Membership{Workspace: workspace, Role: member.Role}, nil
 }
 
+// requireAdmin guards the list of links and revoking them: manageServer.
 func (s *Service) requireAdmin(ctx context.Context, workspaceID, callerID uuid.UUID) error {
-	_, err := s.members.RequireAtLeast(ctx, workspaceID, callerID, servers.RoleAdmin)
+	_, err := s.members.Require(ctx, workspaceID, callerID, perms.ManageServer)
 	return mapRoleError(err)
 }
 

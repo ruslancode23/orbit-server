@@ -53,13 +53,17 @@ WHERE held.role_id = roles.id
 SELECT coalesce(max(position), 0)::integer FROM server_roles WHERE workspace_id = $1;
 
 -- name: ListChannelOverrides :many
-SELECT role_id, allow, deny FROM channel_role_overrides WHERE channel_id = $1;
+SELECT overrides.role_id, overrides.allow, overrides.deny, roles.is_default
+FROM channel_role_overrides overrides
+    JOIN server_roles roles ON roles.id = overrides.role_id
+WHERE overrides.channel_id = $1;
 
 -- The overrides of every channel of a server, for a channel list in one query.
 -- name: ListWorkspaceOverrides :many
-SELECT overrides.channel_id, overrides.role_id, overrides.allow, overrides.deny
+SELECT overrides.channel_id, overrides.role_id, overrides.allow, overrides.deny, roles.is_default
 FROM channel_role_overrides overrides
     JOIN channels ON channels.id = overrides.channel_id
+    JOIN server_roles roles ON roles.id = overrides.role_id
 WHERE channels.workspace_id = $1;
 
 -- name: SetChannelOverride :exec
@@ -72,3 +76,6 @@ DELETE FROM channel_role_overrides WHERE channel_id = $1 AND role_id = $2;
 
 -- name: GetDefaultRole :one
 SELECT * FROM server_roles WHERE workspace_id = $1 AND is_default;
+
+-- name: GetChannelOverride :one
+SELECT allow, deny FROM channel_role_overrides WHERE channel_id = $1 AND role_id = $2;
