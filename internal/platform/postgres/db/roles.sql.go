@@ -11,6 +11,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const compactRolePositions = `-- name: CompactRolePositions :exec
+UPDATE server_roles roles
+SET position = ranked.rank
+FROM (
+    SELECT inner_roles.id, row_number() OVER (ORDER BY inner_roles.position)::integer AS rank
+    FROM server_roles inner_roles
+    WHERE inner_roles.workspace_id = $1 AND NOT inner_roles.is_default
+) ranked
+WHERE roles.id = ranked.id
+`
+
+// Closes the gap a deleted role leaves, so positions stay 1..n.
+func (q *Queries) CompactRolePositions(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, compactRolePositions, workspaceID)
+	return err
+}
+
 const createRole = `-- name: CreateRole :one
 
 INSERT INTO server_roles (workspace_id, name, color, hoist, position, permissions, is_default)
@@ -77,6 +94,18 @@ func (q *Queries) DeleteChannelOverride(ctx context.Context, arg DeleteChannelOv
 	return err
 }
 
+const deleteRole = `-- name: DeleteRole :execrows
+DELETE FROM server_roles WHERE id = $1 AND NOT is_default
+`
+
+func (q *Queries) DeleteRole(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRole, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getChannelOverride = `-- name: GetChannelOverride :one
 SELECT allow, deny FROM channel_role_overrides WHERE channel_id = $1 AND role_id = $2
 `
@@ -104,6 +133,27 @@ SELECT id, workspace_id, name, color, hoist, position, permissions, is_default, 
 
 func (q *Queries) GetDefaultRole(ctx context.Context, workspaceID pgtype.UUID) (ServerRole, error) {
 	row := q.db.QueryRow(ctx, getDefaultRole, workspaceID)
+	var i ServerRole
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Color,
+		&i.Hoist,
+		&i.Position,
+		&i.Permissions,
+		&i.IsDefault,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRole = `-- name: GetRole :one
+SELECT id, workspace_id, name, color, hoist, position, permissions, is_default, created_at FROM server_roles WHERE id = $1
+`
+
+func (q *Queries) GetRole(ctx context.Context, id pgtype.UUID) (ServerRole, error) {
+	row := q.db.QueryRow(ctx, getRole, id)
 	var i ServerRole
 	err := row.Scan(
 		&i.ID,
@@ -328,6 +378,24 @@ func (q *Queries) MaxRolePosition(ctx context.Context, workspaceID pgtype.UUID) 
 	return column_1, err
 }
 
+const revokeRole = `-- name: RevokeRole :execrows
+DELETE FROM server_member_roles WHERE workspace_id = $1 AND user_id = $2 AND role_id = $3
+`
+
+type RevokeRoleParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	RoleID      pgtype.UUID `json:"role_id"`
+}
+
+func (q *Queries) RevokeRole(ctx context.Context, arg RevokeRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeRole, arg.WorkspaceID, arg.UserID, arg.RoleID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokeRolesWithPermissions = `-- name: RevokeRolesWithPermissions :execrows
 DELETE FROM server_member_roles held
 USING server_roles roles
@@ -389,4 +457,78 @@ type SetDefaultRolePermissionsParams struct {
 func (q *Queries) SetDefaultRolePermissions(ctx context.Context, arg SetDefaultRolePermissionsParams) error {
 	_, err := q.db.Exec(ctx, setDefaultRolePermissions, arg.Permissions, arg.WorkspaceID)
 	return err
+}
+
+const setRolePosition = `-- name: SetRolePosition :execrows
+UPDATE server_roles SET position = $1
+WHERE id = $2 AND workspace_id = $3 AND NOT is_default
+`
+
+type SetRolePositionParams struct {
+	Position    int32       `json:"position"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) SetRolePosition(ctx context.Context, arg SetRolePositionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setRolePosition, arg.Position, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const shiftRolesUp = `-- name: ShiftRolesUp :exec
+UPDATE server_roles SET position = position + 1
+WHERE workspace_id = $1 AND NOT is_default
+`
+
+// Makes room just above @everyone for a new role.
+func (q *Queries) ShiftRolesUp(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, shiftRolesUp, workspaceID)
+	return err
+}
+
+const updateRole = `-- name: UpdateRole :one
+UPDATE server_roles
+SET name        = coalesce($1, name),
+    color       = CASE WHEN $2::bool THEN NULL ELSE coalesce($3, color) END,
+    hoist       = coalesce($4, hoist),
+    permissions = coalesce($5, permissions)
+WHERE id = $6
+RETURNING id, workspace_id, name, color, hoist, position, permissions, is_default, created_at
+`
+
+type UpdateRoleParams struct {
+	Name        pgtype.Text `json:"name"`
+	ClearColor  bool        `json:"clear_color"`
+	Color       pgtype.Text `json:"color"`
+	Hoist       pgtype.Bool `json:"hoist"`
+	Permissions pgtype.Int8 `json:"permissions"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// Only what is sent changes; clear_color removes the colour.
+func (q *Queries) UpdateRole(ctx context.Context, arg UpdateRoleParams) (ServerRole, error) {
+	row := q.db.QueryRow(ctx, updateRole,
+		arg.Name,
+		arg.ClearColor,
+		arg.Color,
+		arg.Hoist,
+		arg.Permissions,
+		arg.ID,
+	)
+	var i ServerRole
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Color,
+		&i.Hoist,
+		&i.Position,
+		&i.Permissions,
+		&i.IsDefault,
+		&i.CreatedAt,
+	)
+	return i, err
 }

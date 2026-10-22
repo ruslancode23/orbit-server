@@ -29,6 +29,10 @@ const (
 	// former member's personal stream, so the server leaves every client's rail
 	// even where it was not the one open; the frame names it in workspaceId.
 	KindWorkspaceDeleted Kind = "workspace.deleted"
+	// KindRolesChanged says the roles of a server changed: made, edited,
+	// reordered or deleted. Every member hears it — colours, groups and what
+	// each of them may do follow the roles. No payload: clients ask again.
+	KindRolesChanged Kind = "roles.changed"
 	// KindInvitesChanged says the invite links of a server changed: one was
 	// made, used or revoked. Only admins and the owner hear it — the list is
 	// theirs. No payload: the client asks for the list again.

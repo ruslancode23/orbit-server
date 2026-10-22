@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
@@ -132,13 +133,27 @@ type fakeChannels struct {
 	channel channels.Channel
 	readers map[uuid.UUID]bool
 	writers map[uuid.UUID]bool
+	// others are channels of other servers its readers also read.
+	others map[uuid.UUID]channels.Channel
+	// perms answers whether the server lets the account attach files.
+	perms *fakePermissions
 }
 
-func (c *fakeChannels) Get(_ context.Context, channelID, callerID uuid.UUID) (channels.View, error) {
-	if channelID != c.channel.ID || !c.readers[callerID] {
+func (c *fakeChannels) Get(ctx context.Context, channelID, callerID uuid.UUID) (channels.View, error) {
+	channel, ok := c.others[channelID]
+	if channelID == c.channel.ID {
+		channel, ok = c.channel, true
+	}
+	if !ok || !c.readers[callerID] {
 		return channels.View{}, channels.ErrNotFound
 	}
-	return channels.View{Channel: c.channel, CanWrite: c.writers[callerID]}, nil
+	view := channels.View{Channel: channel, CanWrite: c.writers[callerID], Permissions: perms.ViewChannel}
+	if c.perms != nil {
+		if _, err := c.perms.RequirePermission(ctx, channel.WorkspaceID, callerID, servers.PermissionAttachFiles); err == nil {
+			view.Permissions |= perms.AttachFiles
+		}
+	}
+	return view, nil
 }
 
 func (c *fakeChannels) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, error) {
@@ -225,6 +240,7 @@ func newWorld(t *testing.T) world {
 		},
 		perms: map[uuid.UUID]servers.Permissions{workspaceID: servers.DefaultPermissions()},
 	}
+	access.perms = w.perms
 	w.svc = NewService(w.store, w.storage, access, w.messages, w.perms, maxBytes, time.Minute)
 	return w
 }

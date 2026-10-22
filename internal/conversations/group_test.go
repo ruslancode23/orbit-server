@@ -11,6 +11,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 )
 
 // systemRecorder keeps the feed lines the service asks for, so a test can check
@@ -53,6 +54,8 @@ func (s *fakeChannelStore) Update(context.Context, uuid.UUID, channels.Update) (
 }
 
 func (s *fakeChannelStore) Delete(context.Context, uuid.UUID) error { return nil }
+
+func (s *fakeChannelStore) SetOverride(context.Context, uuid.UUID, perms.Override) error { return nil }
 
 func (s *fakeChannelStore) SetReadOnly(context.Context, channels.Channel, bool) error { return nil }
 

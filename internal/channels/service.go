@@ -105,6 +105,8 @@ type Store interface {
 	Reorder(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) error
 	// SetReadOnly turns the @everyone «no writing, no speaking» override on or off.
 	SetReadOnly(ctx context.Context, channel Channel, readOnly bool) error
+	// SetOverride writes one role's override; empty allow and deny remove it.
+	SetOverride(ctx context.Context, channelID uuid.UUID, override perms.Override) error
 }
 
 // Participants answers who is in a conversation — a channel without a server

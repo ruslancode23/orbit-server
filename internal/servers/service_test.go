@@ -22,8 +22,9 @@ type fakeStore struct {
 	bans     map[uuid.UUID]map[uuid.UUID]Ban
 	accounts map[uuid.UUID]profile.Public
 	// roles of each server, @everyone first, and the roles each member holds.
-	roles map[uuid.UUID][]perms.Role
-	held  map[uuid.UUID]map[uuid.UUID][]uuid.UUID
+	roles     map[uuid.UUID][]perms.Role
+	held      map[uuid.UUID]map[uuid.UUID][]uuid.UUID
+	roleNames map[uuid.UUID]string
 }
 
 func newFakeStore() *fakeStore {
@@ -62,6 +63,7 @@ func (s *fakeStore) presented(workspaceID uuid.UUID, member Member) Member {
 	access := s.access(workspaceID, member.User.ID)
 	member.Role = access.Role()
 	member.Permissions = access.Base()
+	member.RoleIDs = s.held[workspaceID][member.User.ID]
 	return member
 }
 
@@ -143,6 +145,92 @@ func (s *fakeStore) GrantAdmin(_ context.Context, workspaceID, userID uuid.UUID)
 	if !slices.Contains(s.held[workspaceID][userID], adminID) {
 		s.held[workspaceID][userID] = append(s.held[workspaceID][userID], adminID)
 	}
+	return nil
+}
+
+func (s *fakeStore) Roles(_ context.Context, workspaceID uuid.UUID) ([]ServerRole, error) {
+	roles := slices.Clone(s.roles[workspaceID])
+	slices.SortFunc(roles, func(a, b perms.Role) int { return b.Position - a.Position })
+	out := make([]ServerRole, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, ServerRole{ID: r.ID, WorkspaceID: workspaceID, Name: s.roleNames[r.ID], Position: r.Position, Permissions: r.Permissions, Default: r.Default})
+	}
+	return out, nil
+}
+
+func (s *fakeStore) RoleByID(ctx context.Context, roleID uuid.UUID) (ServerRole, error) {
+	for workspaceID := range s.roles {
+		roles, _ := s.Roles(ctx, workspaceID)
+		for _, role := range roles {
+			if role.ID == roleID {
+				return role, nil
+			}
+		}
+	}
+	return ServerRole{}, ErrRoleNotFound
+}
+
+func (s *fakeStore) CreateRole(_ context.Context, workspaceID uuid.UUID, n NewRole) (ServerRole, error) {
+	for i, role := range s.roles[workspaceID] {
+		if !role.Default {
+			s.roles[workspaceID][i].Position++
+		}
+	}
+	role := perms.Role{ID: uuid.New(), Position: 1, Permissions: n.Permissions}
+	s.roles[workspaceID] = append(s.roles[workspaceID], role)
+	if s.roleNames == nil {
+		s.roleNames = map[uuid.UUID]string{}
+	}
+	s.roleNames[role.ID] = n.Name
+	return ServerRole{ID: role.ID, WorkspaceID: workspaceID, Name: n.Name, Color: n.Color, Hoist: n.Hoist, Position: 1, Permissions: n.Permissions}, nil
+}
+
+func (s *fakeStore) UpdateRole(ctx context.Context, roleID uuid.UUID, u RoleUpdate) (ServerRole, error) {
+	for workspaceID, roles := range s.roles {
+		for i, role := range roles {
+			if role.ID != roleID {
+				continue
+			}
+			if u.Permissions != nil {
+				s.roles[workspaceID][i].Permissions = *u.Permissions
+			}
+			if u.Name != nil {
+				s.roleNames[roleID] = *u.Name
+			}
+			return s.RoleByID(ctx, roleID)
+		}
+	}
+	return ServerRole{}, ErrRoleNotFound
+}
+
+func (s *fakeStore) DeleteRole(_ context.Context, workspaceID, roleID uuid.UUID) error {
+	s.roles[workspaceID] = slices.DeleteFunc(s.roles[workspaceID], func(r perms.Role) bool { return r.ID == roleID })
+	for user, held := range s.held[workspaceID] {
+		s.held[workspaceID][user] = slices.DeleteFunc(held, func(id uuid.UUID) bool { return id == roleID })
+	}
+	return nil
+}
+
+func (s *fakeStore) SetRoleOrder(_ context.Context, workspaceID uuid.UUID, ids []uuid.UUID) error {
+	for i, id := range ids {
+		for j, role := range s.roles[workspaceID] {
+			if role.ID == id {
+				s.roles[workspaceID][j].Position = len(ids) - i
+			}
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) GrantRole(_ context.Context, workspaceID, userID, roleID uuid.UUID) error {
+	if !slices.Contains(s.held[workspaceID][userID], roleID) {
+		s.held[workspaceID][userID] = append(s.held[workspaceID][userID], roleID)
+	}
+	return nil
+}
+
+func (s *fakeStore) RevokeRole(_ context.Context, workspaceID, userID, roleID uuid.UUID) error {
+	s.held[workspaceID][userID] = slices.DeleteFunc(s.held[workspaceID][userID], func(id uuid.UUID) bool { return id == roleID })
 	return nil
 }
 

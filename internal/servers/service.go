@@ -137,6 +137,8 @@ type Member struct {
 	JoinedAt time.Time
 	// Permissions is what the member may do on the server before any channel.
 	Permissions perms.Set
+	// RoleIDs are the roles granted to the member; @everyone is implied.
+	RoleIDs []uuid.UUID
 }
 
 type Ban struct {
@@ -172,6 +174,19 @@ type Store interface {
 	// administrator. The old API's «admin» lives on through them.
 	GrantAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error
 	RevokeAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error
+	// Roles are the roles of a server, highest first, @everyone last.
+	Roles(ctx context.Context, workspaceID uuid.UUID) ([]ServerRole, error)
+	// RoleByID returns ErrRoleNotFound when there is no such role.
+	RoleByID(ctx context.Context, roleID uuid.UUID) (ServerRole, error)
+	// CreateRole puts the role just above @everyone and moves the rest up.
+	CreateRole(ctx context.Context, workspaceID uuid.UUID, n NewRole) (ServerRole, error)
+	UpdateRole(ctx context.Context, roleID uuid.UUID, u RoleUpdate) (ServerRole, error)
+	// DeleteRole removes the role and closes the gap in the order.
+	DeleteRole(ctx context.Context, workspaceID, roleID uuid.UUID) error
+	// SetRoleOrder writes the order of every role but @everyone, highest first.
+	SetRoleOrder(ctx context.Context, workspaceID uuid.UUID, ids []uuid.UUID) error
+	GrantRole(ctx context.Context, workspaceID, userID, roleID uuid.UUID) error
+	RevokeRole(ctx context.Context, workspaceID, userID, roleID uuid.UUID) error
 	SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	AddMember(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID) error

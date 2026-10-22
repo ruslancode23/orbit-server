@@ -16,6 +16,7 @@ import (
 type staffServer struct {
 	workspace, everyone, staff uuid.UUID
 	members                    map[uuid.UUID][]uuid.UUID
+	owner                      uuid.UUID
 }
 
 func (s staffServer) Access(_ context.Context, workspaceID, userID uuid.UUID) (servers.Access, error) {
@@ -28,7 +29,7 @@ func (s staffServer) Access(_ context.Context, workspaceID, userID uuid.UUID) (s
 			{ID: s.everyone, Default: true, Permissions: perms.ViewChannel | perms.SendMessages | perms.Speak},
 			{ID: s.staff, Position: 1, Permissions: perms.ManageChannels},
 		}},
-		Member: perms.Member{Roles: held},
+		Member: perms.Member{Roles: held, Owner: userID == s.owner},
 	}, nil
 }
 

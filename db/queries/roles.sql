@@ -79,3 +79,42 @@ SELECT * FROM server_roles WHERE workspace_id = $1 AND is_default;
 
 -- name: GetChannelOverride :one
 SELECT allow, deny FROM channel_role_overrides WHERE channel_id = $1 AND role_id = $2;
+
+-- name: GetRole :one
+SELECT * FROM server_roles WHERE id = $1;
+
+-- Makes room just above @everyone for a new role.
+-- name: ShiftRolesUp :exec
+UPDATE server_roles SET position = position + 1
+WHERE workspace_id = $1 AND NOT is_default;
+
+-- Only what is sent changes; clear_color removes the colour.
+-- name: UpdateRole :one
+UPDATE server_roles
+SET name        = coalesce(sqlc.narg(name), name),
+    color       = CASE WHEN sqlc.arg(clear_color)::bool THEN NULL ELSE coalesce(sqlc.narg(color), color) END,
+    hoist       = coalesce(sqlc.narg(hoist), hoist),
+    permissions = coalesce(sqlc.narg(permissions), permissions)
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- name: DeleteRole :execrows
+DELETE FROM server_roles WHERE id = $1 AND NOT is_default;
+
+-- name: SetRolePosition :execrows
+UPDATE server_roles SET position = sqlc.arg(position)
+WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id) AND NOT is_default;
+
+-- name: RevokeRole :execrows
+DELETE FROM server_member_roles WHERE workspace_id = $1 AND user_id = $2 AND role_id = $3;
+
+-- Closes the gap a deleted role leaves, so positions stay 1..n.
+-- name: CompactRolePositions :exec
+UPDATE server_roles roles
+SET position = ranked.rank
+FROM (
+    SELECT inner_roles.id, row_number() OVER (ORDER BY inner_roles.position)::integer AS rank
+    FROM server_roles inner_roles
+    WHERE inner_roles.workspace_id = sqlc.arg(workspace_id) AND NOT inner_roles.is_default
+) ranked
+WHERE roles.id = ranked.id;

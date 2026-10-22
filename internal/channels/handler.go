@@ -9,7 +9,9 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/api"
 	"github.com/ruslancode23/orbit-server/internal/auth"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
 // Handler serves the generated channel operations; every rule lives in Service.
@@ -193,6 +195,8 @@ func toAPIChannel(v View) api.Channel {
 		topic := v.Channel.Topic
 		channel.Topic = &topic
 	}
+	permissions := servers.APIPermissions(v.Permissions)
+	channel.Permissions = &permissions
 	return channel
 }
 
@@ -231,4 +235,84 @@ func internal(message string) api.Error {
 
 func errorBody(code, message string) api.ErrorJSONResponse {
 	return api.ErrorJSONResponse{Error: api.ErrorDetail{Code: code, Message: message}}
+}
+
+func (h *Handler) ListChannelOverrides(ctx context.Context, req api.ListChannelOverridesRequestObject) (api.ListChannelOverridesResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.ListChannelOverrides401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+	overrides, err := h.svc.Overrides(ctx, req.ChannelId, userID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return api.ListChannelOverrides404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrForbidden):
+		return api.ListChannelOverrides403JSONResponse(api.Error(forbidden("you may not manage this channel"))), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "list channel overrides", slog.Any("error", err))
+		return api.ListChannelOverrides500JSONResponse(internal("could not read the overrides")), nil
+	}
+	return api.ListChannelOverrides200JSONResponse(toAPIOverrides(overrides)), nil
+}
+
+func (h *Handler) SetChannelOverride(ctx context.Context, req api.SetChannelOverrideRequestObject) (api.SetChannelOverrideResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.SetChannelOverride401JSONResponse(api.Error(unauthorized())), nil
+	}
+	if req.Body == nil {
+		return api.SetChannelOverride400JSONResponse{ErrorJSONResponse: badRequest("request body is required")}, nil
+	}
+	allow, okAllow := servers.ParsePermissions(req.Body.Allow)
+	deny, okDeny := servers.ParsePermissions(req.Body.Deny)
+	if !okAllow || !okDeny {
+		return api.SetChannelOverride400JSONResponse{ErrorJSONResponse: badRequest("unknown permission")}, nil
+	}
+	return h.writeOverride(ctx, req.ChannelId, userID, perms.Override{RoleID: req.RoleId, Allow: allow, Deny: deny})
+}
+
+func (h *Handler) DeleteChannelOverride(ctx context.Context, req api.DeleteChannelOverrideRequestObject) (api.DeleteChannelOverrideResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.DeleteChannelOverride401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+	_, err := h.svc.SetOverride(ctx, req.ChannelId, userID, perms.Override{RoleID: req.RoleId})
+	switch {
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnknownRole):
+		return api.DeleteChannelOverride404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrForbidden):
+		return api.DeleteChannelOverride403JSONResponse(api.Error(forbidden("you may not change this override"))), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "delete channel override", slog.Any("error", err))
+		return api.DeleteChannelOverride500JSONResponse(internal("could not remove the override")), nil
+	}
+	return api.DeleteChannelOverride204Response{}, nil
+}
+
+func (h *Handler) writeOverride(ctx context.Context, channelID, userID uuid.UUID, override perms.Override) (api.SetChannelOverrideResponseObject, error) {
+	overrides, err := h.svc.SetOverride(ctx, channelID, userID, override)
+	switch {
+	case errors.Is(err, ErrInvalidOverride):
+		return api.SetChannelOverride400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnknownRole):
+		return api.SetChannelOverride404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrForbidden):
+		return api.SetChannelOverride403JSONResponse(api.Error(forbidden("you may not change this override"))), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "set channel override", slog.Any("error", err))
+		return api.SetChannelOverride500JSONResponse(internal("could not change the override")), nil
+	}
+	return api.SetChannelOverride200JSONResponse(toAPIOverrides(overrides)), nil
+}
+
+func toAPIOverrides(overrides []perms.Override) []api.ChannelOverride {
+	out := make([]api.ChannelOverride, 0, len(overrides))
+	for _, o := range overrides {
+		out = append(out, api.ChannelOverride{
+			RoleId: o.RoleID,
+			Allow:  servers.APIPermissions(o.Allow),
+			Deny:   servers.APIPermissions(o.Deny),
+		})
+	}
+	return out
 }

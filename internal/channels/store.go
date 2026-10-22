@@ -195,6 +195,24 @@ type override struct {
 	everyone    bool
 }
 
+func (s *PostgresStore) SetOverride(ctx context.Context, channelID uuid.UUID, o perms.Override) error {
+	if o.Allow == 0 && o.Deny == 0 {
+		if err := s.q.DeleteChannelOverride(ctx, db.DeleteChannelOverrideParams{ChannelID: pgUUID(channelID), RoleID: pgUUID(o.RoleID)}); err != nil {
+			return fmt.Errorf("delete channel override: %w", err)
+		}
+		return nil
+	}
+	if err := s.q.SetChannelOverride(ctx, db.SetChannelOverrideParams{
+		ChannelID: pgUUID(channelID),
+		RoleID:    pgUUID(o.RoleID),
+		Allow:     int64(o.Allow), //nolint:gosec // perms.Set fits in 13 bits
+		Deny:      int64(o.Deny),  //nolint:gosec // perms.Set fits in 13 bits
+	}); err != nil {
+		return fmt.Errorf("set channel override: %w", err)
+	}
+	return nil
+}
+
 func toChannel(row db.Channel, overrides []override) Channel {
 	channel := Channel{
 		ID:          uuid.UUID(row.ID.Bytes),

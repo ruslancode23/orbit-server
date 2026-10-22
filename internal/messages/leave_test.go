@@ -9,6 +9,7 @@ import (
 
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 )
 
 // conversationChannelStore serves the one channel a membership test needs.
@@ -36,6 +37,10 @@ func (s *conversationChannelStore) Update(context.Context, uuid.UUID, channels.U
 }
 
 func (s *conversationChannelStore) Delete(context.Context, uuid.UUID) error { return nil }
+
+func (s *conversationChannelStore) SetOverride(context.Context, uuid.UUID, perms.Override) error {
+	return nil
+}
 
 func (s *conversationChannelStore) SetReadOnly(context.Context, channels.Channel, bool) error {
 	return nil
