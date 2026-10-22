@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/platform/postgres/db"
 	"github.com/ruslancode23/orbit-server/internal/profile"
 )
@@ -33,7 +34,7 @@ var _ Store = (*PostgresStore)(nil)
 
 // CreateWorkspace writes the server and its owner membership together: a server
 // without an owner would be unmanageable.
-func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error) {
+func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, everyone perms.Set, ownerID uuid.UUID) (Workspace, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Workspace{}, fmt.Errorf("begin: %w", err)
@@ -42,15 +43,21 @@ func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, per
 
 	q := s.q.WithTx(tx)
 	row, err := q.CreateWorkspace(ctx, db.CreateWorkspaceParams{
-		Name:                     n.Name,
-		Description:              text(n.Description),
-		OwnerID:                  pgUUID(ownerID),
-		MembersCanInvite:         permissions.Invite,
-		MembersCanCreateChannels: permissions.CreateChannels,
-		MembersCanAttachFiles:    permissions.AttachFiles,
+		Name:        n.Name,
+		Description: text(n.Description),
+		OwnerID:     pgUUID(ownerID),
 	})
 	if err != nil {
 		return Workspace{}, fmt.Errorf("create workspace: %w", err)
+	}
+	if _, err := q.CreateRole(ctx, db.CreateRoleParams{
+		WorkspaceID: row.ID,
+		Name:        everyoneName,
+		Position:    0,
+		Permissions: int64(everyone), //nolint:gosec // perms.Set fits in 13 bits
+		IsDefault:   true,
+	}); err != nil {
+		return Workspace{}, fmt.Errorf("create @everyone: %w", err)
 	}
 	if _, err := q.AddWorkspaceMember(ctx, db.AddWorkspaceMemberParams{
 		WorkspaceID: row.ID,
@@ -62,7 +69,7 @@ func (s *PostgresStore) CreateWorkspace(ctx context.Context, n NewWorkspace, per
 	if err := tx.Commit(ctx); err != nil {
 		return Workspace{}, fmt.Errorf("commit: %w", err)
 	}
-	return toWorkspace(row), nil
+	return toWorkspace(row, int64(everyone)), nil //nolint:gosec // perms.Set fits in 13 bits
 }
 
 func (s *PostgresStore) Workspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
@@ -73,7 +80,7 @@ func (s *PostgresStore) Workspace(ctx context.Context, id uuid.UUID) (Workspace,
 		}
 		return Workspace{}, fmt.Errorf("get workspace: %w", err)
 	}
-	return toWorkspace(row), nil
+	return toWorkspace(row.Workspace, row.EveryonePermissions), nil
 }
 
 func (s *PostgresStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error) {
@@ -85,17 +92,23 @@ func (s *PostgresStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u Wor
 		params.SetDescription = true
 		params.Description = text(*u.Description)
 	}
-	params.MembersCanInvite = pgBool(u.Permissions.Invite)
-	params.MembersCanCreateChannels = pgBool(u.Permissions.CreateChannels)
-	params.MembersCanAttachFiles = pgBool(u.Permissions.AttachFiles)
-	row, err := s.q.UpdateWorkspace(ctx, params)
-	if err != nil {
+	if _, err := s.q.UpdateWorkspace(ctx, params); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Workspace{}, ErrNotMember
 		}
 		return Workspace{}, fmt.Errorf("update workspace: %w", err)
 	}
-	return toWorkspace(row), nil
+	return s.Workspace(ctx, id)
+}
+
+func (s *PostgresStore) SetEveryone(ctx context.Context, workspaceID uuid.UUID, permissions perms.Set) error {
+	if err := s.q.SetDefaultRolePermissions(ctx, db.SetDefaultRolePermissionsParams{
+		WorkspaceID: pgUUID(workspaceID),
+		Permissions: int64(permissions), //nolint:gosec // perms.Set fits in 13 bits
+	}); err != nil {
+		return fmt.Errorf("set @everyone permissions: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) SetIcon(ctx context.Context, id uuid.UUID, key string) (string, error) {
@@ -123,7 +136,18 @@ func (s *PostgresStore) ListMemberships(ctx context.Context, userID uuid.UUID) (
 	}
 	out := make([]Membership, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, Membership{Workspace: toWorkspace(row.Workspace), Role: Role(row.Role)})
+		base := perms.Set(row.BasePermissions) //nolint:gosec // stored from a perms.Set
+		owner := Role(row.Role) == RoleOwner
+		if owner {
+			base = perms.All
+		} else if base.Has(perms.Administrator) {
+			base = perms.All
+		}
+		out = append(out, Membership{
+			Workspace:   toWorkspace(row.Workspace, row.EveryonePermissions),
+			Role:        roleOf(owner, base),
+			Permissions: base,
+		})
 	}
 	return out, nil
 }
@@ -162,22 +186,91 @@ func (s *PostgresStore) Role(ctx context.Context, workspaceID, userID uuid.UUID)
 	return Role(role), nil
 }
 
-func (s *PostgresStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error) {
-	row, err := s.q.GetWorkspaceAccess(ctx, db.GetWorkspaceAccessParams{
+func (s *PostgresStore) Access(ctx context.Context, workspaceID, userID uuid.UUID) (Access, error) {
+	role, err := s.Role(ctx, workspaceID, userID)
+	if err != nil {
+		return Access{}, err
+	}
+	roleRows, err := s.q.ListWorkspaceRoles(ctx, pgUUID(workspaceID))
+	if err != nil {
+		return Access{}, fmt.Errorf("list server roles: %w", err)
+	}
+	held, err := s.q.ListMemberRoleIDs(ctx, db.ListMemberRoleIDsParams{
 		WorkspaceID: pgUUID(workspaceID),
 		UserID:      pgUUID(userID),
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", Permissions{}, ErrNotMember
-		}
-		return "", Permissions{}, fmt.Errorf("get workspace access: %w", err)
+		return Access{}, fmt.Errorf("list member roles: %w", err)
 	}
-	return Role(row.Role), Permissions{
-		Invite:         row.MembersCanInvite,
-		CreateChannels: row.MembersCanCreateChannels,
-		AttachFiles:    row.MembersCanAttachFiles,
-	}, nil
+	access := Access{Member: perms.Member{Owner: role == RoleOwner}}
+	for _, row := range roleRows {
+		access.Server.Roles = append(access.Server.Roles, toPermsRole(row))
+	}
+	for _, id := range held {
+		access.Member.Roles = append(access.Member.Roles, uuid.UUID(id.Bytes))
+	}
+	return access, nil
+}
+
+func (s *PostgresStore) GrantAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	roles, err := q.ListWorkspaceRoles(ctx, pgUUID(workspaceID))
+	if err != nil {
+		return fmt.Errorf("list server roles: %w", err)
+	}
+	// The lowest role that grants administrator and nothing else is the
+	// server's «Администратор»; roles come highest first.
+	var adminRole pgtype.UUID
+	for _, role := range roles {
+		if !role.IsDefault && role.Permissions == int64(perms.Administrator) {
+			adminRole = role.ID
+		}
+	}
+	if !adminRole.Valid {
+		top, err := q.MaxRolePosition(ctx, pgUUID(workspaceID))
+		if err != nil {
+			return fmt.Errorf("top role position: %w", err)
+		}
+		created, err := q.CreateRole(ctx, db.CreateRoleParams{
+			WorkspaceID: pgUUID(workspaceID),
+			Name:        adminRoleName,
+			Hoist:       true,
+			Position:    top + 1,
+			Permissions: int64(perms.Administrator),
+		})
+		if err != nil {
+			return fmt.Errorf("create administrator role: %w", err)
+		}
+		adminRole = created.ID
+	}
+	if err := q.GrantRole(ctx, db.GrantRoleParams{
+		WorkspaceID: pgUUID(workspaceID),
+		UserID:      pgUUID(userID),
+		RoleID:      adminRole,
+	}); err != nil {
+		return fmt.Errorf("grant administrator: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) RevokeAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error {
+	if _, err := s.q.RevokeRolesWithPermissions(ctx, db.RevokeRolesWithPermissionsParams{
+		WorkspaceID: pgUUID(workspaceID),
+		UserID:      pgUUID(userID),
+		Bits:        int64(perms.Administrator),
+	}); err != nil {
+		return fmt.Errorf("revoke administrator: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error) {
@@ -226,11 +319,17 @@ func (s *PostgresStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) 
 	}
 	out := make([]Member, 0, len(rows))
 	for _, row := range rows {
+		owner := Role(row.Role) == RoleOwner
+		base := perms.Set(row.BasePermissions) //nolint:gosec // stored from a perms.Set
+		if owner || base.Has(perms.Administrator) {
+			base = perms.All
+		}
 		out = append(out, Member{
 			// Only the id is known here: Service fills the public part in one batch.
-			User:     profile.Public{ID: uuid.UUID(row.UserID.Bytes)},
-			Role:     Role(row.Role),
-			JoinedAt: row.JoinedAt.Time,
+			User:        profile.Public{ID: uuid.UUID(row.UserID.Bytes)},
+			Role:        roleOf(owner, base),
+			JoinedAt:    row.JoinedAt.Time,
+			Permissions: base,
 		})
 	}
 	return out, nil
@@ -339,31 +438,36 @@ func (s *PostgresStore) member(ctx context.Context, workspaceID, userID uuid.UUI
 	return Member{}, ErrNotMember
 }
 
-func toWorkspace(row db.Workspace) Workspace {
+// The names the server gives the roles it makes itself.
+const (
+	everyoneName  = "@everyone"
+	adminRoleName = "Администратор"
+)
+
+func toWorkspace(row db.Workspace, everyone int64) Workspace {
 	return Workspace{
+		ID:                uuid.UUID(row.ID.Bytes),
+		Name:              row.Name,
+		Description:       row.Description.String,
+		IconKey:           row.IconKey.String,
+		MemberPermissions: permissionsOf(perms.Set(everyone)), //nolint:gosec // stored from a perms.Set
+		Everyone:          perms.Set(everyone),                //nolint:gosec // stored from a perms.Set
+		OwnerID:           uuid.UUID(row.OwnerID.Bytes),
+		CreatedAt:         row.CreatedAt.Time,
+	}
+}
+
+func toPermsRole(row db.ServerRole) perms.Role {
+	return perms.Role{
 		ID:          uuid.UUID(row.ID.Bytes),
-		Name:        row.Name,
-		Description: row.Description.String,
-		IconKey:     row.IconKey.String,
-		MemberPermissions: Permissions{
-			Invite:         row.MembersCanInvite,
-			CreateChannels: row.MembersCanCreateChannels,
-			AttachFiles:    row.MembersCanAttachFiles,
-		},
-		OwnerID:   uuid.UUID(row.OwnerID.Bytes),
-		CreatedAt: row.CreatedAt.Time,
+		Position:    int(row.Position),
+		Permissions: perms.Set(row.Permissions), //nolint:gosec // stored from a perms.Set
+		Default:     row.IsDefault,
 	}
 }
 
 func pgUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
-}
-
-func pgBool(v *bool) pgtype.Bool {
-	if v == nil {
-		return pgtype.Bool{}
-	}
-	return pgtype.Bool{Bool: *v, Valid: true}
 }
 
 func text(s string) pgtype.Text {

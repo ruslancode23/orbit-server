@@ -78,6 +78,9 @@ type Querier interface {
 	// xmax = 0 on a row this statement inserted; anything else means the resend
 	// found the message already stored.
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (CreateMessageRow, error)
+	// Roles of a server (internal/servers) and their overrides in channels
+	// (internal/channels). The permission bits are those of internal/perms.
+	CreateRole(ctx context.Context, arg CreateRoleParams) (ServerRole, error)
 	// Envelopes are opaque bytes in, opaque bytes out.
 	CreateSecretEnvelope(ctx context.Context, arg CreateSecretEnvelopeParams) (SecretEnvelope, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
@@ -90,6 +93,7 @@ type Querier interface {
 	DeleteAcceptedFriendship(ctx context.Context, arg DeleteAcceptedFriendshipParams) (int64, error)
 	DeleteAttachment(ctx context.Context, id pgtype.UUID) error
 	DeleteChannel(ctx context.Context, id pgtype.UUID) error
+	DeleteChannelOverride(ctx context.Context, arg DeleteChannelOverrideParams) error
 	DeleteDeviceEnvelopes(ctx context.Context, senderDeviceID pgtype.UUID) error
 	DeleteDeviceSecretChatBindings(ctx context.Context, deviceID pgtype.UUID) error
 	DeleteExpiredAttachment(ctx context.Context, id pgtype.UUID) error
@@ -115,6 +119,7 @@ type Querier interface {
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
 	GetDMPolicy(ctx context.Context, id pgtype.UUID) (string, error)
+	GetDefaultRole(ctx context.Context, workspaceID pgtype.UUID) (ServerRole, error)
 	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 	GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
@@ -148,12 +153,12 @@ type Querier interface {
 	// The peer of a secret chat, as this device sees it: the other device, its
 	// person and its public keys.
 	GetUserSecretChat(ctx context.Context, arg GetUserSecretChatParams) (GetUserSecretChatRow, error)
-	GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, error)
-	// The role and what the server lets members do, in one read, for actions a
-	// server may open to members.
-	GetWorkspaceAccess(ctx context.Context, arg GetWorkspaceAccessParams) (GetWorkspaceAccessRow, error)
+	// A server with what @everyone may do: the old «what members may do» flags of
+	// the API are read from that role.
+	GetWorkspace(ctx context.Context, id pgtype.UUID) (GetWorkspaceRow, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
+	GrantRole(ctx context.Context, arg GrantRoleParams) error
 	// One query twice, so profile visibility never walks a list of conversations:
 	// whether two accounts share any conversation, secret chats included — their
 	// participants already know each other.
@@ -182,6 +187,7 @@ type Querier interface {
 	ListChannelMessages(ctx context.Context, arg ListChannelMessagesParams) ([]Message, error)
 	// What a reconnecting client missed in one channel, oldest first (task 2.6).
 	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]Message, error)
+	ListChannelOverrides(ctx context.Context, channelID pgtype.UUID) ([]ListChannelOverridesRow, error)
 	// Who belongs to a conversation. Messages publish to each participant's personal
 	// stream, because a conversation has no server to announce to.
 	ListConversationMemberIDs(ctx context.Context, channelID pgtype.UUID) ([]pgtype.UUID, error)
@@ -215,6 +221,8 @@ type Querier interface {
 	ListIncomingFriendRequests(ctx context.Context, userLow pgtype.UUID) ([]ListIncomingFriendRequestsRow, error)
 	// Which of these ids are real accounts (task 2.10 checks before it opens a chat).
 	ListKnownUsers(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
+	// The roles one member holds; @everyone is implied and not listed.
+	ListMemberRoleIDs(ctx context.Context, arg ListMemberRoleIDsParams) ([]pgtype.UUID, error)
 	ListMessageAttachments(ctx context.Context, dollar_1 []pgtype.UUID) ([]Attachment, error)
 	ListMessageMentions(ctx context.Context, dollar_1 []pgtype.UUID) ([]MessageMention, error)
 	// Reactions of a page of messages, with whether the caller is among them.
@@ -235,14 +243,23 @@ type Querier interface {
 	// per author, or a page of history costs one query per message.
 	ListUserProfiles(ctx context.Context, ids []pgtype.UUID) ([]ListUserProfilesRow, error)
 	ListUserSecretChats(ctx context.Context, arg ListUserSecretChatsParams) ([]ListUserSecretChatsRow, error)
+	// Every server of an account with what @everyone may do there and what the
+	// account may do there before any channel: @everyone plus its own roles.
 	ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListUserWorkspacesRow, error)
 	// Same as the member list: ids only, the public part comes from internal/profile.
 	ListWorkspaceBans(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceBansRow, error)
 	ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.UUID) ([]Channel, error)
 	ListWorkspaceInvites(ctx context.Context, workspaceID pgtype.UUID) ([]Invite, error)
+	// The roles of every member of a server, for a member list in one query.
+	ListWorkspaceMemberRoles(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMemberRolesRow, error)
 	// The member list carries ids only: internal/profile fills in the public part
 	// of every account in one query, so this module never reads auth's table.
+	// With what each member may do on the server before any channel: @everyone
+	// plus their own roles.
 	ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceMembersRow, error)
+	// The overrides of every channel of a server, for a channel list in one query.
+	ListWorkspaceOverrides(ctx context.Context, workspaceID pgtype.UUID) ([]ChannelRoleOverride, error)
+	ListWorkspaceRoles(ctx context.Context, workspaceID pgtype.UUID) ([]ServerRole, error)
 	// The row lock serialises two additions to one group, so both cannot pass the
 	// same maxMembers count.
 	LockConversation(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
@@ -253,6 +270,8 @@ type Querier interface {
 	// content, so neither updated_at nor profile_updated_at moves, and nobody else
 	// hears about it.
 	MarkUserProfileOnboarded(ctx context.Context, arg MarkUserProfileOnboardedParams) (int64, error)
+	// The most senior role position of a server, to put a new role above it.
+	MaxRolePosition(ctx context.Context, workspaceID pgtype.UUID) (int32, error)
 	// A released nickname stays unclaimable for seven days. The check is here for a
 	// clear 409; the trigger on users is what makes it race-free.
 	NicknameIsHeld(ctx context.Context, arg NicknameIsHeldParams) (bool, error)
@@ -264,11 +283,15 @@ type Querier interface {
 	RenameConversation(ctx context.Context, arg RenameConversationParams) error
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) (int64, error)
 	RevokeInvite(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Takes away every role of the member that carries any of these bits.
+	RevokeRolesWithPermissions(ctx context.Context, arg RevokeRolesWithPermissionsParams) (int64, error)
 	RevokeSession(ctx context.Context, id pgtype.UUID) error
 	RevokeUserSessions(ctx context.Context, userID pgtype.UUID) error
+	SetChannelOverride(ctx context.Context, arg SetChannelOverrideParams) error
 	// Reordering sends the whole list: position is the index of the channel in it.
 	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)
 	SetDMPolicy(ctx context.Context, arg SetDMPolicyParams) error
+	SetDefaultRolePermissions(ctx context.Context, arg SetDefaultRolePermissionsParams) error
 	SetFriendRequestPolicy(ctx context.Context, arg SetFriendRequestPolicyParams) error
 	// One statement reads the old key and writes the new one, so two uploads racing
 	// cannot both report the same previous key and leave one object alive.

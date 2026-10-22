@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ruslancode23/orbit-server/internal/perms"
 )
 
 var (
@@ -57,7 +59,8 @@ func (s *Service) MaxIconBytes() int64 { return s.icons.MaxBytes }
 // SetIcon stores a new icon for the server and drops the old one. Admin or owner.
 // The type is read from the bytes; the name the client gave is not asked.
 func (s *Service) SetIcon(ctx context.Context, workspaceID, callerID uuid.UUID, body io.Reader) (Membership, error) {
-	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin)
+	access, err := s.Require(ctx, workspaceID, callerID, perms.ManageServer)
+	role := access.Role()
 	if err != nil {
 		return Membership{}, err
 	}
@@ -107,7 +110,8 @@ func (s *Service) SetIcon(ctx context.Context, workspaceID, callerID uuid.UUID, 
 
 // RemoveIcon takes the icon away. Admin or owner; no icon is not an error.
 func (s *Service) RemoveIcon(ctx context.Context, workspaceID, callerID uuid.UUID) (Membership, error) {
-	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin)
+	access, err := s.Require(ctx, workspaceID, callerID, perms.ManageServer)
+	role := access.Role()
 	if err != nil {
 		return Membership{}, err
 	}

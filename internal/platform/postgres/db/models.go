@@ -173,7 +173,6 @@ type Channel struct {
 	Position    int32              `json:"position"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	IsReadOnly  bool               `json:"is_read_only"`
 	DirectKey   pgtype.Text        `json:"direct_key"`
 }
 
@@ -189,6 +188,13 @@ type ChannelRead struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	LastReadSeq int64              `json:"last_read_seq"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ChannelRoleOverride struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	RoleID    pgtype.UUID `json:"role_id"`
+	Allow     int64       `json:"allow"`
+	Deny      int64       `json:"deny"`
 }
 
 type Device struct {
@@ -284,6 +290,24 @@ type SecretEnvelope struct {
 	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
 }
 
+type ServerMemberRole struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	RoleID      pgtype.UUID `json:"role_id"`
+}
+
+type ServerRole struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	Color       pgtype.Text        `json:"color"`
+	Hoist       bool               `json:"hoist"`
+	Position    int32              `json:"position"`
+	Permissions int64              `json:"permissions"`
+	IsDefault   bool               `json:"is_default"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Session struct {
 	ID         pgtype.UUID        `json:"id"`
 	UserID     pgtype.UUID        `json:"user_id"`
@@ -323,16 +347,13 @@ type UserBlock struct {
 }
 
 type Workspace struct {
-	ID                       pgtype.UUID        `json:"id"`
-	Name                     string             `json:"name"`
-	OwnerID                  pgtype.UUID        `json:"owner_id"`
-	CreatedAt                pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
-	Description              pgtype.Text        `json:"description"`
-	IconKey                  pgtype.Text        `json:"icon_key"`
-	MembersCanInvite         bool               `json:"members_can_invite"`
-	MembersCanCreateChannels bool               `json:"members_can_create_channels"`
-	MembersCanAttachFiles    bool               `json:"members_can_attach_files"`
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	OwnerID     pgtype.UUID        `json:"owner_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	Description pgtype.Text        `json:"description"`
+	IconKey     pgtype.Text        `json:"icon_key"`
 }
 
 type WorkspaceMember struct {

@@ -14,31 +14,49 @@ func off() *bool { v := false; return &v }
 
 var allPermissions = []Permission{PermissionInvite, PermissionCreateChannels, PermissionAttachFiles}
 
-func TestAllows(t *testing.T) {
-	everything := Permissions{Invite: true, CreateChannels: true, AttachFiles: true}
-	nothing := Permissions{}
-
+// The owner and administrators may always; a member may when @everyone has
+// the flag. The flags live on @everyone, so turning one on or off is the same
+// as before for every client of the old API.
+func TestRequirePermissionFollowsEveryone(t *testing.T) {
+	w := newWorld(t)
 	for _, permission := range allPermissions {
 		t.Run(string(permission), func(t *testing.T) {
-			// The owner and admins may always, whatever the server says.
-			for _, role := range []Role{RoleOwner, RoleAdmin} {
-				if !nothing.Allows(role, permission) {
-					t.Errorf("%s refused with everything off", role)
+			set := func(value *bool) {
+				t.Helper()
+				update := PermissionsUpdate{}
+				switch permission {
+				case PermissionInvite:
+					update.Invite = value
+				case PermissionCreateChannels:
+					update.CreateChannels = value
+				case PermissionAttachFiles:
+					update.AttachFiles = value
+				}
+				if _, err := w.svc.Update(t.Context(), w.workspace, w.owner, WorkspaceUpdate{Permissions: update}); err != nil {
+					t.Fatalf("Update: %v", err)
 				}
 			}
-			if !everything.Allows(RoleMember, permission) {
-				t.Error("member refused with everything on")
+
+			set(off())
+			for _, id := range []uuid.UUID{w.owner, w.admin} {
+				if _, err := w.svc.RequirePermission(t.Context(), w.workspace, id, permission); err != nil {
+					t.Errorf("%s refused with the flag off: %v", id, err)
+				}
 			}
-			if nothing.Allows(RoleMember, permission) {
-				t.Error("member allowed with everything off")
+			if _, err := w.svc.RequirePermission(t.Context(), w.workspace, w.member, permission); !errors.Is(err, ErrForbidden) {
+				t.Errorf("member with the flag off: err = %v, want ErrForbidden", err)
 			}
-			if everything.Allows("", permission) {
-				t.Error("no role at all is allowed")
+			set(on())
+			if _, err := w.svc.RequirePermission(t.Context(), w.workspace, w.member, permission); err != nil {
+				t.Errorf("member refused with the flag on: %v", err)
+			}
+			if _, err := w.svc.RequirePermission(t.Context(), w.workspace, w.outsider, permission); !errors.Is(err, ErrNotMember) {
+				t.Errorf("outsider: err = %v, want ErrNotMember", err)
 			}
 		})
 	}
-	if nothing.Allows(RoleMember, "fly") {
-		t.Error("an unknown permission is allowed")
+	if _, err := w.svc.RequirePermission(t.Context(), w.workspace, w.member, "fly"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("an unknown permission: err = %v, want ErrForbidden", err)
 	}
 }
 

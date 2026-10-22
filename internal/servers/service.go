@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
 )
 
@@ -81,10 +82,12 @@ type Workspace struct {
 	IconKey string
 	// IconURL is a signed link to the icon, filled in for members only.
 	IconURL string
-	// MemberPermissions is what the member role may do here.
+	// MemberPermissions is what @everyone may do here, in the old API's flags.
 	MemberPermissions Permissions
-	OwnerID           uuid.UUID
-	CreatedAt         time.Time
+	// Everyone is what @everyone may do here.
+	Everyone  perms.Set
+	OwnerID   uuid.UUID
+	CreatedAt time.Time
 }
 
 // NewWorkspace is what creating a server takes. Permissions not sent keep
@@ -111,6 +114,8 @@ func (u WorkspaceUpdate) empty() bool {
 type Membership struct {
 	Workspace Workspace
 	Role      Role
+	// Permissions is what the account may do on the server before any channel.
+	Permissions perms.Set
 }
 
 // SharedServer is one server two accounts are on, as the caller sees it. The
@@ -130,6 +135,8 @@ type Member struct {
 	User     profile.Public
 	Role     Role
 	JoinedAt time.Time
+	// Permissions is what the member may do on the server before any channel.
+	Permissions perms.Set
 }
 
 type Ban struct {
@@ -142,7 +149,8 @@ type Ban struct {
 // Store is the persistence this package needs.
 type Store interface {
 	// CreateWorkspace creates the server and its owner membership in one transaction.
-	CreateWorkspace(ctx context.Context, n NewWorkspace, permissions Permissions, ownerID uuid.UUID) (Workspace, error)
+	// The new server gets its @everyone role with these permissions.
+	CreateWorkspace(ctx context.Context, n NewWorkspace, everyone perms.Set, ownerID uuid.UUID) (Workspace, error)
 	Workspace(ctx context.Context, id uuid.UUID) (Workspace, error)
 	UpdateWorkspace(ctx context.Context, id uuid.UUID, u WorkspaceUpdate) (Workspace, error)
 	// SetIcon stores the new icon key (empty removes it) and returns the one it replaced.
@@ -154,9 +162,16 @@ type Store interface {
 	MutualServers(ctx context.Context, callerID, otherID uuid.UUID) ([]SharedServer, error)
 	// Role returns ErrNotMember when the account is not on the server.
 	Role(ctx context.Context, workspaceID, userID uuid.UUID) (Role, error)
-	// Access is the role together with what the server lets members do; it
+	// Access is the roles of the server and the ones the account holds; it
 	// returns ErrNotMember like Role.
-	Access(ctx context.Context, workspaceID, userID uuid.UUID) (Role, Permissions, error)
+	Access(ctx context.Context, workspaceID, userID uuid.UUID) (Access, error)
+	// SetEveryone replaces what @everyone may do.
+	SetEveryone(ctx context.Context, workspaceID uuid.UUID, permissions perms.Set) error
+	// GrantAdmin gives the member the server's administrator role, making one
+	// when there is none yet; RevokeAdmin takes away every role that grants
+	// administrator. The old API's «admin» lives on through them.
+	GrantAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error
+	RevokeAdmin(ctx context.Context, workspaceID, userID uuid.UUID) error
 	SetRole(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	AddMember(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID) error
@@ -326,7 +341,11 @@ func (s *Service) cutOff(workspaceID, userID uuid.UUID) {
 // (channels, messages, the event gateway) call it before they act, so the rule
 // "rights are checked on the server" has one implementation.
 func (s *Service) Authorize(ctx context.Context, workspaceID, userID uuid.UUID) (Role, error) {
-	return s.store.Role(ctx, workspaceID, userID)
+	access, err := s.store.Access(ctx, workspaceID, userID)
+	if err != nil {
+		return "", err
+	}
+	return access.Role(), nil
 }
 
 // Workspace reads a server without checking membership. For callers that have
@@ -357,12 +376,15 @@ func (s *Service) IsMember(ctx context.Context, workspaceID, userID uuid.UUID) (
 	return true, nil
 }
 
-// RequireAtLeast reports whether the caller's role on the server reaches `least`.
+// RequireAtLeast reports whether the caller reaches `least` in the old API's
+// words: member is any member, admin is administrator (by role), owner is the
+// owner. New code asks Require for the permission it needs instead.
 func (s *Service) RequireAtLeast(ctx context.Context, workspaceID, userID uuid.UUID, least Role) (Role, error) {
-	role, err := s.store.Role(ctx, workspaceID, userID)
+	access, err := s.store.Access(ctx, workspaceID, userID)
 	if err != nil {
 		return "", err
 	}
+	role := access.Role()
 	if role.Rank() < least.Rank() {
 		return role, ErrForbidden
 	}
@@ -378,12 +400,12 @@ func (s *Service) Create(ctx context.Context, n NewWorkspace, ownerID uuid.UUID)
 	if err != nil {
 		return Membership{}, err
 	}
-	permissions := n.Permissions.apply(DefaultPermissions())
-	workspace, err := s.store.CreateWorkspace(ctx, NewWorkspace{Name: name, Description: description}, permissions, ownerID)
+	everyone := n.Permissions.apply(DefaultPermissions()).everyoneOf()
+	workspace, err := s.store.CreateWorkspace(ctx, NewWorkspace{Name: name, Description: description}, everyone, ownerID)
 	if err != nil {
 		return Membership{}, err
 	}
-	return Membership{Workspace: s.present(ctx, workspace), Role: RoleOwner}, nil
+	return Membership{Workspace: s.present(ctx, workspace), Role: RoleOwner, Permissions: perms.All}, nil
 }
 
 func (s *Service) List(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
@@ -435,7 +457,7 @@ func (s *Service) MutualServers(ctx context.Context, callerID, otherID uuid.UUID
 }
 
 func (s *Service) Get(ctx context.Context, workspaceID, callerID uuid.UUID) (Membership, error) {
-	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleMember)
+	access, err := s.store.Access(ctx, workspaceID, callerID)
 	if err != nil {
 		return Membership{}, err
 	}
@@ -443,14 +465,14 @@ func (s *Service) Get(ctx context.Context, workspaceID, callerID uuid.UUID) (Mem
 	if err != nil {
 		return Membership{}, err
 	}
-	return Membership{Workspace: s.present(ctx, workspace), Role: role}, nil
+	return Membership{Workspace: s.present(ctx, workspace), Role: access.Role(), Permissions: access.Base()}, nil
 }
 
-// Update changes the name, the description or what members may do. Admin or
-// owner. Nothing is cached, so new permissions bind the next request of
+// Update changes the name, the description or what @everyone may do; it takes
+// manageServer. Nothing is cached, so new permissions bind the next request of
 // everyone; the event tells connected clients to redraw what they offer.
 func (s *Service) Update(ctx context.Context, workspaceID, callerID uuid.UUID, u WorkspaceUpdate) (Membership, error) {
-	role, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin)
+	access, err := s.Require(ctx, workspaceID, callerID, perms.ManageServer)
 	if err != nil {
 		return Membership{}, err
 	}
@@ -472,12 +494,22 @@ func (s *Service) Update(ctx context.Context, workspaceID, callerID uuid.UUID, u
 		u.Description = &description
 	}
 
+	if !u.Permissions.empty() {
+		current, err := s.store.Workspace(ctx, workspaceID)
+		if err != nil {
+			return Membership{}, err
+		}
+		flags := u.Permissions.apply(current.MemberPermissions).everyoneOf() & memberFlags
+		if err := s.store.SetEveryone(ctx, workspaceID, current.Everyone&^memberFlags|flags); err != nil {
+			return Membership{}, err
+		}
+	}
 	workspace, err := s.store.UpdateWorkspace(ctx, workspaceID, u)
 	if err != nil {
 		return Membership{}, err
 	}
 	s.changed(ctx, workspace)
-	return Membership{Workspace: s.present(ctx, workspace), Role: role}, nil
+	return Membership{Workspace: s.present(ctx, workspace), Role: access.Role(), Permissions: access.Base()}, nil
 }
 
 // Delete removes the server with everything in it, then its icon.
@@ -555,32 +587,61 @@ func (s *Service) Join(ctx context.Context, workspaceID, userID uuid.UUID) (Memb
 	return member, nil
 }
 
-// SetRole moves a member between roles. Only the owner may, and the server keeps
-// an owner: handing the role over demotes the old owner to admin in the same breath.
+// SetRole moves a member between the old API's roles. Handing over ownership
+// is the owner's alone, and the server keeps an owner: the old owner becomes an
+// administrator in the same breath. Making someone an admin grants the server's
+// administrator role, making them a member takes every role that grants
+// administrator; both take manageRoles, a rank above the target and above the
+// administrator role, since nobody hands out what lies above them.
 func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID uuid.UUID, role Role) (Member, error) {
 	if !role.valid() {
 		return Member{}, ErrInvalidRole
 	}
-	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleOwner); err != nil {
-		return Member{}, err
-	}
-	target, err := s.store.Role(ctx, workspaceID, targetID)
+	caller, err := s.store.Access(ctx, workspaceID, callerID)
 	if err != nil {
 		return Member{}, err
 	}
-	if target == role {
-		member, err := s.store.SetRole(ctx, workspaceID, targetID, role)
-		if err != nil {
-			return Member{}, err
-		}
-		if err := s.withProfile(ctx, &member.User); err != nil {
-			return Member{}, err
-		}
-		return member, nil
+	target, err := s.store.Access(ctx, workspaceID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
+	if target.Role() == role {
+		return s.memberOf(ctx, workspaceID, targetID)
 	}
 
-	// Taking the owner role away from the last owner would leave the server without one.
-	if target == RoleOwner && role != RoleOwner {
+	if role == RoleOwner || target.Member.Owner {
+		if !caller.Member.Owner {
+			return Member{}, ErrForbidden
+		}
+		return s.moveOwnership(ctx, workspaceID, callerID, targetID, role, target)
+	}
+
+	if callerID != targetID && !caller.Outranks(target.Member) {
+		return Member{}, ErrForbidden
+	}
+	if !caller.Member.Owner && (!caller.Base().Has(perms.ManageRoles | perms.Administrator)) {
+		return Member{}, ErrForbidden
+	}
+	if !caller.Member.Owner && !caller.Server.MayManageRole(caller.Member, perms.Role{Position: adminPosition(caller.Server)}) {
+		return Member{}, ErrForbidden
+	}
+	switch role {
+	case RoleAdmin:
+		err = s.store.GrantAdmin(ctx, workspaceID, targetID)
+	default:
+		err = s.store.RevokeAdmin(ctx, workspaceID, targetID)
+	}
+	if err != nil {
+		return Member{}, err
+	}
+	s.announce(ctx, workspaceID, targetID, role, true)
+	return s.memberOf(ctx, workspaceID, targetID)
+}
+
+// moveOwnership hands the owner over, or takes it from an owner when the
+// server has another one. The previous owner stays as an administrator.
+func (s *Service) moveOwnership(ctx context.Context, workspaceID, callerID, targetID uuid.UUID, role Role, target Access) (Member, error) {
+	if target.Member.Owner && role != RoleOwner {
 		owners, err := s.store.CountOwners(ctx, workspaceID)
 		if err != nil {
 			return Member{}, err
@@ -588,41 +649,80 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 		if owners <= 1 {
 			return Member{}, ErrLastOwner
 		}
+		if _, err := s.store.SetRole(ctx, workspaceID, targetID, RoleMember); err != nil {
+			return Member{}, err
+		}
+		if role == RoleAdmin {
+			if err := s.store.GrantAdmin(ctx, workspaceID, targetID); err != nil {
+				return Member{}, err
+			}
+		}
+		s.announce(ctx, workspaceID, targetID, role, true)
+		return s.memberOf(ctx, workspaceID, targetID)
 	}
 
-	member, err := s.store.SetRole(ctx, workspaceID, targetID, role)
-	if err != nil {
+	if _, err := s.store.SetRole(ctx, workspaceID, targetID, RoleOwner); err != nil {
 		return Member{}, err
 	}
-	if err := s.withProfile(ctx, &member.User); err != nil {
-		return Member{}, err
-	}
-	s.announce(ctx, workspaceID, targetID, role, true)
-	// Handing over ownership: the previous owner stays as an admin, so the server
-	// never has two owners and the caller does not lock themselves out of the room.
-	if role == RoleOwner && callerID != targetID {
-		if _, err := s.store.SetRole(ctx, workspaceID, callerID, RoleAdmin); err != nil {
+	s.announce(ctx, workspaceID, targetID, RoleOwner, true)
+	if callerID != targetID {
+		if _, err := s.store.SetRole(ctx, workspaceID, callerID, RoleMember); err != nil {
+			return Member{}, err
+		}
+		if err := s.store.GrantAdmin(ctx, workspaceID, callerID); err != nil {
 			return Member{}, err
 		}
 		s.announce(ctx, workspaceID, callerID, RoleAdmin, true)
 	}
-	return member, nil
+	return s.memberOf(ctx, workspaceID, targetID)
 }
 
-// Remove kicks a member. An admin cannot kick another admin or the owner, and
-// anyone may leave by removing themselves — except the last owner.
+// adminPosition is where the server's administrator role sits, or just above
+// every role when there is none yet (it would be made there).
+func adminPosition(server perms.Server) int {
+	position := 0
+	for _, role := range server.Roles {
+		if !role.Default && role.Permissions == perms.Administrator {
+			return role.Position
+		}
+		if role.Position > position {
+			position = role.Position
+		}
+	}
+	return position + 1
+}
+
+// memberOf is one member with their public profile.
+func (s *Service) memberOf(ctx context.Context, workspaceID, userID uuid.UUID) (Member, error) {
+	members, err := s.store.ListMembers(ctx, workspaceID)
+	if err != nil {
+		return Member{}, err
+	}
+	for _, member := range members {
+		if member.User.ID == userID {
+			if err := s.withProfile(ctx, &member.User); err != nil {
+				return Member{}, err
+			}
+			return member, nil
+		}
+	}
+	return Member{}, ErrNotMember
+}
+
+// Remove kicks a member: kickMembers and a rank above the target. Anyone may
+// leave by removing themselves — except the last owner.
 func (s *Service) Remove(ctx context.Context, workspaceID, callerID, targetID uuid.UUID) error {
-	caller, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleMember)
+	caller, err := s.store.Access(ctx, workspaceID, callerID)
 	if err != nil {
 		return err
 	}
-	target, err := s.store.Role(ctx, workspaceID, targetID)
+	target, err := s.store.Access(ctx, workspaceID, targetID)
 	if err != nil {
 		return err
 	}
 
 	if callerID == targetID {
-		if target == RoleOwner {
+		if target.Member.Owner {
 			owners, err := s.store.CountOwners(ctx, workspaceID)
 			if err != nil {
 				return err
@@ -634,8 +734,8 @@ func (s *Service) Remove(ctx context.Context, workspaceID, callerID, targetID uu
 		return s.removeMember(ctx, workspaceID, targetID)
 	}
 
-	if err := canActOn(caller, target); err != nil {
-		return err
+	if !caller.Base().Has(perms.KickMembers) || !caller.Outranks(target.Member) {
+		return ErrForbidden
 	}
 	return s.removeMember(ctx, workspaceID, targetID)
 }
@@ -653,7 +753,7 @@ func (s *Service) removeMember(ctx context.Context, workspaceID, userID uuid.UUI
 // Ban removes someone and keeps them out. Admin or owner, and never against an
 // equal or higher role.
 func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.UUID, reason string) (Ban, error) {
-	caller, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin)
+	caller, err := s.Require(ctx, workspaceID, callerID, perms.BanMembers)
 	if err != nil {
 		return Ban{}, err
 	}
@@ -662,11 +762,11 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 	}
 
 	// A target who already left is banned anyway, so a link cannot bring them back.
-	target, err := s.store.Role(ctx, workspaceID, targetID)
+	target, err := s.store.Access(ctx, workspaceID, targetID)
 	switch {
 	case err == nil:
-		if err := canActOn(caller, target); err != nil {
-			return Ban{}, err
+		if !caller.Outranks(target.Member) {
+			return Ban{}, ErrForbidden
 		}
 	case !errors.Is(err, ErrNotMember):
 		return Ban{}, err
@@ -686,7 +786,7 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 }
 
 func (s *Service) Unban(ctx context.Context, workspaceID, callerID, targetID uuid.UUID) error {
-	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin); err != nil {
+	if _, err := s.Require(ctx, workspaceID, callerID, perms.BanMembers); err != nil {
 		return err
 	}
 	if err := s.store.Unban(ctx, workspaceID, targetID); err != nil {
@@ -697,7 +797,7 @@ func (s *Service) Unban(ctx context.Context, workspaceID, callerID, targetID uui
 }
 
 func (s *Service) ListBans(ctx context.Context, workspaceID, callerID uuid.UUID) ([]Ban, error) {
-	if _, err := s.RequireAtLeast(ctx, workspaceID, callerID, RoleAdmin); err != nil {
+	if _, err := s.Require(ctx, workspaceID, callerID, perms.BanMembers); err != nil {
 		return nil, err
 	}
 	bans, err := s.store.ListBans(ctx, workspaceID)
@@ -720,13 +820,6 @@ func (s *Service) ListBans(ctx context.Context, workspaceID, callerID uuid.UUID)
 
 // canActOn allows moderation only downwards: an admin may act on members, the
 // owner on everyone below.
-func canActOn(caller, target Role) error {
-	if caller.Rank() <= target.Rank() {
-		return ErrForbidden
-	}
-	return nil
-}
-
 func cleanDescription(description string) (string, error) {
 	description = strings.TrimSpace(description)
 	if len([]rune(description)) > maxDescriptionLength {

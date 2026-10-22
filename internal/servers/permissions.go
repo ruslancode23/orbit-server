@@ -6,8 +6,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Permission is an action a server may open to its members. The owner and
-// admins may always do all of them.
+// Permission is an action the old API let a server open to its members. Each
+// maps to a permission of internal/perms (bitsOf); new code asks Require.
 type Permission string
 
 const (
@@ -19,7 +19,8 @@ const (
 	PermissionAttachFiles Permission = "attachFiles"
 )
 
-// Permissions is what the member role may do on one server.
+// Permissions is what @everyone may do on one server, in the words of the old
+// API: three flags read from and written to the @everyone role.
 type Permissions struct {
 	Invite         bool
 	CreateChannels bool
@@ -30,26 +31,6 @@ type Permissions struct {
 // attach files, but neither invite people nor create channels.
 func DefaultPermissions() Permissions {
 	return Permissions{AttachFiles: true}
-}
-
-// Allows reports whether a role may take this action under these permissions.
-func (p Permissions) Allows(role Role, permission Permission) bool {
-	if role.Rank() >= RoleAdmin.Rank() {
-		return true
-	}
-	if role != RoleMember {
-		return false
-	}
-	switch permission {
-	case PermissionInvite:
-		return p.Invite
-	case PermissionCreateChannels:
-		return p.CreateChannels
-	case PermissionAttachFiles:
-		return p.AttachFiles
-	default:
-		return false
-	}
 }
 
 // PermissionsUpdate carries only the flags the caller asked to change.
@@ -78,16 +59,13 @@ func (u PermissionsUpdate) apply(p Permissions) Permissions {
 }
 
 // RequirePermission reports the caller's role when it may take this action on
-// the server: ErrNotMember for an outsider, ErrForbidden for a member the server
-// does not allow. Role and permissions are read for this call, together, so a
-// change applies to the very next action of an already connected client.
+// the server: ErrNotMember for an outsider, ErrForbidden for a member whose
+// roles do not allow it. The roles are read for this call, so a change binds
+// the very next action of an already connected client.
 func (s *Service) RequirePermission(ctx context.Context, workspaceID, userID uuid.UUID, permission Permission) (Role, error) {
-	role, permissions, err := s.store.Access(ctx, workspaceID, userID)
+	access, err := s.requireAny(ctx, workspaceID, userID, bitsOf(permission))
 	if err != nil {
-		return "", err
+		return access.Role(), err
 	}
-	if !permissions.Allows(role, permission) {
-		return role, ErrForbidden
-	}
-	return role, nil
+	return access.Role(), nil
 }
