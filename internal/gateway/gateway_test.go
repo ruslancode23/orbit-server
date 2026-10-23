@@ -403,6 +403,35 @@ func TestUnsubscribeAndPing(t *testing.T) {
 	waitFor(t, func() bool { return ts.hub.Subscribers(ts.workspace) == 0 })
 }
 
+// Leaving a server on one's own is not a revoke: the old stream ends quietly,
+// with no "forbidden" before or after the confirmation. A ping right after
+// shows that nothing else was queued in between.
+func TestLeavingAServerSendsNoForbidden(t *testing.T) {
+	ts := newTestServer(t)
+	other := uuid.New()
+	ts.members.roles[other] = map[uuid.UUID]servers.Role{ts.user: servers.RoleMember}
+	conn := ts.dial(t)
+
+	write(t, conn, map[string]any{"type": "subscribe", "workspaceId": ts.workspace})
+	read(t, conn)
+	waitFor(t, func() bool { return ts.hub.Subscribers(ts.workspace) == 1 })
+
+	write(t, conn, map[string]any{"type": "subscribe", "workspaceId": other})
+	if frame := read(t, conn); frame["type"] != "subscribed" {
+		t.Fatalf("frame = %v, want subscribed", frame)
+	}
+	write(t, conn, map[string]any{"type": "unsubscribe"})
+	if frame := read(t, conn); frame["type"] != "unsubscribed" {
+		t.Fatalf("frame = %v, want unsubscribed", frame)
+	}
+	// Give a stray pump time to queue its frame before the pong.
+	time.Sleep(20 * time.Millisecond)
+	write(t, conn, map[string]any{"type": "ping"})
+	if frame := read(t, conn); frame["type"] != "pong" {
+		t.Errorf("frame = %v, want pong", frame)
+	}
+}
+
 func TestUnknownFrameIsAnError(t *testing.T) {
 	ts := newTestServer(t)
 	conn := ts.dial(t)
