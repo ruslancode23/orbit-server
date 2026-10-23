@@ -280,6 +280,15 @@ type MessageReaction struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type NotificationSetting struct {
+	UserID     pgtype.UUID        `json:"user_id"`
+	Scope      string             `json:"scope"`
+	TargetID   pgtype.UUID        `json:"target_id"`
+	Level      pgtype.Text        `json:"level"`
+	MutedUntil pgtype.Timestamptz `json:"muted_until"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PushSubscription struct {
 	ID            pgtype.UUID        `json:"id"`
 	UserID        pgtype.UUID        `json:"user_id"`

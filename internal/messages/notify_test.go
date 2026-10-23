@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/channels"
+	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/push"
 )
 
@@ -117,5 +119,97 @@ func TestPlainChannelMessageAndResendNotifyNobody(t *testing.T) {
 	}
 	if withRecipients != 1 {
 		t.Fatalf("sent = %+v, want one notification: the first direct message", got.sent)
+	}
+}
+
+// fakeLevels answers like internal/notifysettings and counts its calls: one
+// message asks for the whole audience once, not once per person.
+type fakeLevels struct {
+	levels map[uuid.UUID]notifysettings.Level
+	err    error
+	calls  int
+}
+
+func (f *fakeLevels) Levels(_ context.Context, _ channels.Channel) (map[uuid.UUID]notifysettings.Level, error) {
+	f.calls++
+	return f.levels, f.err
+}
+
+func TestChannelAllLevelHearsEveryMessage(t *testing.T) {
+	w := newWorld(t)
+	got := withNotifications(w)
+	levels := &fakeLevels{levels: map[uuid.UUID]notifysettings.Level{w.bob: notifysettings.LevelAll}}
+	w.svc.SetNotificationLevels(levels)
+
+	send(t, w, w.anna, "a-1", "без упоминаний")
+
+	if levels.calls != 1 {
+		t.Errorf("levels asked %d times, want one batch for the message", levels.calls)
+	}
+	if len(got.sent) != 1 || !slices.Equal(got.sent[0].recipients, []uuid.UUID{w.bob}) {
+		t.Fatalf("sent = %+v, want Bob only: he asked for every message", got.sent)
+	}
+	if got.sent[0].n.Title != "Новое сообщение в #общий" {
+		t.Errorf("title = %q, want the plain-message wording", got.sent[0].n.Title)
+	}
+	if strings.Contains(got.sent[0].n.Title+got.sent[0].n.Body, "без упоминаний") {
+		t.Errorf("the text leaked into the notification: %+v", got.sent[0].n)
+	}
+}
+
+func TestChannelMentionIsNotSentTwiceToTheAllLevel(t *testing.T) {
+	w := newWorld(t)
+	got := withNotifications(w)
+	w.svc.SetNotificationLevels(&fakeLevels{levels: map[uuid.UUID]notifysettings.Level{w.bob: notifysettings.LevelAll}})
+
+	if _, _, err := w.svc.Send(t.Context(), w.anna, NewMessage{
+		ChannelID: w.channel, ClientMessageID: "a-1", Content: "@bob глянь",
+		Mentions: []uuid.UUID{w.bob},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.sent) != 1 || !slices.Equal(got.sent[0].recipients, []uuid.UUID{w.bob}) {
+		t.Fatalf("sent = %+v, want one mention notification", got.sent)
+	}
+	if got.sent[0].n.Title != "Упоминание в #общий" {
+		t.Errorf("title = %q, want the mention wording", got.sent[0].n.Title)
+	}
+}
+
+func TestChannelNoneLevelHearsNothing(t *testing.T) {
+	w := newWorld(t)
+	got := withNotifications(w)
+	w.svc.SetNotificationLevels(&fakeLevels{levels: map[uuid.UUID]notifysettings.Level{
+		w.bob:   notifysettings.LevelNone,
+		w.admin: notifysettings.LevelAll,
+	}})
+
+	if _, _, err := w.svc.Send(t.Context(), w.anna, NewMessage{
+		ChannelID: w.channel, ClientMessageID: "a-1", Content: "@bob глянь",
+		Mentions: []uuid.UUID{w.bob},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bob switched the channel off even for mentions; the admin asked for all.
+	if len(got.sent) != 1 || !slices.Equal(got.sent[0].recipients, []uuid.UUID{w.admin}) {
+		t.Fatalf("sent = %+v, want the admin only", got.sent)
+	}
+}
+
+func TestConversationRespectsNone(t *testing.T) {
+	w := newWorld(t)
+	got := withNotifications(w)
+	w.svc.SetNotificationLevels(&fakeLevels{levels: map[uuid.UUID]notifysettings.Level{w.bob: notifysettings.LevelNone}})
+
+	if _, _, err := w.svc.Send(t.Context(), w.anna, NewMessage{
+		ChannelID: w.direct, ClientMessageID: "dm-1", Content: "раз",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.sent) != 0 {
+		t.Fatalf("sent = %+v, want nothing: Bob turned the dialogue off", got.sent)
 	}
 }

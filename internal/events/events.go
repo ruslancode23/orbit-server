@@ -83,6 +83,10 @@ const (
 	// KindFriendRemoved says a friendship ended, either by removal or by a
 	// block. Both sides receive it.
 	KindFriendRemoved Kind = "friend.removed"
+	// KindNotificationSettingsUpdated is personal: the account changed how
+	// loudly a server, channel or conversation speaks. Its other devices ask
+	// for the list again; nobody else may learn the choice.
+	KindNotificationSettingsUpdated Kind = "notification_settings.updated"
 )
 
 // Event is one thing that happened on one server.

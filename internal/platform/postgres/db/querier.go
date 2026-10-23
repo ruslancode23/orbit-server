@@ -52,6 +52,7 @@ type Querier interface {
 	// The friend limit counts accepted rows only; a pending request does not take a
 	// place in the list yet.
 	CountFriends(ctx context.Context, userLow pgtype.UUID) (int64, error)
+	CountNotificationSettings(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOneTimeKeys(ctx context.Context, deviceID pgtype.UUID) (int64, error)
 	// The pending limit counts only what this account sent; incoming requests are
 	// the other side's limit to keep.
@@ -109,6 +110,7 @@ type Querier interface {
 	DeleteFriendship(ctx context.Context, arg DeleteFriendshipParams) (int64, error)
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
+	DeleteNotificationSetting(ctx context.Context, arg DeleteNotificationSettingParams) (int64, error)
 	DeletePendingFriendship(ctx context.Context, arg DeletePendingFriendshipParams) (int64, error)
 	DeletePushSubscription(ctx context.Context, arg DeletePushSubscriptionParams) (int64, error)
 	// The push service said the browser is gone (404 or 410).
@@ -141,6 +143,7 @@ type Querier interface {
 	// The author's public part comes from internal/profile in one batch per page:
 	// this module never reads auth's table.
 	GetMessage(ctx context.Context, id pgtype.UUID) (Message, error)
+	GetNotificationSetting(ctx context.Context, arg GetNotificationSettingParams) (NotificationSetting, error)
 	GetRole(ctx context.Context, id pgtype.UUID) (ServerRole, error)
 	GetSecretConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetSecretEnvelope(ctx context.Context, id pgtype.UUID) (SecretEnvelope, error)
@@ -243,6 +246,11 @@ type Querier interface {
 	// the endpoint never shows what the other account may do. The icon key stays in
 	// this module; the service turns it into a signed link.
 	ListMutualWorkspaces(ctx context.Context, arg ListMutualWorkspacesParams) ([]ListMutualWorkspacesRow, error)
+	// Notification levels (internal/notifysettings).
+	ListNotificationSettings(ctx context.Context, userID pgtype.UUID) ([]NotificationSetting, error)
+	// One query for the whole audience of a channel: its own rows and its server's.
+	ListNotificationSettingsForTargets(ctx context.Context, targetIds []pgtype.UUID) ([]NotificationSetting, error)
+	ListNotificationSettingsForUserTargets(ctx context.Context, arg ListNotificationSettingsForUserTargetsParams) ([]NotificationSetting, error)
 	// Files whose message never arrived, for the cleanup job (task 2.9).
 	ListOrphanAttachments(ctx context.Context, arg ListOrphanAttachmentsParams) ([]Attachment, error)
 	// Outgoing requests: this account is the one that asked.
@@ -340,6 +348,7 @@ type Querier interface {
 	// Only what the caller sent changes: a NULL name keeps the old one, and the
 	// description is touched only when set_description is true (NULL then clears it).
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
+	UpsertNotificationSetting(ctx context.Context, arg UpsertNotificationSettingParams) (NotificationSetting, error)
 	// Web Push subscriptions (internal/push).
 	// A browser that subscribes again (new keys, another account) keeps its row.
 	UpsertPushSubscription(ctx context.Context, arg UpsertPushSubscriptionParams) (PushSubscription, error)

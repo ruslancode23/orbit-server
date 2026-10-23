@@ -24,6 +24,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
+	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
 	"github.com/ruslancode23/orbit-server/internal/platform/logger"
 	"github.com/ruslancode23/orbit-server/internal/platform/objectstore"
@@ -140,6 +141,12 @@ func run() error {
 	messageService.SetPrivacy(privacyService)
 	messageService.SetLimiter(limiter)
 
+	// How loudly each server, channel and conversation speaks: one account, every
+	// device. Push reads the same rows, so a muted channel is silent in both places.
+	notificationSettings := notifysettings.NewService(notifysettings.NewPostgresStore(queries), channelService, workspaces)
+	notificationSettings.SetPublisher(hub)
+	messageService.SetNotificationLevels(notificationSettings)
+
 	// Secret chats: public keys and ciphertext only. The server never has the
 	// key to open an envelope.
 	secretService := secrets.NewService(secrets.NewPostgresStore(pool), conversationService, hub)
@@ -209,20 +216,21 @@ func run() error {
 		TrustedProxies: cfg.TrustedProxies,
 		Health:         health.NewHandler(pool),
 		// Cookies go over TLS everywhere but local development.
-		Auth:               authHandler,
-		Invites:            inviteHandler,
-		Files:              files.NewHandler(fileService, log),
-		Conversations:      conversations.NewHandler(conversationService, log),
-		Secrets:            secrets.NewHandler(secretService, log),
-		Privacy:            privacy.NewHandler(privacyService, log),
-		Friends:            friends.NewHandler(friendService, log),
-		Profiles:           profile.NewHandler(profileService, log),
-		MaxUploadBytes:     cfg.Storage.MaxUploadBytes,
-		MaxIconBytes:       cfg.Storage.MaxIconBytes,
-		MaxAvatarBytes:     cfg.Storage.MaxAvatarBytes,
-		Feedback:           feedback.NewHandler(feedbackService, log),
-		Push:               push.NewHandler(pushService, log),
-		MaxScreenshotBytes: cfg.Storage.MaxScreenshotBytes,
+		Auth:                 authHandler,
+		Invites:              inviteHandler,
+		Files:                files.NewHandler(fileService, log),
+		Conversations:        conversations.NewHandler(conversationService, log),
+		Secrets:              secrets.NewHandler(secretService, log),
+		Privacy:              privacy.NewHandler(privacyService, log),
+		Friends:              friends.NewHandler(friendService, log),
+		Profiles:             profile.NewHandler(profileService, log),
+		MaxUploadBytes:       cfg.Storage.MaxUploadBytes,
+		MaxIconBytes:         cfg.Storage.MaxIconBytes,
+		MaxAvatarBytes:       cfg.Storage.MaxAvatarBytes,
+		Feedback:             feedback.NewHandler(feedbackService, log),
+		Push:                 push.NewHandler(pushService, log),
+		NotificationSettings: notifysettings.NewHandler(notificationSettings, log),
+		MaxScreenshotBytes:   cfg.Storage.MaxScreenshotBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
 		Sessions:   sessions,

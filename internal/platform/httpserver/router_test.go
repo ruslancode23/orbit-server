@@ -23,6 +23,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
+	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
 	"github.com/ruslancode23/orbit-server/internal/profile"
@@ -55,16 +56,18 @@ func newRouter(t *testing.T, dbErr error, adjust ...func(*Deps)) http.Handler {
 		Reads:      reads.NewHandler(reads.NewService(nil, nil, nil, nil), log),
 		Files: files.NewHandler(
 			files.NewService(nil, nil, nil, nil, nil, 1<<20, time.Minute), log),
-		MaxUploadBytes:     1 << 20,
-		MaxIconBytes:       1 << 16,
-		MaxAvatarBytes:     1 << 15,
-		Conversations:      conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
-		Secrets:            secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
-		Privacy:            privacy.NewHandler(privacy.NewService(nil), log),
-		Profiles:           profile.NewHandler(profile.NewService(nil, nil, log), log),
-		Friends:            friends.NewHandler(friends.NewService(nil, nil, friends.Limits{}), log),
-		Feedback:           feedback.NewHandler(feedback.NewService(nil, nil, 1<<14), log),
-		Push:               push.NewHandler(push.NewService(nil, nil, nil, "", log), log),
+		MaxUploadBytes: 1 << 20,
+		MaxIconBytes:   1 << 16,
+		MaxAvatarBytes: 1 << 15,
+		Conversations:  conversations.NewHandler(conversations.NewService(nil, 10, nil), log),
+		Secrets:        secrets.NewHandler(secrets.NewService(nil, nil, nil), log),
+		Privacy:        privacy.NewHandler(privacy.NewService(nil), log),
+		Profiles:       profile.NewHandler(profile.NewService(nil, nil, log), log),
+		Friends:        friends.NewHandler(friends.NewService(nil, nil, friends.Limits{}), log),
+		Feedback:       feedback.NewHandler(feedback.NewService(nil, nil, 1<<14), log),
+		Push:           push.NewHandler(push.NewService(nil, nil, nil, "", log), log),
+		NotificationSettings: notifysettings.NewHandler(
+			notifysettings.NewService(nil, nil, nil), log),
 		MaxScreenshotBytes: 1 << 14,
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),
