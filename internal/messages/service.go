@@ -17,6 +17,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
+	"github.com/ruslancode23/orbit-server/internal/push"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 )
 
@@ -186,6 +187,12 @@ type Publisher interface {
 	PublishToUser(userID uuid.UUID, event events.Event)
 }
 
+// Notifier reaches people who have no Orbit tab open (internal/push). Optional:
+// without it nobody away from the app hears about a message.
+type Notifier interface {
+	Notify(ctx context.Context, recipients []uuid.UUID, n push.Notification)
+}
+
 // Conversations tells who is in a conversation. Optional: without it, a
 // conversation message is stored and simply not announced live.
 type Conversations interface {
@@ -244,6 +251,8 @@ type Service struct {
 	// profiles is optional at construction; main wires it in. Without it an
 	// author carries only the id, which is still enough to check authorship.
 	profiles Profiles
+	// notifier is optional; see Notifier.
+	notifier Notifier
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -268,6 +277,10 @@ func (s *Service) SetLimiter(limiter *ratelimit.Limiter) { s.limiter = limiter }
 
 // SetProfiles wires the profile module in after both exist.
 func (s *Service) SetProfiles(profiles Profiles) { s.profiles = profiles }
+
+// SetNotifier lets messages reach people away from the app: a direct or group
+// message, or a mention in a server channel.
+func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
 
 // fillAuthors loads the public part of every author on a page in one call. The
 // author of a deleted account stays nil: its messages keep their place.
@@ -657,6 +670,7 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	// A resend is not news: the watchers already saw this message.
 	if !existed {
 		s.publish(ctx, events.KindMessageCreated, channel.WorkspaceID, loaded)
+		s.notifyAway(ctx, channel, callerID, loaded, mentions)
 	}
 	return loaded, existed, nil
 }
@@ -955,4 +969,80 @@ func cleanEmoji(emoji string) (string, error) {
 		return "", ErrInvalidEmoji
 	}
 	return emoji, nil
+}
+
+// notifyAway tells the people this message is for, who may not have Orbit open:
+// every other participant of a conversation, and in a server channel only the
+// accounts it mentions and who can still see the channel. The notification
+// says who and where; the text is not sent, so it never leaves the app.
+func (s *Service) notifyAway(ctx context.Context, channel channels.Channel, authorID uuid.UUID, m Message, mentions []uuid.UUID) {
+	if s.notifier == nil || m.Kind == MessageKindSystem {
+		return
+	}
+	author := authorName(m)
+	if channel.WorkspaceID == uuid.Nil {
+		s.notifyConversation(ctx, channel, authorID, author)
+		return
+	}
+	recipients := make([]uuid.UUID, 0, len(mentions))
+	for _, id := range mentions {
+		if id == authorID {
+			continue
+		}
+		// A mention in a channel the person cannot open would name the channel to them.
+		if _, err := s.channels.Get(ctx, channel.ID, id); err != nil {
+			continue
+		}
+		recipients = append(recipients, id)
+	}
+	s.notifier.Notify(ctx, recipients, push.Notification{
+		Title: "Упоминание в #" + channel.Name,
+		Body:  "От " + author,
+		URL:   "/s/" + channel.WorkspaceID.String() + "/" + channel.ID.String(),
+		Tag:   channel.ID.String(),
+	})
+}
+
+func (s *Service) notifyConversation(ctx context.Context, channel channels.Channel, authorID uuid.UUID, author string) {
+	if s.conversations == nil {
+		return
+	}
+	members, err := s.conversations.MemberIDs(ctx, channel.ID)
+	if err != nil {
+		return
+	}
+	recipients := make([]uuid.UUID, 0, len(members))
+	for _, id := range members {
+		if id == authorID {
+			continue
+		}
+		// Someone who blocked the author keeps the group, not the news of them.
+		if s.privacy != nil {
+			if blocked, err := s.privacy.BlockedIDs(ctx, id); err == nil && blocked[authorID] {
+				continue
+			}
+		}
+		recipients = append(recipients, id)
+	}
+	body := "Новое сообщение"
+	if kind, err := s.conversations.Kind(ctx, channel.ID); err == nil && kind == conversations.KindGroup {
+		body = "Новое сообщение в групповом чате"
+	}
+	s.notifier.Notify(ctx, recipients, push.Notification{
+		Title: author,
+		Body:  body,
+		URL:   "/me/" + channel.ID.String(),
+		Tag:   channel.ID.String(),
+	})
+}
+
+// authorName is how a notification names the author: the display name, then the nickname.
+func authorName(m Message) string {
+	if m.Author == nil {
+		return "Удалённый пользователь"
+	}
+	if m.Author.DisplayName != "" {
+		return m.Author.DisplayName
+	}
+	return m.Author.Nickname
 }

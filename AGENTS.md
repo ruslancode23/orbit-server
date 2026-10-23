@@ -214,3 +214,23 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 - События: `roles.changed` — всем участникам через `servers.Service.Announce`; выдача роли — `member.changed`;
   переопределение — `channel.changed`, а гейтвей заново решает, кому канал виден.
 - Сквозная проверка с клиентом — `e2e/roles.spec.ts` в orbit-web (модератор, закрытый канал, иерархия).
+
+## Push-уведомления (FEAT-4, SCRUM-126)
+
+`internal/push` владеет таблицей `push_subscriptions` и отправкой Web Push (библиотека
+`SherClockHolmes/webpush-go`: шифрование RFC 8291 и VAPID). Подробности и API — README,
+«Push-уведомления».
+
+- Отправляет только `messages.Service` через узкий `Notifier` (`notifyAway`): личка и группа — всем,
+  кроме автора и тех, кто его заблокировал; канал сервера — только упомянутым, кто видит канал
+  (`ChannelAccess.Get`). Не добавляй в `Notification` текст сообщения, вложения или что-то из секретных
+  чатов: уведомление проходит через сторонний push-сервис и экран блокировки.
+- `push.Service.Notify` не блокирует отправку сообщения: раунд идёт в горутине с собственным таймаутом,
+  `Wait` ждёт его при остановке и в тестах. Пропускает тех, у кого открыта вкладка
+  (`presence.Service.Connected`), и «Не беспокоить» (`DoNotDisturb`).
+- Endpoint подписки принимается только `https` и только у известных push-сервисов (`pushHosts`) —
+  сервер сам ходит по этому адресу, произвольный URL был бы SSRF. Новый сервис добавляй туда же.
+- 404/410 от push-сервиса удаляют подписку, 2xx отмечает `last_success_at`, остальное — лог.
+- Без `ORBIT_VAPID_*` push выключен: `GET /push/config` отвечает `enabled: false`, подписка — 503.
+- Тесты: `internal/push` (адреса, кому уходит, мёртвые подписки, хендлеры, PostgreSQL),
+  `internal/messages/notify_test.go` (получатели и отсутствие текста).

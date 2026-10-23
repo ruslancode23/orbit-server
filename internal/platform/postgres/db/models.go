@@ -280,6 +280,16 @@ type MessageReaction struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type PushSubscription struct {
+	ID            pgtype.UUID        `json:"id"`
+	UserID        pgtype.UUID        `json:"user_id"`
+	Endpoint      string             `json:"endpoint"`
+	P256dh        string             `json:"p256dh"`
+	Auth          string             `json:"auth"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+}
+
 type ReleasedNickname struct {
 	NicknameKey string             `json:"nickname_key"`
 	ReleasedAt  pgtype.Timestamptz `json:"released_at"`

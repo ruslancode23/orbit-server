@@ -32,6 +32,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
 	"github.com/ruslancode23/orbit-server/internal/profile"
+	"github.com/ruslancode23/orbit-server/internal/push"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -102,6 +103,8 @@ type Deps struct {
 	Friends *friends.Handler
 	// Feedback serves bug reports sent from inside the app.
 	Feedback *feedback.Handler
+	// Push serves Web Push configuration and browser subscriptions.
+	Push *push.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -126,7 +129,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Push == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -176,7 +179,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, push: d.Push, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -224,6 +227,7 @@ type server struct {
 	profiles      *profile.Handler
 	friends       *friends.Handler
 	feedback      *feedback.Handler
+	push          *push.Handler
 	voice         *voice.Handler
 }
 
@@ -692,6 +696,18 @@ func (s *server) SetChannelOverride(ctx context.Context, req api.SetChannelOverr
 
 func (s *server) DeleteChannelOverride(ctx context.Context, req api.DeleteChannelOverrideRequestObject) (api.DeleteChannelOverrideResponseObject, error) {
 	return s.channels.DeleteChannelOverride(ctx, req)
+}
+
+func (s *server) GetPushConfig(ctx context.Context, req api.GetPushConfigRequestObject) (api.GetPushConfigResponseObject, error) {
+	return s.push.GetPushConfig(ctx, req)
+}
+
+func (s *server) CreatePushSubscription(ctx context.Context, req api.CreatePushSubscriptionRequestObject) (api.CreatePushSubscriptionResponseObject, error) {
+	return s.push.CreatePushSubscription(ctx, req)
+}
+
+func (s *server) DeletePushSubscription(ctx context.Context, req api.DeletePushSubscriptionRequestObject) (api.DeletePushSubscriptionResponseObject, error) {
+	return s.push.DeletePushSubscription(ctx, req)
 }
 
 func (s *server) CreateBugReport(ctx context.Context, req api.CreateBugReportRequestObject) (api.CreateBugReportResponseObject, error) {

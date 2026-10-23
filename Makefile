@@ -54,6 +54,9 @@ api: ## Generate the Go server from api/openapi.yaml
 api-check: api ## Fail if generated API code is out of date
 	git diff --exit-code -- internal/api
 
+vapid-keys: ## Print a new VAPID key pair for Web Push (ORBIT_VAPID_*)
+	go run ./cmd/vapid-keys
+
 sqlc: ## Generate Go code from db/queries
 	$(TOOL) sqlc generate
 

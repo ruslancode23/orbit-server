@@ -17,6 +17,7 @@ func setRequired(t *testing.T) {
 		"ORBIT_MAX_ICON_BYTES", "ORBIT_ICON_LINK_TTL", "ORBIT_MAX_AVATAR_BYTES", "ORBIT_AVATAR_LINK_TTL",
 		"ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT", "ORBIT_TRUSTED_PROXIES", "ORBIT_LOGIN_PER_MINUTE_PER_IP",
 		"ORBIT_LOGIN_FAILURES_PER_HOUR", "ORBIT_SIGNUPS_PER_HOUR_PER_IP",
+		"ORBIT_VAPID_PUBLIC_KEY", "ORBIT_VAPID_PRIVATE_KEY", "ORBIT_VAPID_SUBJECT",
 	} {
 		t.Setenv(name, "")
 	}
@@ -352,4 +353,41 @@ func TestLoadBugReportSettings(t *testing.T) {
 			t.Errorf("Load() = %d, %v; want 0 and no error", cfg.BugReportsPerHour, err)
 		}
 	})
+}
+
+func TestLoadPush(t *testing.T) {
+	tests := []struct {
+		name                     string
+		public, private, subject string
+		wantEnabled              bool
+		wantErr                  string
+	}{
+		{name: "off by default"},
+		{name: "all three", public: "pub", private: "priv", subject: "mailto:team@orbit.example", wantEnabled: true},
+		{name: "https subject", public: "pub", private: "priv", subject: "https://orbit.example", wantEnabled: true},
+		{name: "half set", public: "pub", wantErr: "go together"},
+		{name: "bad subject", public: "pub", private: "priv", subject: "team@orbit.example", wantErr: "mailto: or https:"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ORBIT_VAPID_PUBLIC_KEY", tt.public)
+			t.Setenv("ORBIT_VAPID_PRIVATE_KEY", tt.private)
+			t.Setenv("ORBIT_VAPID_SUBJECT", tt.subject)
+
+			cfg, err := Load()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Load() error = %v, want one mentioning %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.Push.Enabled() != tt.wantEnabled {
+				t.Errorf("Push.Enabled() = %v, want %v", cfg.Push.Enabled(), tt.wantEnabled)
+			}
+		})
+	}
 }
