@@ -110,6 +110,9 @@ type Querier interface {
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
 	DeletePendingFriendship(ctx context.Context, arg DeletePendingFriendshipParams) (int64, error)
+	DeletePushSubscription(ctx context.Context, arg DeletePushSubscriptionParams) (int64, error)
+	// The push service said the browser is gone (404 or 410).
+	DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error
 	DeleteRole(ctx context.Context, id pgtype.UUID) (int64, error)
 	DeleteSecretChatChannel(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretEnvelope(ctx context.Context, id pgtype.UUID) error
@@ -245,6 +248,7 @@ type Querier interface {
 	// Outgoing requests: this account is the one that asked.
 	ListOutgoingFriendRequests(ctx context.Context, userLow pgtype.UUID) ([]ListOutgoingFriendRequestsRow, error)
 	ListPendingSecretEnvelopes(ctx context.Context, arg ListPendingSecretEnvelopesParams) ([]SecretEnvelope, error)
+	ListPushSubscriptionsForUsers(ctx context.Context, userIds []pgtype.UUID) ([]PushSubscription, error)
 	ListSecretChatDevices(ctx context.Context, channelID pgtype.UUID) ([]SecretChatDevice, error)
 	ListUserDevices(ctx context.Context, userID pgtype.UUID) ([]Device, error)
 	// One query for a whole member list or message page: a reader must never ask
@@ -321,6 +325,7 @@ type Querier interface {
 	// Makes room just above @everyone for a new role.
 	ShiftRolesUp(ctx context.Context, workspaceID pgtype.UUID) error
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
+	TouchPushSubscription(ctx context.Context, endpoint string) error
 	TouchSession(ctx context.Context, id pgtype.UUID) error
 	UnbanWorkspaceMember(ctx context.Context, arg UnbanWorkspaceMemberParams) (int64, error)
 	UnblockUser(ctx context.Context, arg UnblockUserParams) error
@@ -335,6 +340,9 @@ type Querier interface {
 	// Only what the caller sent changes: a NULL name keeps the old one, and the
 	// description is touched only when set_description is true (NULL then clears it).
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
+	// Web Push subscriptions (internal/push).
+	// A browser that subscribes again (new keys, another account) keeps its row.
+	UpsertPushSubscription(ctx context.Context, arg UpsertPushSubscriptionParams) (PushSubscription, error)
 	UseInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
 	UserByID(ctx context.Context, id pgtype.UUID) (UserByIDRow, error)
 	// Friendships (SCRUM-98). A pair has at most one row, stored with the smaller

@@ -316,3 +316,27 @@ func TestStatusesForTheMemberList(t *testing.T) {
 		}
 	}
 }
+
+// Push asks two things: is a tab open, and did the account ask for quiet.
+func TestConnectedAndDoNotDisturbForPush(t *testing.T) {
+	h := newHarness(t)
+	anna, conn := uuid.New(), uuid.New()
+
+	if h.svc.Connected(anna) || h.svc.DoNotDisturb(anna) {
+		t.Fatal("an account that never connected is neither connected nor in «do not disturb»")
+	}
+	h.svc.Connect(anna, conn)
+	if !h.svc.Connected(anna) {
+		t.Error("Connected = false with a tab open")
+	}
+	if err := h.svc.SetAvailability(anna, AvailabilityDnd); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.Disconnect(anna, conn)
+	if h.svc.Connected(anna) {
+		t.Error("Connected = true after the last tab closed")
+	}
+	if !h.svc.DoNotDisturb(anna) {
+		t.Error("DoNotDisturb = false after picking it, even with no tab open")
+	}
+}

@@ -123,6 +123,16 @@ func (s *Service) SetAvailability(userID uuid.UUID, availability Availability) e
 	return nil
 }
 
+// Connected reports whether the account has an Orbit tab open anywhere. Push
+// stays quiet then: the open tab shows its own notification.
+func (s *Service) Connected(userID uuid.UUID) bool { return s.store.Connected(userID) }
+
+// DoNotDisturb reports whether the account picked «do not disturb»: no
+// notification of any kind should reach it.
+func (s *Service) DoNotDisturb(userID uuid.UUID) bool {
+	return s.store.Availability(userID) == AvailabilityDnd
+}
+
 // Statuses is what a member list shows: the status of every account asked
 // about, as other people see it. Unknown accounts are offline.
 func (s *Service) Statuses(userIDs []uuid.UUID) map[uuid.UUID]api.PresenceStatus {

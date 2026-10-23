@@ -32,6 +32,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/presence"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
 	"github.com/ruslancode23/orbit-server/internal/profile"
+	"github.com/ruslancode23/orbit-server/internal/push"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
 	"github.com/ruslancode23/orbit-server/internal/reads"
 	"github.com/ruslancode23/orbit-server/internal/secrets"
@@ -173,6 +174,14 @@ func run() error {
 	// list shows the same status next to the name.
 	userPresence.SetFriends(friendService)
 	friendService.SetPresence(userPresence)
+
+	// Web Push is off without VAPID keys: the service then answers «disabled» and sends nothing.
+	var pushSender push.Sender
+	if cfg.Push.Enabled() {
+		pushSender = push.NewWebPushSender(cfg.Push.PublicKey, cfg.Push.PrivateKey, cfg.Push.Subject, nil)
+	}
+	pushService := push.NewService(push.NewPostgresStore(queries), userPresence, pushSender, cfg.Push.PublicKey, log)
+	messageService.SetNotifier(pushService)
 	workspaceHandler.SetPresence(userPresence)
 	gatewayHandler := gateway.NewHandler(hub, workspaces, messageService, cfg.CORSOrigins, log)
 	gatewayHandler.SetChannels(channelService)
@@ -212,6 +221,7 @@ func run() error {
 		MaxIconBytes:       cfg.Storage.MaxIconBytes,
 		MaxAvatarBytes:     cfg.Storage.MaxAvatarBytes,
 		Feedback:           feedback.NewHandler(feedbackService, log),
+		Push:               push.NewHandler(pushService, log),
 		MaxScreenshotBytes: cfg.Storage.MaxScreenshotBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
@@ -271,5 +281,7 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
+	// Notifications already on their way finish; each round is bounded by its own timeout.
+	pushService.Wait()
 	return nil
 }

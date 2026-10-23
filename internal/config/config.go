@@ -52,7 +52,9 @@ type Config struct {
 	// address per hour.
 	SignupsPerHourPerIP int
 	LiveKit             LiveKit
-	Storage             Storage
+	// Push holds the VAPID keys for Web Push; all empty turns push off.
+	Push    Push
+	Storage Storage
 }
 
 // Storage is the object store for attachments (SeaweedFS locally, S3 elsewhere).
@@ -86,6 +88,16 @@ type LiveKit struct {
 	APIKey    string
 	APISecret string
 }
+
+// Push is the VAPID key pair (base64url, as webpush-go generates it) and the
+// subject push services may contact about this sender: mailto: or https:.
+type Push struct {
+	PublicKey  string
+	PrivateKey string
+	Subject    string
+}
+
+func (p Push) Enabled() bool { return p.PublicKey != "" }
 
 func (c Config) IsDevelopment() bool { return c.Env == "development" }
 
@@ -265,6 +277,24 @@ func Load() (Config, error) {
 	}
 
 	cfg.LiveKit.PublicURL = getenv("LIVEKIT_PUBLIC_URL", cfg.LiveKit.URL)
+
+	cfg.Push = Push{
+		PublicKey:  os.Getenv("ORBIT_VAPID_PUBLIC_KEY"),
+		PrivateKey: os.Getenv("ORBIT_VAPID_PRIVATE_KEY"),
+		Subject:    os.Getenv("ORBIT_VAPID_SUBJECT"),
+	}
+	set := 0
+	for _, v := range []string{cfg.Push.PublicKey, cfg.Push.PrivateKey, cfg.Push.Subject} {
+		if v != "" {
+			set++
+		}
+	}
+	if set != 0 && set != 3 {
+		errs = append(errs, errors.New("ORBIT_VAPID_PUBLIC_KEY, ORBIT_VAPID_PRIVATE_KEY and ORBIT_VAPID_SUBJECT go together: set all three or none"))
+	}
+	if cfg.Push.Subject != "" && !strings.HasPrefix(cfg.Push.Subject, "mailto:") && !strings.HasPrefix(cfg.Push.Subject, "https://") {
+		errs = append(errs, fmt.Errorf("ORBIT_VAPID_SUBJECT must be a mailto: or https: URL, got %q", cfg.Push.Subject))
+	}
 
 	if cfg.Env != "development" && cfg.Env != "production" {
 		errs = append(errs, fmt.Errorf("ORBIT_ENV must be development or production, got %q", cfg.Env))

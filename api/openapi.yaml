@@ -95,6 +95,14 @@ tags:
       with the same body whether the account exists, whether the recipient
       allows requests and whether a block stands — otherwise the endpoint would
       become a way to check who is here. Lists are always the caller's own.
+  - name: push
+    description: |
+      Web Push: a browser that agreed to notifications registers its push
+      subscription here, and the server sends to it when the account has no
+      Orbit tab open — a direct or group message, or a mention. A notification
+      says who wrote and where, never what: the text stays in the app, and a
+      secret chat never produces one. Push is off on an instance without VAPID
+      keys; `GET /push/config` tells the client.
   - name: feedback
     description: |
       Bug reports sent from inside the app. The report carries what the person
@@ -2396,6 +2404,73 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/push/config:
+    get:
+      operationId: getPushConfig
+      tags: [push]
+      summary: Whether this instance sends push notifications, and its VAPID key.
+      description: |
+        `publicKey` is the VAPID application server key in base64url, as
+        `PushManager.subscribe` takes it. Absent when push is off.
+      responses:
+        "200":
+          description: The push configuration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushConfig" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/push/subscriptions:
+    post:
+      operationId: createPushSubscription
+      tags: [push]
+      summary: Register this browser's push subscription for the signed-in account.
+      description: |
+        The body is `PushSubscription.toJSON()` from the browser. The endpoint must
+        be an `https` URL of a known push service (Google, Mozilla, Apple,
+        Microsoft): the server sends requests there, so it does not accept an
+        arbitrary address. Registering the same endpoint again updates its keys,
+        and from another account moves it to that account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PushSubscriptionInput" }
+      responses:
+        "201":
+          description: The subscription is stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400":
+          description: The endpoint is not an https URL of a known push service, or a key is missing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "503":
+          description: Push is off on this instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/push/subscriptions/{subscriptionId}:
+    parameters:
+      - name: subscriptionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: deletePushSubscription
+      tags: [push]
+      summary: Stop push notifications to one browser of the caller.
+      description: A subscription of another account answers 404, like one that is gone.
+      responses:
+        "204":
+          description: The subscription is removed.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     WorkspaceId:
@@ -2495,6 +2570,39 @@ components:
         message:
           type: string
           description: Human-readable explanation, safe to show to the user.
+    PushConfig:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        publicKey:
+          type: string
+          description: VAPID public key, base64url without padding.
+    PushSubscriptionInput:
+      type: object
+      required: [endpoint, keys]
+      properties:
+        endpoint:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh: { type: string, minLength: 1, maxLength: 256 }
+            auth: { type: string, minLength: 1, maxLength: 256 }
+    PushSubscription:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Keep it to unsubscribe this browser later.
     BugReport:
       type: object
       additionalProperties: false
