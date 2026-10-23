@@ -45,6 +45,9 @@ type Subscription struct {
 	once sync.Once
 	// dropped says the subscription was closed because it fell behind.
 	dropped bool
+	// revoked says the account lost access: the subscription was ended by
+	// Revoke, not by its own connection.
+	revoked bool
 	mu      sync.Mutex
 }
 
@@ -170,7 +173,7 @@ func (h *Hub) Revoke(workspaceID, userID uuid.UUID) {
 	h.mu.RUnlock()
 
 	for _, sub := range subs {
-		sub.Close()
+		sub.closeRevoked()
 	}
 }
 
@@ -198,19 +201,35 @@ func (s *Subscription) Dropped() bool {
 	return s.dropped
 }
 
+// Revoked reports whether the subscription ended because the account lost
+// access to the server. A subscription its own connection closed is neither
+// dropped nor revoked, and the gateway tells the client nothing.
+func (s *Subscription) Revoked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revoked
+}
+
 // Close ends the subscription. Calling it twice is fine.
-func (s *Subscription) Close() {
+func (s *Subscription) Close() { s.end(nil) }
+
+func (s *Subscription) closeSlow() { s.end(&s.dropped) }
+
+func (s *Subscription) closeRevoked() { s.end(&s.revoked) }
+
+// end closes the subscription once and records why before Done is closed, so a
+// reader woken by Done sees the reason. Whatever ends it first wins: a
+// subscription already closed keeps the reason it ended with.
+func (s *Subscription) end(reason *bool) {
 	s.once.Do(func() {
+		if reason != nil {
+			s.mu.Lock()
+			*reason = true
+			s.mu.Unlock()
+		}
 		s.hub.remove(s)
 		close(s.done)
 	})
-}
-
-func (s *Subscription) closeSlow() {
-	s.mu.Lock()
-	s.dropped = true
-	s.mu.Unlock()
-	s.Close()
 }
 
 func (h *Hub) remove(sub *Subscription) {

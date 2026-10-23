@@ -65,6 +65,9 @@ func TestRevokeEndsOnlyThatAccountsSubscriptions(t *testing.T) {
 			if sub.Dropped() {
 				t.Errorf("%s is marked as slow, but it was revoked", name)
 			}
+			if !sub.Revoked() {
+				t.Errorf("%s is not marked as revoked", name)
+			}
 		case <-time.After(time.Second):
 			t.Errorf("%s is still subscribed after the revoke", name)
 		}
@@ -195,5 +198,21 @@ func TestPersonalStreamReachesEveryConnectionOfOneAccount(t *testing.T) {
 	case event := <-anna.Events():
 		t.Errorf("a server event reached the personal stream: %+v", event)
 	default:
+	}
+}
+
+// A subscription its own connection closed is neither slow nor revoked: the
+// gateway must not tell the client it lost access.
+func TestCloseIsNotARevoke(t *testing.T) {
+	hub := NewHub()
+	workspace, userID := uuid.New(), uuid.New()
+	sub := hub.Subscribe(userID, workspace)
+
+	sub.Close()
+	hub.Revoke(workspace, userID)
+
+	<-sub.Done()
+	if sub.Dropped() || sub.Revoked() {
+		t.Errorf("dropped = %v, revoked = %v, want neither", sub.Dropped(), sub.Revoked())
 	}
 }

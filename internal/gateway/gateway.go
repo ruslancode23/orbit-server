@@ -351,8 +351,10 @@ func (h *Handler) pumpEvents(ctx context.Context, sub *events.Subscription, trac
 					Type: "error", Code: "behind",
 					Message: "the connection fell behind; reconnect and catch up by cursor",
 				})
-			} else {
-				// A revoke: the account lost access to this server.
+			} else if sub.Revoked() {
+				// The account lost access to this server. A subscription the
+				// connection closed itself (unsubscribe, another server) ends
+				// quietly: the reader has already answered the client.
 				send(ctx, writes, serverFrame{
 					Type: "error", Code: "forbidden", Message: "you are no longer on this server",
 				})
