@@ -192,6 +192,76 @@ func (h *Handler) RemoveReaction(ctx context.Context, req api.RemoveReactionRequ
 
 // APIMessage is the shape a message takes on the wire, for HTTP and for the
 // live stream alike: the client parses one thing.
+func (h *Handler) SearchMessages(ctx context.Context, req api.SearchMessagesRequestObject) (api.SearchMessagesResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.SearchMessages401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+	var limit int
+	if req.Params.Limit != nil {
+		limit = *req.Params.Limit
+	}
+	var hasFiles bool
+	if req.Params.HasFiles != nil {
+		hasFiles = *req.Params.HasFiles
+	}
+	var conversationsOnly bool
+	if req.Params.ConversationsOnly != nil {
+		conversationsOnly = *req.Params.ConversationsOnly
+	}
+	page, err := h.svc.Search(ctx, userID, SearchParams{
+		Query:             req.Params.Q,
+		WorkspaceID:       req.Params.WorkspaceId,
+		ChannelID:         req.Params.ChannelId,
+		ConversationID:    req.Params.ConversationId,
+		AuthorID:          req.Params.AuthorId,
+		HasFiles:          hasFiles,
+		ConversationsOnly: conversationsOnly,
+		Before:            req.Params.Before,
+		Limit:             limit,
+	})
+	var limited *SearchRateLimitedError
+	switch {
+	case errors.Is(err, ErrInvalidSearch):
+		return api.SearchMessages400JSONResponse(api.Error(badRequest("q: 1 to 200 characters, and one target only"))), nil
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrForbidden):
+		return api.SearchMessages404JSONResponse(api.Error(notFound())), nil
+	case errors.As(err, &limited):
+		seconds := int(limited.RetryAfter.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		return api.SearchMessages429JSONResponse{TooManyRequestsJSONResponse: api.TooManyRequestsJSONResponse{
+			Body:    api.Error(errorBody(httpx.CodeTooManyRequests, "too many searches")),
+			Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
+		}}, nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "search messages", slog.Any("error", err))
+		return api.SearchMessages500JSONResponse(internal("could not search messages")), nil
+	}
+
+	out := api.MessageSearchPage{
+		Items:      make([]api.MessageSearchHit, 0, len(page.Results)),
+		NextCursor: page.NextCursor,
+	}
+	for _, result := range page.Results {
+		hit := api.MessageSearchHit{
+			Message:  APIMessage(result.Message),
+			Headline: result.Headline,
+		}
+		if result.ChannelName != "" {
+			name := result.ChannelName
+			hit.ChannelName = &name
+		}
+		if result.WorkspaceID != nil {
+			workspaceID := *result.WorkspaceID
+			hit.WorkspaceId = &workspaceID
+		}
+		out.Items = append(out.Items, hit)
+	}
+	return api.SearchMessages200JSONResponse(out), nil
+}
+
 func APIMessage(m Message) api.Message {
 	kind := m.Kind
 	if kind == "" {

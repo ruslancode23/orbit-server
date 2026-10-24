@@ -222,6 +222,27 @@ docs/adr/               архитектурные решения
   `internal/notifysettings/store_postgres_test.go` (настоящий PostgreSQL), `internal/messages/notify_test.go`
   (кому уходит push, один батч уровней на сообщение).
 
+## Поиск сообщений (FEAT-6, SCRUM-128)
+
+`GET /api/v1/search/messages` — полнотекстовый поиск по тексту сообщений. Модуль живёт в
+`internal/messages` (он владеет таблицей), а SQL — `SearchMessages` в `db/queries/messages.sql`.
+
+- **Индекс:** `messages.search` — STORED generated column `to_tsvector('russian', content) ||
+  to_tsvector('english', content)`, GIN-индекс `messages_search_idx` строится `CONCURRENTLY`
+  отдельной миграцией (`00026`, `-- +goose NO TRANSACTION`). Колонка добавляется миграцией `00025`
+  и один раз переписывает таблицу.
+- **Права:** `Search` сначала собирает каналы, которые вызывающий может читать
+  (`channels.Visible` по всем его серверам и `conversations.ChannelIDs`), и передаёт их в SQL. Поэтому
+  скрытый канал, чужой сервер, беседа без участия и секретный чат не находятся вовсе — даже счётчиком.
+  Удалённые и системные сообщения отфильтрованы в SQL, авторы из блок-листа исключены.
+- **Параметры:** `q` (1–200), `workspaceId`, `channelId`, `conversationId`, `authorId`, `hasFiles`,
+  `conversationsOnly`, `before` (курсор `seq`), `limit` (до 25). Ответ — `MessageSearchPage`:
+  сообщение, `headline` (совпадения обёрнуты U+0002/U+0003, без HTML), имя канала и id сервера.
+- **Лимит:** 30 запросов в минуту на аккаунт через `ratelimit`; сверх — 429 с `Retry-After`.
+- **Тесты:** `internal/messages/search_test.go` (права, курсор, блок-лист, лимит) и
+  `search_postgres_test.go` на настоящем PostgreSQL (русская морфология, английский словарь,
+  скрытый канал, чужой сервер, чужая беседа, секретный чат, удалённое и системное сообщение).
+
 ## Сообщения о проблемах
 
 `POST /api/v1/bug-reports` (multipart, нужна сессия, гость тоже может) — пункт «Сообщить о проблеме» в

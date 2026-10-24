@@ -24,6 +24,10 @@ type fakeStore struct {
 	mentions  map[uuid.UUID][]uuid.UUID
 	reactions map[uuid.UUID]map[string]map[uuid.UUID]bool
 	seq       int64
+	// searchHits is what Search answers; the visibility tests do not need SQL.
+	searchHits []SearchHit
+	// lastSearch is the query the service handed to the store.
+	lastSearch SearchQuery
 }
 
 func newFakeStore() *fakeStore {
@@ -166,6 +170,11 @@ func (s *fakeStore) RemoveReaction(_ context.Context, messageID, userID uuid.UUI
 	return nil
 }
 
+func (s *fakeStore) Search(_ context.Context, query SearchQuery) ([]SearchHit, error) {
+	s.lastSearch = query
+	return s.searchHits, nil
+}
+
 func (s *fakeStore) Load(_ context.Context, m Message, viewerID uuid.UUID) (Message, error) {
 	stored, ok := s.messages[m.ID]
 	if !ok {
@@ -213,6 +222,34 @@ func (c *fakeChannels) Get(_ context.Context, channelID, callerID uuid.UUID) (ch
 	return view, nil
 }
 
+func (c *fakeChannels) Visible(_ context.Context, workspaceID, userID uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	known := false
+	for id, channel := range c.channels {
+		if channel.WorkspaceID != workspaceID {
+			continue
+		}
+		known = true
+		if c.readers[id][userID] {
+			out[id] = true
+		}
+	}
+	if !known {
+		return nil, channels.ErrNotFound
+	}
+	return out, nil
+}
+
+func (c *fakeChannels) LookupMany(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]channels.Channel, error) {
+	out := make(map[uuid.UUID]channels.Channel, len(ids))
+	for _, id := range ids {
+		if channel, ok := c.channels[id]; ok {
+			out[id] = channel
+		}
+	}
+	return out, nil
+}
+
 func (c *fakeChannels) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, error) {
 	view, err := c.Get(ctx, channelID, callerID)
 	if err != nil {
@@ -254,6 +291,22 @@ type fakeConversations struct {
 
 func (c *fakeConversations) MemberIDs(_ context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
 	return c.members[channelID], nil
+}
+
+func (c *fakeConversations) ChannelIDs(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	for channelID, members := range c.members {
+		if c.kinds[channelID] == conversations.KindSecret {
+			continue
+		}
+		for _, member := range members {
+			if member == userID {
+				out = append(out, channelID)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (c *fakeConversations) Kind(_ context.Context, channelID uuid.UUID) (conversations.Kind, error) {

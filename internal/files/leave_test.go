@@ -49,6 +49,16 @@ func (s *conversationChannelStore) SetReadOnly(context.Context, channels.Channel
 
 func (s *conversationChannelStore) Reorder(context.Context, uuid.UUID, []uuid.UUID) error { return nil }
 
+func (s *conversationChannelStore) Channels(_ context.Context, ids []uuid.UUID) ([]channels.Channel, error) {
+	out := make([]channels.Channel, 0, len(ids))
+	for _, id := range ids {
+		if id == s.channel.ID {
+			out = append(out, s.channel)
+		}
+	}
+	return out, nil
+}
+
 type participantSet map[uuid.UUID]bool
 
 func (p participantSet) IsParticipant(_ context.Context, _, userID uuid.UUID) (bool, error) {

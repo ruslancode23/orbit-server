@@ -236,6 +236,24 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 - Тесты: `internal/push` (адреса, кому уходит, мёртвые подписки, хендлеры, PostgreSQL),
   `internal/messages/notify_test.go` (получатели и отсутствие текста).
 
+## Поиск сообщений (FEAT-6, SCRUM-128)
+
+Поиск живёт в `internal/messages` (`Service.Search`, SQL `SearchMessages`): модуль владеет
+таблицей сообщений, поэтому отдельного модуля нет. `messages.search` — generated tsvector
+(русский + английский), GIN-индекс создаётся `CONCURRENTLY`.
+
+- Видимость решается **до** SQL: сервис собирает каналы через `channels.Visible` и беседы через
+  `conversations.ChannelIDs` и передаёт их списком. Не добавляй фильтр прав в SQL-запрос и не
+  ищи «по всем каналам с проверкой после»: скрытый канал не должен всплывать даже счётчиком.
+  Секретные чаты не входят в `ChannelIDs` и не ищутся никогда; удалённые и системные сообщения
+  отсекает SQL, авторов из блок-листа — `ExcludedAuthors`.
+- API: `GET /api/v1/search/messages`; курсор — `seq` (`before`/`nextCursor`), лимит страницы 25.
+  `headline` размечается U+0002/U+0003, не HTML. Лимит — 30 запросов в минуту на аккаунт.
+- Курсоры — bigint на клиенте: у infinite query в web задан `queryKeyHashFn`
+  (`hashQueryKeyWithBigints`), иначе `JSON.stringify` падает на bigint.
+- Тесты: `internal/messages/search_test.go`, `search_postgres_test.go` (настоящий PostgreSQL,
+  морфология и все запреты), web `e2e/search.spec.ts`.
+
 ## Уровни уведомлений (FEAT-5, SCRUM-127)
 
 `internal/notifysettings` владеет таблицей `notification_settings` (аккаунт, область, цель, уровень,

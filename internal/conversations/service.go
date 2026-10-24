@@ -180,6 +180,9 @@ type Store interface {
 	// MemberIDs is who belongs to a conversation: messages go to each of them
 	// personally, because a conversation has no server to announce to.
 	MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
+	// ChannelIDs is every ordinary conversation this account is in, for the
+	// search scope. Secret chats never appear here.
+	ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 	// KnownUsers reports which of the ids are real accounts.
 	KnownUsers(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
 	// SharesConversation reports a common conversation: profile visibility asks
@@ -446,6 +449,12 @@ func (s *Service) EnsureSecret(ctx context.Context, key string, memberIDs []uuid
 // MemberIDs is who is in a conversation, for publishing personal events.
 func (s *Service) MemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
 	return s.store.MemberIDs(ctx, channelID)
+}
+
+// ChannelIDs is every ordinary conversation of one account, for the search
+// scope. Secret chats are not conversations in this sense and never appear.
+func (s *Service) ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.ChannelIDs(ctx, userID)
 }
 
 // Kind is the sort of conversation a channel is. internal/messages asks, because

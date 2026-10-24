@@ -32,6 +32,16 @@ func (s *conversationChannelStore) List(context.Context, uuid.UUID) ([]channels.
 	return []channels.Channel{s.channel}, nil
 }
 
+func (s *conversationChannelStore) Channels(_ context.Context, ids []uuid.UUID) ([]channels.Channel, error) {
+	out := make([]channels.Channel, 0, len(ids))
+	for _, id := range ids {
+		if id == s.channel.ID {
+			out = append(out, s.channel)
+		}
+	}
+	return out, nil
+}
+
 func (s *conversationChannelStore) Update(context.Context, uuid.UUID, channels.Update) (channels.Channel, error) {
 	return s.channel, nil
 }

@@ -257,6 +257,36 @@ func (q *Queries) IsChannelMember(ctx context.Context, arg IsChannelMemberParams
 	return exists, err
 }
 
+const listConversationChannelIDs = `-- name: ListConversationChannelIDs :many
+SELECT channel_members.channel_id
+FROM channel_members
+    JOIN channels ON channels.id = channel_members.channel_id
+WHERE channel_members.user_id = $1::uuid
+  AND channels.kind <> 'secret'
+`
+
+// Every ordinary conversation this account is in, for the search scope. Secret
+// chats are never searched and are left out here.
+func (q *Queries) ListConversationChannelIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listConversationChannelIDs, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var channel_id pgtype.UUID
+		if err := rows.Scan(&channel_id); err != nil {
+			return nil, err
+		}
+		items = append(items, channel_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConversationMemberIDs = `-- name: ListConversationMemberIDs :many
 SELECT user_id FROM channel_members WHERE channel_id = $1 ORDER BY joined_at
 `

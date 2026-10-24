@@ -39,6 +39,10 @@ var (
 	ErrInvalidEmoji = errors.New("messages: a reaction must be 1 to 32 characters")
 	// ErrRateLimited means the account started too many new dialogues lately.
 	ErrRateLimited = errors.New("messages: too many new conversations")
+	// ErrInvalidSearch means the search query is empty or too long.
+	ErrInvalidSearch = errors.New("messages: the search query must be 1 to 200 characters")
+	// ErrSearchRateLimited means the account searched too often lately.
+	ErrSearchRateLimited = errors.New("messages: too many searches")
 )
 
 // RateLimitedError carries how long the caller should wait; the handler puts it
@@ -150,6 +154,57 @@ type Page struct {
 	NextBefore *int64
 }
 
+// SearchQuery is one page of full-text search. ChannelIDs are the only channels
+// the caller may see, decided by the service before the query runs.
+type SearchQuery struct {
+	Term string
+	// ChannelIDs is the whole allowed set: visibility is not decided in SQL.
+	ChannelIDs []uuid.UUID
+	AuthorID   *uuid.UUID
+	HasFiles   bool
+	Before     *int64
+	// ExcludedAuthors are accounts the caller blocked; their messages never surface.
+	ExcludedAuthors []uuid.UUID
+	Limit           int
+}
+
+// SearchHit is one matched message and the fragment to show.
+type SearchHit struct {
+	Message  Message
+	Headline string
+}
+
+// SearchParams are the filters of one search request. At most one target names
+// what to search: a channel, a conversation or a server.
+type SearchParams struct {
+	Query          string
+	WorkspaceID    *uuid.UUID
+	ChannelID      *uuid.UUID
+	ConversationID *uuid.UUID
+	AuthorID       *uuid.UUID
+	HasFiles       bool
+	// ConversationsOnly drops the server channels from a search without a
+	// target: the personal-messages screen searches dialogues.
+	ConversationsOnly bool
+	Before            *int64
+	Limit             int
+}
+
+// SearchResult is a hit with the channel it belongs to, ready for the API.
+type SearchResult struct {
+	Message     Message
+	Headline    string
+	ChannelName string
+	WorkspaceID *uuid.UUID
+}
+
+// SearchPage is one page of results and the cursor for the next one.
+type SearchPage struct {
+	Results []SearchResult
+	// NextCursor is the seq of the last result; nil on the last page.
+	NextCursor *int64
+}
+
 type Store interface {
 	// Create stores the message, or returns the one already stored for this
 	// client id — the same send twice must not make two messages.
@@ -170,6 +225,8 @@ type Store interface {
 	// HasMessages reports whether the channel has any message yet: the first one
 	// in a new dialogue is rate-limited like opening the dialogue itself.
 	HasMessages(ctx context.Context, channelID uuid.UUID) (bool, error)
+	// Search is full-text search over the given channels, newest first.
+	Search(ctx context.Context, q SearchQuery) ([]SearchHit, error)
 }
 
 // ChannelAccess is the part of internal/channels this package needs.
@@ -178,6 +235,10 @@ type ChannelAccess interface {
 	MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, error)
 	// Get returns the channel when the caller may read it.
 	Get(ctx context.Context, channelID, callerID uuid.UUID) (channels.View, error)
+	// Visible is which channels of a server the caller may see, for search.
+	Visible(ctx context.Context, workspaceID, userID uuid.UUID) (map[uuid.UUID]bool, error)
+	// LookupMany names a page of channels in one query, after access was checked.
+	LookupMany(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]channels.Channel, error)
 }
 
 // Publisher announces what happened to the clients watching the server. A nil
@@ -209,6 +270,14 @@ type Conversations interface {
 	// Kind tells a pair from a group: a block freezes the first and only marks
 	// the author in the second.
 	Kind(ctx context.Context, channelID uuid.UUID) (conversations.Kind, error)
+	// ChannelIDs is every ordinary conversation of an account, for the search scope.
+	ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// WorkspaceList lists the servers an account is in, so a search without a
+// target can cover all of them.
+type WorkspaceList interface {
+	Servers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 }
 
 // Files binds uploaded files to the message that names them and loads the
@@ -264,6 +333,11 @@ type Service struct {
 	notifier Notifier
 	// levels is optional; see NotificationLevels.
 	levels NotificationLevels
+	// workspaces is optional: without it a search without a target covers only
+	// conversations.
+	workspaces WorkspaceList
+	// searchLimiter caps searches per account; nil means no cap.
+	searchLimiter *ratelimit.Limiter
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -296,6 +370,12 @@ func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
 // SetNotificationLevels wires the server-side notification settings in: a
 // channel speaks as loudly as its people asked, instead of mentions only.
 func (s *Service) SetNotificationLevels(levels NotificationLevels) { s.levels = levels }
+
+// SetWorkspaces lets a search without a target cover every server of the account.
+func (s *Service) SetWorkspaces(list WorkspaceList) { s.workspaces = list }
+
+// SetSearchLimiter wires the per-account bucket for full-text search.
+func (s *Service) SetSearchLimiter(limiter *ratelimit.Limiter) { s.searchLimiter = limiter }
 
 // fillAuthors loads the public part of every author on a page in one call. The
 // author of a deleted account stays nil: its messages keep their place.
@@ -688,6 +768,187 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 		s.notifyAway(ctx, channel, callerID, loaded, mentions)
 	}
 	return loaded, existed, nil
+}
+
+// SearchRateLimitedError says how long the account should wait before another
+// search. The HTTP layer turns it into 429 with Retry-After.
+type SearchRateLimitedError struct {
+	RetryAfter time.Duration
+}
+
+func (e *SearchRateLimitedError) Error() string {
+	return fmt.Sprintf("messages: too many searches, retry in %s", e.RetryAfter)
+}
+
+// A search page stays small: a result is a pointer, not a reading surface.
+const (
+	searchPageSize       = 25
+	maxSearchQueryLength = 200
+)
+
+// Search looks for text in what the caller may read. Visibility is decided
+// here, before the query: the SQL receives only channels and conversations the
+// caller can open, so a hidden channel cannot appear even in a count. Blocked
+// authors are excluded, deleted messages and system lines never match, and
+// secret chats are not conversations in this sense at all.
+func (s *Service) Search(ctx context.Context, callerID uuid.UUID, params SearchParams) (SearchPage, error) {
+	if s.searchLimiter != nil {
+		if allowed, wait := s.searchLimiter.Allow(callerID); !allowed {
+			return SearchPage{}, &SearchRateLimitedError{RetryAfter: wait}
+		}
+	}
+	term := strings.TrimSpace(params.Query)
+	if term == "" || len([]rune(term)) > maxSearchQueryLength {
+		return SearchPage{}, ErrInvalidSearch
+	}
+	allowed, err := s.searchChannels(ctx, callerID, params)
+	if err != nil {
+		return SearchPage{}, err
+	}
+	if len(allowed) == 0 {
+		return SearchPage{}, nil
+	}
+
+	limit := params.Limit
+	if limit <= 0 || limit > searchPageSize {
+		limit = searchPageSize
+	}
+	excluded := []uuid.UUID{}
+	if s.privacy != nil {
+		if blocked, err := s.privacy.BlockedIDs(ctx, callerID); err == nil {
+			for id := range blocked {
+				excluded = append(excluded, id)
+			}
+		}
+	}
+	hits, err := s.store.Search(ctx, SearchQuery{
+		Term:            term,
+		ChannelIDs:      allowed,
+		AuthorID:        params.AuthorID,
+		HasFiles:        params.HasFiles,
+		Before:          params.Before,
+		ExcludedAuthors: excluded,
+		Limit:           limit + 1,
+	})
+	if err != nil {
+		return SearchPage{}, fmt.Errorf("search messages: %w", err)
+	}
+
+	var next *int64
+	if len(hits) > limit {
+		hits = hits[:limit]
+		cursor := hits[len(hits)-1].Message.Seq
+		next = &cursor
+	}
+
+	list := make([]Message, 0, len(hits))
+	channelIDs := make([]uuid.UUID, 0, len(hits))
+	seen := make(map[uuid.UUID]bool, len(hits))
+	for _, hit := range hits {
+		list = append(list, hit.Message)
+		if !seen[hit.Message.ChannelID] {
+			seen[hit.Message.ChannelID] = true
+			channelIDs = append(channelIDs, hit.Message.ChannelID)
+		}
+	}
+	// Authors and files of the whole page in one query each, not one per hit.
+	if err := s.fillAuthors(ctx, list); err != nil {
+		return SearchPage{}, err
+	}
+	if s.files != nil {
+		if list, err = s.withAttachmentsPage(ctx, list); err != nil {
+			return SearchPage{}, err
+		}
+	}
+	names, err := s.channels.LookupMany(ctx, channelIDs)
+	if err != nil {
+		return SearchPage{}, fmt.Errorf("name search channels: %w", err)
+	}
+
+	results := make([]SearchResult, 0, len(list))
+	for i, message := range list {
+		channel, ok := names[message.ChannelID]
+		if !ok {
+			continue
+		}
+		result := SearchResult{Message: message, Headline: hits[i].Headline, ChannelName: channel.Name}
+		if channel.WorkspaceID != uuid.Nil {
+			workspaceID := channel.WorkspaceID
+			result.WorkspaceID = &workspaceID
+		}
+		results = append(results, result)
+	}
+	return SearchPage{Results: results, NextCursor: next}, nil
+}
+
+// searchChannels is the visibility rule of search: one channel, one
+// conversation, one server, or everything the account may read.
+func (s *Service) searchChannels(ctx context.Context, callerID uuid.UUID, params SearchParams) ([]uuid.UUID, error) {
+	switch {
+	case params.ConversationID != nil:
+		if params.ChannelID != nil || params.WorkspaceID != nil {
+			return nil, ErrInvalidSearch
+		}
+		view, err := s.channels.Get(ctx, *params.ConversationID, callerID)
+		if err != nil {
+			return nil, mapAccessError(err)
+		}
+		if view.Channel.WorkspaceID != uuid.Nil || view.Channel.Kind == channels.KindSecret {
+			return nil, ErrNotFound
+		}
+		return []uuid.UUID{*params.ConversationID}, nil
+	case params.ChannelID != nil:
+		view, err := s.channels.Get(ctx, *params.ChannelID, callerID)
+		if err != nil {
+			return nil, mapAccessError(err)
+		}
+		// A conversation is not a channel here, and a secret chat is neither.
+		if view.Channel.WorkspaceID == uuid.Nil || view.Channel.Kind == channels.KindSecret {
+			return nil, ErrNotFound
+		}
+		return []uuid.UUID{*params.ChannelID}, nil
+	case params.WorkspaceID != nil:
+		visible, err := s.channels.Visible(ctx, *params.WorkspaceID, callerID)
+		if err != nil {
+			return nil, mapAccessError(err)
+		}
+		return idsOf(visible), nil
+	}
+
+	allowed := map[uuid.UUID]bool{}
+	if s.workspaces != nil && !params.ConversationsOnly {
+		workspaceIDs, err := s.workspaces.Servers(ctx, callerID)
+		if err != nil {
+			return nil, fmt.Errorf("list search servers: %w", err)
+		}
+		for _, workspaceID := range workspaceIDs {
+			visible, err := s.channels.Visible(ctx, workspaceID, callerID)
+			if err != nil {
+				return nil, mapAccessError(err)
+			}
+			for id := range visible {
+				allowed[id] = true
+			}
+		}
+	}
+	if s.conversations != nil {
+		conversationIDs, err := s.conversations.ChannelIDs(ctx, callerID)
+		if err != nil {
+			return nil, fmt.Errorf("list search conversations: %w", err)
+		}
+		for _, id := range conversationIDs {
+			allowed[id] = true
+		}
+	}
+	return idsOf(allowed), nil
+}
+
+func idsOf(set map[uuid.UUID]bool) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *Service) History(ctx context.Context, channelID, callerID uuid.UUID, before *int64, limit int) (Page, error) {

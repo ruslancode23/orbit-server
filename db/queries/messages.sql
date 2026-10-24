@@ -86,3 +86,34 @@ LIMIT $2;
 -- as opening one; this answers whether the dialogue has any message yet.
 -- name: ChannelHasMessages :one
 SELECT EXISTS (SELECT 1 FROM messages WHERE channel_id = $1);
+
+-- name: SearchMessages :many
+-- Full-text search (FEAT-6). The caller has already narrowed channel_ids to
+-- what this account may read; this query only filters and orders the page.
+-- Headline markers are control characters so message text cannot fake them.
+SELECT messages.*,
+       ts_headline(
+           'russian',
+           messages.content,
+           websearch_to_tsquery('russian', sqlc.arg(term)::text)
+               || websearch_to_tsquery('english', sqlc.arg(term)::text),
+           'StartSel=' || chr(2) || ', StopSel=' || chr(3)
+               || ', MaxWords=30, MinWords=8, MaxFragments=2, FragmentDelimiter= … '
+       )::text AS headline
+FROM messages
+WHERE messages.channel_id = ANY(sqlc.arg(channel_ids)::uuid[])
+  AND messages.deleted_at IS NULL
+  AND messages.kind = 'user'
+  AND messages.search @@ (
+      websearch_to_tsquery('russian', sqlc.arg(term)::text)
+          || websearch_to_tsquery('english', sqlc.arg(term)::text)
+  )
+  AND (sqlc.narg(author_id)::uuid IS NULL OR messages.author_id = sqlc.narg(author_id)::uuid)
+  AND (sqlc.arg(has_files)::boolean = false
+       OR EXISTS (SELECT 1 FROM attachments WHERE attachments.message_id = messages.id))
+  AND (sqlc.narg(before)::bigint IS NULL OR messages.seq < sqlc.narg(before)::bigint)
+  AND (coalesce(cardinality(sqlc.arg(excluded_authors)::uuid[]), 0) = 0
+       OR messages.author_id IS NULL
+       OR NOT (messages.author_id = ANY(sqlc.arg(excluded_authors)::uuid[])))
+ORDER BY messages.seq DESC
+LIMIT sqlc.arg(page_limit)::int;

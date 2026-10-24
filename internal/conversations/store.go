@@ -101,6 +101,18 @@ func (s *PostgresStore) MemberIDs(ctx context.Context, channelID uuid.UUID) ([]u
 	return out, nil
 }
 
+func (s *PostgresStore) ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.q.ListConversationChannelIDs(ctx, pgUUID(userID))
+	if err != nil {
+		return nil, fmt.Errorf("list conversation channel ids: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, uuid.UUID(row.Bytes))
+	}
+	return out, nil
+}
+
 func (s *PostgresStore) Conversation(ctx context.Context, id uuid.UUID) (Conversation, error) {
 	row, err := s.q.GetChannel(ctx, pgUUID(id))
 	if err != nil {

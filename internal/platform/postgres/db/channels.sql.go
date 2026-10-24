@@ -86,6 +86,41 @@ func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, erro
 	return i, err
 }
 
+const getChannelsByIDs = `-- name: GetChannelsByIDs :many
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels WHERE id = ANY($1::uuid[])
+`
+
+// Names and servers of a page of channels, for the search results.
+func (q *Queries) GetChannelsByIDs(ctx context.Context, ids []pgtype.UUID) ([]Channel, error) {
+	rows, err := q.db.Query(ctx, getChannelsByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Channel{}
+	for rows.Next() {
+		var i Channel
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Kind,
+			&i.Name,
+			&i.Topic,
+			&i.Position,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DirectKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceChannels = `-- name: ListWorkspaceChannels :many
 SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels
 WHERE workspace_id = $1

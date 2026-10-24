@@ -63,6 +63,22 @@ func (s *fakeStore) Secret(_ context.Context, key string) (Conversation, error) 
 	return *s.conversations[id], nil
 }
 
+func (s *fakeStore) ChannelIDs(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	for id, conversation := range s.conversations {
+		if conversation.Kind == KindSecret {
+			continue
+		}
+		for _, member := range conversation.Members {
+			if member.ID == userID {
+				out = append(out, id)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) MemberIDs(_ context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
 	conversation, ok := s.conversations[channelID]
 	if !ok {

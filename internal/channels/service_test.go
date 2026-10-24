@@ -82,6 +82,16 @@ func (s *fakeStore) Update(_ context.Context, id uuid.UUID, u Update) (Channel, 
 	return channel, nil
 }
 
+func (s *fakeStore) Channels(_ context.Context, ids []uuid.UUID) ([]Channel, error) {
+	out := make([]Channel, 0, len(ids))
+	for _, id := range ids {
+		if channel, ok := s.channels[id]; ok {
+			out = append(out, channel)
+		}
+	}
+	return out, nil
+}
+
 // SetOverride replaces one role's override; empty allow and deny remove it.
 func (s *fakeStore) SetOverride(_ context.Context, channelID uuid.UUID, o perms.Override) error {
 	stored := s.channels[channelID]
