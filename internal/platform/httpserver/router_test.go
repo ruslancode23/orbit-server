@@ -22,6 +22,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
+	"github.com/ruslancode23/orbit-server/internal/linkpreview"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
@@ -68,6 +69,8 @@ func newRouter(t *testing.T, dbErr error, adjust ...func(*Deps)) http.Handler {
 		Push:           push.NewHandler(push.NewService(nil, nil, nil, "", log), log),
 		NotificationSettings: notifysettings.NewHandler(
 			notifysettings.NewService(nil, nil, nil), log),
+		LinkPreviews: linkpreview.NewHandler(
+			linkpreview.NewService(nil, nil, false), log),
 		MaxScreenshotBytes: 1 << 14,
 		Invites: invites.NewHandler(
 			invites.NewService(nil, nil, nil), invites.NewCookies(auth.NewHandler(sessions, false, log)), log),

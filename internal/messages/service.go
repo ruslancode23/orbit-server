@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/linkpreview"
 	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
@@ -103,6 +105,8 @@ type Message struct {
 	// client collapses the message instead of showing it. It never leaves this
 	// server as a property of the message itself.
 	Blocked bool
+	// Preview is the OpenGraph card of the first link, once it has been fetched.
+	Preview *linkpreview.Preview
 }
 
 // Attachment is a file on a message, as the messages module passes it along;
@@ -274,6 +278,14 @@ type Conversations interface {
 	ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 }
 
+// LinkPreviews fetches and stores the cards of links in messages. Optional:
+// without it a message simply carries no preview.
+type LinkPreviews interface {
+	Attach(ctx context.Context, userID, messageID uuid.UUID, rawURL string) (linkpreview.Preview, error)
+	Detach(ctx context.Context, messageID uuid.UUID) error
+	ForMessages(ctx context.Context, messageIDs []uuid.UUID) (map[uuid.UUID]linkpreview.Preview, error)
+}
+
 // WorkspaceList lists the servers an account is in, so a search without a
 // target can cover all of them.
 type WorkspaceList interface {
@@ -338,6 +350,10 @@ type Service struct {
 	workspaces WorkspaceList
 	// searchLimiter caps searches per account; nil means no cap.
 	searchLimiter *ratelimit.Limiter
+	// previews is optional; see LinkPreviews.
+	previews LinkPreviews
+	// previewsRunning waits for attach rounds at shutdown and in tests.
+	previewsRunning sync.WaitGroup
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -376,6 +392,13 @@ func (s *Service) SetWorkspaces(list WorkspaceList) { s.workspaces = list }
 
 // SetSearchLimiter wires the per-account bucket for full-text search.
 func (s *Service) SetSearchLimiter(limiter *ratelimit.Limiter) { s.searchLimiter = limiter }
+
+// SetLinkPreviews wires the OpenGraph cache in after construction.
+func (s *Service) SetLinkPreviews(previews LinkPreviews) { s.previews = previews }
+
+// Wait waits for previews already being fetched: a shutdown and a test both
+// need the round to finish before the process goes away.
+func (s *Service) Wait() { s.previewsRunning.Wait() }
 
 // fillAuthors loads the public part of every author on a page in one call. The
 // author of a deleted account stays nil: its messages keep their place.
@@ -430,23 +453,93 @@ func (s *Service) withAttachments(ctx context.Context, m Message) (Message, erro
 	return m, nil
 }
 
-// withAttachmentsPage fills in the files of a whole page in one query.
-func (s *Service) withAttachmentsPage(ctx context.Context, list []Message) ([]Message, error) {
-	if s.files == nil || len(list) == 0 {
+// withPreview fills in the OpenGraph card of one message.
+func (s *Service) withPreview(ctx context.Context, m Message) (Message, error) {
+	if s.previews == nil {
+		return m, nil
+	}
+	previews, err := s.previews.ForMessages(ctx, []uuid.UUID{m.ID})
+	if err != nil {
+		return Message{}, err
+	}
+	if preview, ok := previews[m.ID]; ok {
+		m.Preview = &preview
+	}
+	return m, nil
+}
+
+// withPreviewsPage fills in the cards of a whole page in one query.
+func (s *Service) withPreviewsPage(ctx context.Context, list []Message) ([]Message, error) {
+	if s.previews == nil || len(list) == 0 {
 		return list, nil
 	}
 	ids := make([]uuid.UUID, 0, len(list))
 	for _, m := range list {
 		ids = append(ids, m.ID)
 	}
-	byMessage, err := s.files.ByMessages(ctx, ids)
+	byMessage, err := s.previews.ForMessages(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
 	for i := range list {
-		list[i].Attachments = byMessage[list[i].ID]
+		if preview, ok := byMessage[list[i].ID]; ok {
+			list[i].Preview = &preview
+		}
 	}
 	return list, nil
+}
+
+// withAttachmentsPage fills in the files of a whole page in one query.
+func (s *Service) withAttachmentsPage(ctx context.Context, list []Message) ([]Message, error) {
+	if s.files != nil && len(list) > 0 {
+		ids := make([]uuid.UUID, 0, len(list))
+		for _, m := range list {
+			ids = append(ids, m.ID)
+		}
+		byMessage, err := s.files.ByMessages(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for i := range list {
+			list[i].Attachments = byMessage[list[i].ID]
+		}
+	}
+	return s.withPreviewsPage(ctx, list)
+}
+
+// startPreview fetches the card of the first link after the send has already
+// been answered: the author does not wait for a third-party page. When it is
+// ready, the message is announced again as message.updated.
+func (s *Service) startPreview(ctx context.Context, userID uuid.UUID, m Message, workspaceID uuid.UUID) {
+	if s.previews == nil || m.Kind != MessageKindUser {
+		return
+	}
+	raw := linkpreview.FirstURL(m.Content)
+	if raw == "" {
+		return
+	}
+	s.previewsRunning.Add(1)
+	go func() {
+		defer s.previewsRunning.Done()
+		// The request context is done by now: the fetch has its own deadline.
+		roundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		defer cancel()
+		if _, err := s.previews.Attach(roundCtx, userID, m.ID, raw); err != nil {
+			return
+		}
+		updated, err := s.store.Load(roundCtx, m, userID)
+		if err != nil {
+			return
+		}
+		updated, err = s.fillAuthor(roundCtx, updated)
+		if err != nil {
+			return
+		}
+		if updated, err = s.withPreview(roundCtx, updated); err != nil {
+			return
+		}
+		s.publish(roundCtx, events.KindMessageUpdated, workspaceID, updated)
+	}()
 }
 
 // RecordSystem writes a group-change line into a conversation feed and tells
@@ -496,6 +589,9 @@ func (s *Service) Since(ctx context.Context, channelID, callerID uuid.UUID, afte
 		return nil, err
 	}
 	if err := s.fillAuthors(ctx, list); err != nil {
+		return nil, err
+	}
+	if list, err = s.withPreviewsPage(ctx, list); err != nil {
 		return nil, err
 	}
 	if view.Channel.WorkspaceID == uuid.Nil {
@@ -762,10 +858,14 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	if err != nil {
 		return Message{}, false, err
 	}
+	if loaded, err = s.withPreview(ctx, loaded); err != nil {
+		return Message{}, false, err
+	}
 	// A resend is not news: the watchers already saw this message.
 	if !existed {
 		s.publish(ctx, events.KindMessageCreated, channel.WorkspaceID, loaded)
 		s.notifyAway(ctx, channel, callerID, loaded, mentions)
+		s.startPreview(ctx, callerID, loaded, channel.WorkspaceID)
 	}
 	return loaded, existed, nil
 }
@@ -1029,7 +1129,17 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 	if err != nil {
 		return Message{}, err
 	}
+	if s.previews != nil && linkpreview.FirstURL(loaded.Content) == "" {
+		if err := s.previews.Detach(ctx, messageID); err == nil {
+			loaded.Preview = nil
+		}
+	}
+	loaded, err = s.withPreview(ctx, loaded)
+	if err != nil {
+		return Message{}, err
+	}
 	s.publish(ctx, events.KindMessageUpdated, channel.WorkspaceID, loaded)
+	s.startPreview(ctx, callerID, loaded, channel.WorkspaceID)
 	return loaded, nil
 }
 
@@ -1071,8 +1181,52 @@ func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Me
 	if err != nil {
 		return Message{}, err
 	}
+	if s.previews != nil {
+		_ = s.previews.Detach(ctx, messageID)
+		loaded.Preview = nil
+	}
 	s.publish(ctx, events.KindMessageDeleted, channel.WorkspaceID, loaded)
 	return loaded, nil
+}
+
+// RemovePreview drops the card of a message. Only its author may; editing the
+// message later attaches the card of its new text again.
+func (s *Service) RemovePreview(ctx context.Context, messageID, callerID uuid.UUID) error {
+	message, err := s.store.Message(ctx, messageID)
+	if err != nil {
+		return err
+	}
+	if message.Author == nil || message.Author.ID != callerID {
+		return ErrForbidden
+	}
+	view, err := s.channels.Get(ctx, message.ChannelID, callerID)
+	if err != nil {
+		return mapAccessError(err)
+	}
+	if view.Channel.Kind == channels.KindSecret {
+		return ErrNotFound
+	}
+	if s.previews == nil {
+		return ErrNotFound
+	}
+	if err := s.previews.Detach(ctx, messageID); err != nil {
+		return err
+	}
+	loaded, err := s.store.Load(ctx, message, callerID)
+	if err != nil {
+		return err
+	}
+	loaded, err = s.withAttachments(ctx, loaded)
+	if err != nil {
+		return err
+	}
+	loaded, err = s.fillAuthor(ctx, loaded)
+	if err != nil {
+		return err
+	}
+	loaded.Preview = nil
+	s.publish(ctx, events.KindMessageUpdated, view.Channel.WorkspaceID, loaded)
+	return nil
 }
 
 // React adds the caller's reaction. Reacting is writing, so a read-only channel

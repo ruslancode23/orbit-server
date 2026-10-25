@@ -26,6 +26,7 @@ type Querier interface {
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	// privacy asks this before it lets a friendship open a dialogue.
 	AreFriends(ctx context.Context, arg AreFriendsParams) (bool, error)
+	AttachMessagePreview(ctx context.Context, arg AttachMessagePreviewParams) error
 	// An attachment is bound to its message only by the user that uploaded it.
 	AttachToMessage(ctx context.Context, arg AttachToMessageParams) (Attachment, error)
 	BanWorkspaceMember(ctx context.Context, arg BanWorkspaceMemberParams) (Ban, error)
@@ -110,6 +111,7 @@ type Querier interface {
 	DeleteFriendship(ctx context.Context, arg DeleteFriendshipParams) (int64, error)
 	// Soft delete: replies and read cursors keep pointing at the message.
 	DeleteMessage(ctx context.Context, arg DeleteMessageParams) (Message, error)
+	DeleteMessagePreview(ctx context.Context, messageID pgtype.UUID) error
 	DeleteNotificationSetting(ctx context.Context, arg DeleteNotificationSettingParams) (int64, error)
 	DeletePendingFriendship(ctx context.Context, arg DeletePendingFriendshipParams) (int64, error)
 	DeletePushSubscription(ctx context.Context, arg DeletePushSubscriptionParams) (int64, error)
@@ -137,6 +139,9 @@ type Querier interface {
 	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 	GetDirectConversation(ctx context.Context, directKey pgtype.Text) (Channel, error)
 	GetInvite(ctx context.Context, id pgtype.UUID) (Invite, error)
+	// Link previews (internal/linkpreview).
+	GetLinkPreview(ctx context.Context, url string) (LinkPreview, error)
+	GetLinkPreviewByID(ctx context.Context, id pgtype.UUID) (LinkPreview, error)
 	// Only a usable invite comes back: expiry, revocation and the use limit are checked here.
 	GetLiveInvite(ctx context.Context, code string) (Invite, error)
 	// Only a live session resolves to its user; expiry and revocation are checked here,
@@ -261,6 +266,7 @@ type Querier interface {
 	// Outgoing requests: this account is the one that asked.
 	ListOutgoingFriendRequests(ctx context.Context, userLow pgtype.UUID) ([]ListOutgoingFriendRequestsRow, error)
 	ListPendingSecretEnvelopes(ctx context.Context, arg ListPendingSecretEnvelopesParams) ([]SecretEnvelope, error)
+	ListPreviewsForMessages(ctx context.Context, messageIds []pgtype.UUID) ([]ListPreviewsForMessagesRow, error)
 	ListPushSubscriptionsForUsers(ctx context.Context, userIds []pgtype.UUID) ([]PushSubscription, error)
 	ListSecretChatDevices(ctx context.Context, channelID pgtype.UUID) ([]SecretChatDevice, error)
 	ListUserDevices(ctx context.Context, userID pgtype.UUID) ([]Device, error)
@@ -357,6 +363,7 @@ type Querier interface {
 	// Only what the caller sent changes: a NULL name keeps the old one, and the
 	// description is touched only when set_description is true (NULL then clears it).
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
+	UpsertLinkPreview(ctx context.Context, arg UpsertLinkPreviewParams) (LinkPreview, error)
 	UpsertNotificationSetting(ctx context.Context, arg UpsertNotificationSettingParams) (NotificationSetting, error)
 	// Web Push subscriptions (internal/push).
 	// A browser that subscribes again (new keys, another account) keeps its row.

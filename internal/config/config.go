@@ -51,7 +51,10 @@ type Config struct {
 	// SignupsPerHourPerIP caps new accounts, registered or guest, from one
 	// address per hour.
 	SignupsPerHourPerIP int
-	LiveKit             LiveKit
+	// LinkPreviewAllowPrivate lets the preview fetcher reach loopback and private
+	// addresses. Off by default: it exists for local end-to-end tests only.
+	LinkPreviewAllowPrivate bool
+	LiveKit                 LiveKit
 	// Push holds the VAPID keys for Web Push; all empty turns push off.
 	Push    Push
 	Storage Storage
@@ -255,6 +258,7 @@ func Load() (Config, error) {
 		LoginPerMinutePerIP:       loginPerIP,
 		LoginFailuresPerHour:      loginFailures,
 		SignupsPerHourPerIP:       signupsPerIP,
+		LinkPreviewAllowPrivate:   envBool("ORBIT_LINK_PREVIEW_ALLOW_PRIVATE"),
 		Storage: Storage{
 			Endpoint:           required("ORBIT_S3_ENDPOINT"),
 			Bucket:             required("ORBIT_S3_BUCKET"),
@@ -318,4 +322,13 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// envBool reads a yes/no switch; anything but 1/true/yes is false.
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }

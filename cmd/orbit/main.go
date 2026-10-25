@@ -23,6 +23,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/gateway"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
+	"github.com/ruslancode23/orbit-server/internal/linkpreview"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpserver"
@@ -151,6 +152,11 @@ func run() error {
 	notificationSettings.SetPublisher(hub)
 	messageService.SetNotificationLevels(notificationSettings)
 
+	// A link preview is fetched by the server after the send is answered, with
+	// the address checks in internal/linkpreview; its image is proxied later.
+	previewService := linkpreview.NewService(linkpreview.NewPostgresStore(queries), ratelimit.New(30), cfg.LinkPreviewAllowPrivate)
+	messageService.SetLinkPreviews(previewService)
+
 	// Secret chats: public keys and ciphertext only. The server never has the
 	// key to open an envelope.
 	secretService := secrets.NewService(secrets.NewPostgresStore(pool), conversationService, hub)
@@ -234,6 +240,7 @@ func run() error {
 		Feedback:             feedback.NewHandler(feedbackService, log),
 		Push:                 push.NewHandler(pushService, log),
 		NotificationSettings: notifysettings.NewHandler(notificationSettings, log),
+		LinkPreviews:         linkpreview.NewHandler(previewService, log),
 		MaxScreenshotBytes:   cfg.Storage.MaxScreenshotBytes,
 		Reads: reads.NewHandler(
 			reads.NewService(reads.NewPostgresStore(queries), channelService, workspaces, hub), log),
@@ -293,7 +300,9 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
-	// Notifications already on their way finish; each round is bounded by its own timeout.
+	// Notifications and link previews already on their way finish; each round is
+	// bounded by its own timeout.
+	messageService.Wait()
 	pushService.Wait()
 	return nil
 }

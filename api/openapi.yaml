@@ -987,6 +987,23 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/messages/{messageId}/preview:
+    parameters:
+      - $ref: "#/components/parameters/MessageId"
+    delete:
+      operationId: deleteMessagePreview
+      tags: [messages]
+      summary: Remove the link preview from your own message.
+      description: |
+        Only the author may. Editing the message later reads the card of its new
+        first link again. A message without a preview answers 404.
+      responses:
+        "204":
+          description: The preview is gone.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/messages/{messageId}/reactions/{emoji}:
     parameters:
       - $ref: "#/components/parameters/MessageId"
@@ -3587,6 +3604,28 @@ components:
             history of a shared group, but the client collapses or hides it. Absent
             means the message is shown as usual. Never set in a direct dialogue,
             which does not exist with a blocked account.
+        preview:
+          $ref: "#/components/schemas/LinkPreview"
+    LinkPreview:
+      type: object
+      additionalProperties: false
+      required: [id, url, title]
+      properties:
+        id: { type: string, format: uuid }
+        url:
+          type: string
+          description: The normalized address the card was read from.
+        title:
+          type: string
+          description: OpenGraph title, or the page's <title> when it has none.
+        description: { type: string }
+        siteName: { type: string }
+        imageUrl:
+          type: string
+          description: |
+            This server's proxy path for the image, never the page's own address:
+            a reader's browser must not call a third-party host for a card. Absent
+            when the page has no image.
     Reaction:
       type: object
       additionalProperties: false

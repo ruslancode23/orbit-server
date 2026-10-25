@@ -251,6 +251,17 @@ type Invite struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type LinkPreview struct {
+	ID          pgtype.UUID        `json:"id"`
+	Url         string             `json:"url"`
+	Title       pgtype.Text        `json:"title"`
+	Description pgtype.Text        `json:"description"`
+	SiteName    pgtype.Text        `json:"site_name"`
+	ImageUrl    pgtype.Text        `json:"image_url"`
+	Status      string             `json:"status"`
+	FetchedAt   pgtype.Timestamptz `json:"fetched_at"`
+}
+
 type Message struct {
 	Seq             int64              `json:"seq"`
 	ID              pgtype.UUID        `json:"id"`
@@ -272,6 +283,11 @@ type Message struct {
 type MessageMention struct {
 	MessageID pgtype.UUID `json:"message_id"`
 	UserID    pgtype.UUID `json:"user_id"`
+}
+
+type MessagePreview struct {
+	MessageID pgtype.UUID `json:"message_id"`
+	PreviewID pgtype.UUID `json:"preview_id"`
 }
 
 type MessageReaction struct {

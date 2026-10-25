@@ -192,6 +192,24 @@ func (h *Handler) RemoveReaction(ctx context.Context, req api.RemoveReactionRequ
 
 // APIMessage is the shape a message takes on the wire, for HTTP and for the
 // live stream alike: the client parses one thing.
+func (h *Handler) DeleteMessagePreview(ctx context.Context, req api.DeleteMessagePreviewRequestObject) (api.DeleteMessagePreviewResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.DeleteMessagePreview401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+	err := h.svc.RemovePreview(ctx, req.MessageId, userID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return api.DeleteMessagePreview404JSONResponse(api.Error(notFound())), nil
+	case errors.Is(err, ErrForbidden):
+		return api.DeleteMessagePreview403JSONResponse(api.Error(forbidden("only the author may remove the preview"))), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "delete message preview", slog.Any("error", err))
+		return api.DeleteMessagePreview500JSONResponse(internal("could not remove the preview")), nil
+	}
+	return api.DeleteMessagePreview204Response{}, nil
+}
+
 func (h *Handler) SearchMessages(ctx context.Context, req api.SearchMessagesRequestObject) (api.SearchMessagesResponseObject, error) {
 	userID, ok := caller(ctx)
 	if !ok {
@@ -299,6 +317,28 @@ func APIMessage(m Message) api.Message {
 	if m.Blocked {
 		blocked := true
 		message.Blocked = &blocked
+	}
+	if m.Preview != nil {
+		preview := api.LinkPreview{
+			Id:    m.Preview.ID,
+			Url:   m.Preview.URL,
+			Title: m.Preview.Title,
+		}
+		if m.Preview.Description != "" {
+			description := m.Preview.Description
+			preview.Description = &description
+		}
+		if m.Preview.SiteName != "" {
+			siteName := m.Preview.SiteName
+			preview.SiteName = &siteName
+		}
+		if m.Preview.ImageURL != "" {
+			// The reader's browser loads the image from this server, never from
+			// the page it was read on.
+			imageURL := "/api/v1/link-previews/" + m.Preview.ID.String() + "/image"
+			preview.ImageUrl = &imageURL
+		}
+		message.Preview = &preview
 	}
 	for _, r := range m.Reactions {
 		message.Reactions = append(message.Reactions, api.Reaction{
