@@ -28,6 +28,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
 	"github.com/ruslancode23/orbit-server/internal/messages"
+	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/privacy"
@@ -105,6 +106,8 @@ type Deps struct {
 	Feedback *feedback.Handler
 	// Push serves Web Push configuration and browser subscriptions.
 	Push *push.Handler
+	// NotificationSettings serves the levels of servers, channels and conversations.
+	NotificationSettings *notifysettings.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -129,7 +132,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Push == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Push == nil || d.NotificationSettings == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -179,7 +182,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, push: d.Push, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, push: d.Push, notificationSettings: d.NotificationSettings, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -228,7 +231,9 @@ type server struct {
 	friends       *friends.Handler
 	feedback      *feedback.Handler
 	push          *push.Handler
-	voice         *voice.Handler
+	// notificationSettings is the levels of servers, channels and conversations.
+	notificationSettings *notifysettings.Handler
+	voice                *voice.Handler
 }
 
 var _ api.StrictServerInterface = (*server)(nil)
@@ -708,6 +713,18 @@ func (s *server) CreatePushSubscription(ctx context.Context, req api.CreatePushS
 
 func (s *server) DeletePushSubscription(ctx context.Context, req api.DeletePushSubscriptionRequestObject) (api.DeletePushSubscriptionResponseObject, error) {
 	return s.push.DeletePushSubscription(ctx, req)
+}
+
+func (s *server) ListNotificationSettings(ctx context.Context, req api.ListNotificationSettingsRequestObject) (api.ListNotificationSettingsResponseObject, error) {
+	return s.notificationSettings.ListNotificationSettings(ctx, req)
+}
+
+func (s *server) SetNotificationSetting(ctx context.Context, req api.SetNotificationSettingRequestObject) (api.SetNotificationSettingResponseObject, error) {
+	return s.notificationSettings.SetNotificationSetting(ctx, req)
+}
+
+func (s *server) DeleteNotificationSetting(ctx context.Context, req api.DeleteNotificationSettingRequestObject) (api.DeleteNotificationSettingResponseObject, error) {
+	return s.notificationSettings.DeleteNotificationSetting(ctx, req)
 }
 
 func (s *server) CreateBugReport(ctx context.Context, req api.CreateBugReportRequestObject) (api.CreateBugReportResponseObject, error) {

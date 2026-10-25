@@ -103,6 +103,14 @@ tags:
       says who wrote and where, never what: the text stays in the app, and a
       secret chat never produces one. Push is off on an instance without VAPID
       keys; `GET /push/config` tells the client.
+  - name: notification-settings
+    description: |
+      How loudly each server, channel and conversation speaks, per account and
+      not per device. A channel inherits its server's level unless it has one of
+      its own; a server channel falls back to mentions, a conversation to every
+      message. A mute deadline silences the target until it passes, whatever the
+      level says. The same rows decide in-tab notifications and push, and a change
+      reaches the account's other devices as `notification_settings.updated`.
   - name: feedback
     description: |
       Bug reports sent from inside the app. The report carries what the person
@@ -2471,6 +2479,82 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/notification-settings:
+    get:
+      operationId: listNotificationSettings
+      tags: [notification-settings]
+      summary: Every notification level of the signed-in account.
+      description: |
+        One flat list: the rows the account made for its servers, channels and
+        conversations. An empty list means every default applies — a server
+        channel speaks on mentions, a conversation on every message. Rows follow
+        the account to every device.
+      responses:
+        "200":
+          description: The settings, ordered by scope and target.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationSettings" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/notification-settings/{scope}/{targetId}:
+    parameters:
+      - name: scope
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/NotificationScope" }
+      - name: targetId
+        in: path
+        required: true
+        description: The server, channel or conversation the setting is about.
+        schema: { type: string, format: uuid }
+    put:
+      operationId: setNotificationSetting
+      tags: [notification-settings]
+      summary: Set the level and the mute deadline of one server, channel or conversation.
+      description: |
+        Replaces the whole row: `level` `inherit` takes the channel's server
+        level, and a server channel without either speaks on mentions; a
+        conversation falls back to every message. `mutedUntil` null means no mute
+        deadline, and a deadline in the past is the same as one that has passed.
+        The target must be visible to the caller: another account's server, a
+        hidden channel or somebody else's conversation answers 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationSettingUpdate" }
+      responses:
+        "200":
+          description: The stored row.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationSetting" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404":
+          description: |
+            No such target, or one the caller may not see. The same answer for
+            both, so the API never reveals a hidden channel or a stranger's server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The account already keeps the maximum number of settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteNotificationSetting
+      tags: [notification-settings]
+      summary: Drop one setting, returning that target to the default.
+      responses:
+        "204":
+          description: The setting is gone.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     WorkspaceId:
@@ -2603,6 +2687,58 @@ components:
           type: string
           format: uuid
           description: Keep it to unsubscribe this browser later.
+    NotificationScope:
+      type: string
+      enum: [workspace, channel, conversation]
+      description: |
+        What the row is about: a server, one of its channels, or a direct or
+        group conversation. The target id names the object itself.
+    NotificationSetting:
+      type: object
+      additionalProperties: false
+      required: [scope, targetId, level, mutedUntil, updatedAt]
+      properties:
+        scope: { $ref: "#/components/schemas/NotificationScope" }
+        targetId: { type: string, format: uuid }
+        level:
+          type: string
+          enum: [all, mentions, none, inherit]
+          description: |
+            `all` speaks on every message, `mentions` only when the account is
+            named, `none` never. `inherit` takes the server's level for a
+            channel and the default for a conversation.
+        mutedUntil:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            The target stays silent until this moment, whatever `level` says.
+            Null is no deadline; a past moment has already passed.
+        updatedAt: { type: string, format: date-time }
+    NotificationSettings:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: The account's rows, ordered by scope and target.
+          items: { $ref: "#/components/schemas/NotificationSetting" }
+    NotificationSettingUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        The whole row is replaced, so both fields are sent. `inherit` returns
+        the target to its inherited level; null `mutedUntil` removes the deadline.
+      required: [level, mutedUntil]
+      properties:
+        level:
+          type: string
+          enum: [all, mentions, none, inherit]
+        mutedUntil:
+          type: string
+          format: date-time
+          nullable: true
     BugReport:
       type: object
       additionalProperties: false

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
+	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/push"
@@ -193,6 +195,13 @@ type Notifier interface {
 	Notify(ctx context.Context, recipients []uuid.UUID, n push.Notification)
 }
 
+// NotificationLevels is how loudly one channel speaks to each account, as
+// internal/notifysettings computes it. Optional: without it a server channel
+// notifies its mentions and a conversation notifies everyone, as before.
+type NotificationLevels interface {
+	Levels(ctx context.Context, channel channels.Channel) (map[uuid.UUID]notifysettings.Level, error)
+}
+
 // Conversations tells who is in a conversation. Optional: without it, a
 // conversation message is stored and simply not announced live.
 type Conversations interface {
@@ -253,6 +262,8 @@ type Service struct {
 	profiles Profiles
 	// notifier is optional; see Notifier.
 	notifier Notifier
+	// levels is optional; see NotificationLevels.
+	levels NotificationLevels
 }
 
 func NewService(store Store, access ChannelAccess, members Members, files Files, publisher Publisher) *Service {
@@ -281,6 +292,10 @@ func (s *Service) SetProfiles(profiles Profiles) { s.profiles = profiles }
 // SetNotifier lets messages reach people away from the app: a direct or group
 // message, or a mention in a server channel.
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// SetNotificationLevels wires the server-side notification settings in: a
+// channel speaks as loudly as its people asked, instead of mentions only.
+func (s *Service) SetNotificationLevels(levels NotificationLevels) { s.levels = levels }
 
 // fillAuthors loads the public part of every author on a page in one call. The
 // author of a deleted account stays nil: its messages keep their place.
@@ -972,38 +987,79 @@ func cleanEmoji(emoji string) (string, error) {
 }
 
 // notifyAway tells the people this message is for, who may not have Orbit open:
-// every other participant of a conversation, and in a server channel only the
-// accounts it mentions and who can still see the channel. The notification
-// says who and where; the text is not sent, so it never leaves the app.
+// every other participant of a conversation, and in a server channel both the
+// accounts it mentions and the ones who asked to hear everything there. The
+// levels come from internal/notifysettings in one query for the whole audience,
+// never one per member. The notification says who and where; the text is not
+// sent, so it never leaves the app.
 func (s *Service) notifyAway(ctx context.Context, channel channels.Channel, authorID uuid.UUID, m Message, mentions []uuid.UUID) {
 	if s.notifier == nil || m.Kind == MessageKindSystem {
 		return
 	}
 	author := authorName(m)
+	levels := s.channelLevels(ctx, channel)
 	if channel.WorkspaceID == uuid.Nil {
-		s.notifyConversation(ctx, channel, authorID, author)
+		s.notifyConversation(ctx, channel, authorID, author, levels)
 		return
 	}
-	recipients := make([]uuid.UUID, 0, len(mentions))
+
+	mentioned := make([]uuid.UUID, 0, len(mentions))
 	for _, id := range mentions {
-		if id == authorID {
+		if id == authorID || levels[id] == notifysettings.LevelNone {
 			continue
 		}
 		// A mention in a channel the person cannot open would name the channel to them.
 		if _, err := s.channels.Get(ctx, channel.ID, id); err != nil {
 			continue
 		}
-		recipients = append(recipients, id)
+		mentioned = append(mentioned, id)
 	}
-	s.notifier.Notify(ctx, recipients, push.Notification{
-		Title: "Упоминание в #" + channel.Name,
-		Body:  "От " + author,
-		URL:   "/s/" + channel.WorkspaceID.String() + "/" + channel.ID.String(),
-		Tag:   channel.ID.String(),
-	})
+	// People who asked for every message here hear this one too, unless they
+	// were named already: one notification, with the more precise wording.
+	loud := make([]uuid.UUID, 0, len(levels))
+	for id, level := range levels {
+		if id == authorID || level != notifysettings.LevelAll || slices.Contains(mentioned, id) {
+			continue
+		}
+		if _, err := s.channels.Get(ctx, channel.ID, id); err != nil {
+			continue
+		}
+		loud = append(loud, id)
+	}
+	url := "/s/" + channel.WorkspaceID.String() + "/" + channel.ID.String()
+	if len(loud) > 0 {
+		s.notifier.Notify(ctx, loud, push.Notification{
+			Title: "Новое сообщение в #" + channel.Name,
+			Body:  "От " + author,
+			URL:   url,
+			Tag:   channel.ID.String(),
+		})
+	}
+	if len(mentioned) > 0 {
+		s.notifier.Notify(ctx, mentioned, push.Notification{
+			Title: "Упоминание в #" + channel.Name,
+			Body:  "От " + author,
+			URL:   url,
+			Tag:   channel.ID.String(),
+		})
+	}
 }
 
-func (s *Service) notifyConversation(ctx context.Context, channel channels.Channel, authorID uuid.UUID, author string) {
+// channelLevels is the whole audience's choice for one channel. Without the
+// module every account keeps the default: mentions in a channel, everything in
+// a conversation.
+func (s *Service) channelLevels(ctx context.Context, channel channels.Channel) map[uuid.UUID]notifysettings.Level {
+	if s.levels == nil {
+		return nil
+	}
+	levels, err := s.levels.Levels(ctx, channel)
+	if err != nil {
+		return nil
+	}
+	return levels
+}
+
+func (s *Service) notifyConversation(ctx context.Context, channel channels.Channel, authorID uuid.UUID, author string, levels map[uuid.UUID]notifysettings.Level) {
 	if s.conversations == nil {
 		return
 	}
@@ -1013,7 +1069,7 @@ func (s *Service) notifyConversation(ctx context.Context, channel channels.Chann
 	}
 	recipients := make([]uuid.UUID, 0, len(members))
 	for _, id := range members {
-		if id == authorID {
+		if id == authorID || levels[id] == notifysettings.LevelNone {
 			continue
 		}
 		// Someone who blocked the author keeps the group, not the news of them.
@@ -1023,6 +1079,9 @@ func (s *Service) notifyConversation(ctx context.Context, channel channels.Chann
 			}
 		}
 		recipients = append(recipients, id)
+	}
+	if len(recipients) == 0 {
+		return
 	}
 	body := "Новое сообщение"
 	if kind, err := s.conversations.Kind(ctx, channel.ID); err == nil && kind == conversations.KindGroup {
