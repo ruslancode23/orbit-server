@@ -124,6 +124,47 @@ func (s *PostgresStore) Since(ctx context.Context, channelID uuid.UUID, afterSeq
 	return s.decorate(ctx, list, ids, viewerID)
 }
 
+// Search reads one page of full-text matches and their headlines. The channels
+// in the query are already the ones the caller may see.
+func (s *PostgresStore) Search(ctx context.Context, q SearchQuery) ([]SearchHit, error) {
+	rows, err := s.q.SearchMessages(ctx, db.SearchMessagesParams{
+		Term:            q.Term,
+		ChannelIds:      pgUUIDs(q.ChannelIDs),
+		AuthorID:        pgUUIDPtr(q.AuthorID),
+		HasFiles:        q.HasFiles,
+		Before:          pgInt8(q.Before),
+		ExcludedAuthors: pgUUIDs(q.ExcludedAuthors),
+		PageLimit:       int32(q.Limit), //nolint:gosec // capped at searchPageSize by the service
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	hits := make([]SearchHit, 0, len(rows))
+	for _, row := range rows {
+		hits = append(hits, SearchHit{
+			Message: toMessage(db.Message{
+				Seq:             row.Seq,
+				ID:              row.ID,
+				ChannelID:       row.ChannelID,
+				AuthorID:        row.AuthorID,
+				ClientMessageID: row.ClientMessageID,
+				Content:         row.Content,
+				ReplyToID:       row.ReplyToID,
+				CreatedAt:       row.CreatedAt,
+				EditedAt:        row.EditedAt,
+				DeletedAt:       row.DeletedAt,
+				Kind:            row.Kind,
+				SystemType:      row.SystemType,
+				SystemTargetID:  row.SystemTargetID,
+				SystemName:      row.SystemName,
+				Search:          row.Search,
+			}),
+			Headline: row.Headline,
+		})
+	}
+	return hits, nil
+}
+
 // HasMessages answers whether a dialogue has any message yet: its first one
 // counts against the new-conversation limit.
 func (s *PostgresStore) HasMessages(ctx context.Context, channelID uuid.UUID) (bool, error) {
@@ -281,6 +322,14 @@ func toMessage(row db.Message) Message {
 
 func pgUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+func pgUUIDs(ids []uuid.UUID) []pgtype.UUID {
+	out := make([]pgtype.UUID, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, pgUUID(id))
+	}
+	return out
 }
 
 func pgUUIDPtr(id *uuid.UUID) pgtype.UUID {

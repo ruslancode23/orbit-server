@@ -130,6 +130,8 @@ type Querier interface {
 	GetAttachment(ctx context.Context, id pgtype.UUID) (Attachment, error)
 	GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error)
 	GetChannelOverride(ctx context.Context, arg GetChannelOverrideParams) (GetChannelOverrideRow, error)
+	// Names and servers of a page of channels, for the search results.
+	GetChannelsByIDs(ctx context.Context, ids []pgtype.UUID) ([]Channel, error)
 	GetDMPolicy(ctx context.Context, id pgtype.UUID) (string, error)
 	GetDefaultRole(ctx context.Context, workspaceID pgtype.UUID) (ServerRole, error)
 	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
@@ -202,6 +204,9 @@ type Querier interface {
 	// What a reconnecting client missed in one channel, oldest first (task 2.6).
 	ListChannelMessagesAfter(ctx context.Context, arg ListChannelMessagesAfterParams) ([]Message, error)
 	ListChannelOverrides(ctx context.Context, channelID pgtype.UUID) ([]ListChannelOverridesRow, error)
+	// Every ordinary conversation this account is in, for the search scope. Secret
+	// chats are never searched and are left out here.
+	ListConversationChannelIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
 	// Who belongs to a conversation. Messages publish to each participant's personal
 	// stream, because a conversation has no server to announce to.
 	ListConversationMemberIDs(ctx context.Context, channelID pgtype.UUID) ([]pgtype.UUID, error)
@@ -308,6 +313,10 @@ type Querier interface {
 	RevokeRolesWithPermissions(ctx context.Context, arg RevokeRolesWithPermissionsParams) (int64, error)
 	RevokeSession(ctx context.Context, id pgtype.UUID) error
 	RevokeUserSessions(ctx context.Context, userID pgtype.UUID) error
+	// Full-text search (FEAT-6). The caller has already narrowed channel_ids to
+	// what this account may read; this query only filters and orders the page.
+	// Headline markers are control characters so message text cannot fake them.
+	SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error)
 	SetChannelOverride(ctx context.Context, arg SetChannelOverrideParams) error
 	// Reordering sends the whole list: position is the index of the channel in it.
 	SetChannelPosition(ctx context.Context, arg SetChannelPositionParams) (int64, error)

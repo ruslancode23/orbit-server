@@ -111,6 +111,15 @@ tags:
       message. A mute deadline silences the target until it passes, whatever the
       level says. The same rows decide in-tab notifications and push, and a change
       reaches the account's other devices as `notification_settings.updated`.
+  - name: search
+    description: |
+      Full-text search over message text. PostgreSQL's Russian and English
+      dictionaries stem the query, so a word finds its other forms. The search
+      never sees more than the caller already may read: channels hidden from
+      them, other servers and conversations without them are not in the index
+      it is allowed to use, and secret chats are never searched at all. A
+      blocked author does not surface either. Results come newest first with a
+      short highlighted fragment and the channel to jump back to.
   - name: feedback
     description: |
       Bug reports sent from inside the app. The report carries what the person
@@ -2555,6 +2564,84 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/search/messages:
+    get:
+      operationId: searchMessages
+      tags: [search]
+      summary: Full-text search over the messages this account may read.
+      description: |
+        PostgreSQL full-text search with the Russian and English dictionaries:
+        «сообщения» finds «сообщение». Only channels the caller may see and
+        conversations the caller is in are searched; a hidden channel, another
+        server's channel, a conversation without the caller and a secret chat
+        never appear, not even in a count. Deleted messages and system lines are
+        skipped, and so are authors the caller blocked. Each result carries a
+        `headline` with the matched fragment: the matched words are surrounded
+        by U+0002 and U+0003, so the client can mark them without HTML.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: What to look for; words and quoted phrases, as in a search box.
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: workspaceId
+          in: query
+          required: false
+          description: Search only the channels of this server that the caller may read.
+          schema: { type: string, format: uuid }
+        - name: channelId
+          in: query
+          required: false
+          description: Search one channel. A hidden channel answers 404.
+          schema: { type: string, format: uuid }
+        - name: conversationId
+          in: query
+          required: false
+          description: Search one conversation. One without the caller answers 404.
+          schema: { type: string, format: uuid }
+        - name: authorId
+          in: query
+          required: false
+          description: Only messages written by this account.
+          schema: { type: string, format: uuid }
+        - name: hasFiles
+          in: query
+          required: false
+          description: Only messages that carry an attachment.
+          schema: { type: boolean, default: false }
+        - name: conversationsOnly
+          in: query
+          required: false
+          description: Search conversations only, not the channels of servers.
+          schema: { type: boolean, default: false }
+        - name: before
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page; omit for the newest page.
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 25, default: 25 }
+      responses:
+        "200":
+          description: One page of results, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageSearchPage" }
+        "400":
+          description: The query is empty or too long, or two different targets were named.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404":
+          description: The named channel or conversation is not the caller's to read.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     WorkspaceId:
@@ -2739,6 +2826,45 @@ components:
           type: string
           format: date-time
           nullable: true
+    MessageSearchHit:
+      type: object
+      additionalProperties: false
+      required: [message, headline, channelName, workspaceId]
+      properties:
+        message: { $ref: "#/components/schemas/Message" }
+        headline:
+          type: string
+          description: |
+            The matched fragment, a few words around the match. Matched words
+            are wrapped in U+0002 and U+0003 so the client can mark them without
+            trusting HTML in message text.
+        channelName:
+          type: string
+          nullable: true
+          description: |
+            The channel's name, or a group conversation's title; null for a pair
+            dialogue, which names its peer instead.
+        workspaceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The server of the channel; null for a conversation.
+    MessageSearchPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          description: The newest matches first.
+          items: { $ref: "#/components/schemas/MessageSearchHit" }
+        nextCursor:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Pass as `before` for the next page; null on the last page. This is
+            the `seq` of the oldest result here, the same order history uses.
     BugReport:
       type: object
       additionalProperties: false

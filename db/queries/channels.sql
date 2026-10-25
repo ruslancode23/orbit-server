@@ -37,3 +37,7 @@ WHERE id = sqlc.arg(id) AND workspace_id = sqlc.arg(workspace_id);
 
 -- name: DeleteChannel :exec
 DELETE FROM channels WHERE id = $1;
+
+-- name: GetChannelsByIDs :many
+-- Names and servers of a page of channels, for the search results.
+SELECT * FROM channels WHERE id = ANY(sqlc.arg(ids)::uuid[]);

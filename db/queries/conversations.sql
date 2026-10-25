@@ -229,3 +229,12 @@ WHERE mine.user_id = $1
   AND theirs.user_id <> $1
   AND channels.workspace_id IS NULL
   AND channels.kind IN ('direct', 'group', 'secret');
+
+-- name: ListConversationChannelIDs :many
+-- Every ordinary conversation this account is in, for the search scope. Secret
+-- chats are never searched and are left out here.
+SELECT channel_members.channel_id
+FROM channel_members
+    JOIN channels ON channels.id = channel_members.channel_id
+WHERE channel_members.user_id = sqlc.arg(user_id)::uuid
+  AND channels.kind <> 'secret';

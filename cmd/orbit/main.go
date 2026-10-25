@@ -140,6 +140,10 @@ func run() error {
 	// History and live group events hide the authors the reader blocked.
 	messageService.SetPrivacy(privacyService)
 	messageService.SetLimiter(limiter)
+	// Search asks every server of the account for what it may see: one bucket
+	// per account keeps a typo-heavy query from becoming a database load.
+	messageService.SetWorkspaces(workspaces)
+	messageService.SetSearchLimiter(ratelimit.New(30))
 
 	// How loudly each server, channel and conversation speaks: one account, every
 	// device. Push reads the same rows, so a muted channel is silent in both places.

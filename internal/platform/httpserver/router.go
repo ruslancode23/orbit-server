@@ -350,6 +350,10 @@ func (s *server) ListMessages(ctx context.Context, req api.ListMessagesRequestOb
 	return s.messages.ListMessages(ctx, req)
 }
 
+func (s *server) SearchMessages(ctx context.Context, req api.SearchMessagesRequestObject) (api.SearchMessagesResponseObject, error) {
+	return s.messages.SearchMessages(ctx, req)
+}
+
 func (s *server) SendMessage(ctx context.Context, req api.SendMessageRequestObject) (api.SendMessageResponseObject, error) {
 	return s.messages.SendMessage(ctx, req)
 }

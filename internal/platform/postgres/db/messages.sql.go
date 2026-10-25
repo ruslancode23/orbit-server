@@ -62,7 +62,7 @@ INSERT INTO messages (channel_id, author_id, client_message_id, content, reply_t
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (channel_id, author_id, client_message_id) WHERE author_id IS NOT NULL
     DO UPDATE SET channel_id = excluded.channel_id
-RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, (xmax = 0) AS inserted
+RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search, (xmax = 0) AS inserted
 `
 
 type CreateMessageParams struct {
@@ -88,6 +88,7 @@ type CreateMessageRow struct {
 	SystemType      pgtype.Text        `json:"system_type"`
 	SystemTargetID  pgtype.UUID        `json:"system_target_id"`
 	SystemName      pgtype.Text        `json:"system_name"`
+	Search          interface{}        `json:"search"`
 	Inserted        bool               `json:"inserted"`
 }
 
@@ -119,6 +120,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (C
 		&i.SystemType,
 		&i.SystemTargetID,
 		&i.SystemName,
+		&i.Search,
 		&i.Inserted,
 	)
 	return i, err
@@ -130,7 +132,7 @@ INSERT INTO messages (channel_id, author_id, client_message_id, content,
 VALUES ($1, $2, $3,
         $4, 'system', $5,
         $6, $7)
-RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name
+RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search
 `
 
 type CreateSystemMessageParams struct {
@@ -172,6 +174,7 @@ func (q *Queries) CreateSystemMessage(ctx context.Context, arg CreateSystemMessa
 		&i.SystemType,
 		&i.SystemTargetID,
 		&i.SystemName,
+		&i.Search,
 	)
 	return i, err
 }
@@ -180,7 +183,7 @@ const deleteMessage = `-- name: DeleteMessage :one
 UPDATE messages
 SET deleted_at = now(), content = ''
 WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL AND kind = 'user'
-RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name
+RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search
 `
 
 type DeleteMessageParams struct {
@@ -207,6 +210,7 @@ func (q *Queries) DeleteMessage(ctx context.Context, arg DeleteMessageParams) (M
 		&i.SystemType,
 		&i.SystemTargetID,
 		&i.SystemName,
+		&i.Search,
 	)
 	return i, err
 }
@@ -215,7 +219,7 @@ const editMessage = `-- name: EditMessage :one
 UPDATE messages
 SET content = $3, edited_at = now()
 WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL AND kind = 'user'
-RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name
+RETURNING seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search
 `
 
 type EditMessageParams struct {
@@ -242,12 +246,13 @@ func (q *Queries) EditMessage(ctx context.Context, arg EditMessageParams) (Messa
 		&i.SystemType,
 		&i.SystemTargetID,
 		&i.SystemName,
+		&i.Search,
 	)
 	return i, err
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name FROM messages WHERE id = $1
+SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search FROM messages WHERE id = $1
 `
 
 // The author's public part comes from internal/profile in one batch per page:
@@ -270,12 +275,13 @@ func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (Message, erro
 		&i.SystemType,
 		&i.SystemTargetID,
 		&i.SystemName,
+		&i.Search,
 	)
 	return i, err
 }
 
 const listChannelMessages = `-- name: ListChannelMessages :many
-SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name
+SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search
 FROM messages
 WHERE messages.channel_id = $1
   AND ($3::bigint IS NULL OR messages.seq < $3::bigint)
@@ -315,6 +321,7 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 			&i.SystemType,
 			&i.SystemTargetID,
 			&i.SystemName,
+			&i.Search,
 		); err != nil {
 			return nil, err
 		}
@@ -327,7 +334,7 @@ func (q *Queries) ListChannelMessages(ctx context.Context, arg ListChannelMessag
 }
 
 const listChannelMessagesAfter = `-- name: ListChannelMessagesAfter :many
-SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name
+SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search
 FROM messages
 WHERE messages.channel_id = $1 AND messages.seq > $3
 ORDER BY messages.seq
@@ -365,6 +372,7 @@ func (q *Queries) ListChannelMessagesAfter(ctx context.Context, arg ListChannelM
 			&i.SystemType,
 			&i.SystemTargetID,
 			&i.SystemName,
+			&i.Search,
 		); err != nil {
 			return nil, err
 		}
@@ -464,4 +472,110 @@ func (q *Queries) RemoveReaction(ctx context.Context, arg RemoveReactionParams) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const searchMessages = `-- name: SearchMessages :many
+SELECT messages.seq, messages.id, messages.channel_id, messages.author_id, messages.client_message_id, messages.content, messages.reply_to_id, messages.created_at, messages.edited_at, messages.deleted_at, messages.kind, messages.system_type, messages.system_target_id, messages.system_name, messages.search,
+       ts_headline(
+           'russian',
+           messages.content,
+           websearch_to_tsquery('russian', $1::text)
+               || websearch_to_tsquery('english', $1::text),
+           'StartSel=' || chr(2) || ', StopSel=' || chr(3)
+               || ', MaxWords=30, MinWords=8, MaxFragments=2, FragmentDelimiter= … '
+       )::text AS headline
+FROM messages
+WHERE messages.channel_id = ANY($2::uuid[])
+  AND messages.deleted_at IS NULL
+  AND messages.kind = 'user'
+  AND messages.search @@ (
+      websearch_to_tsquery('russian', $1::text)
+          || websearch_to_tsquery('english', $1::text)
+  )
+  AND ($3::uuid IS NULL OR messages.author_id = $3::uuid)
+  AND ($4::boolean = false
+       OR EXISTS (SELECT 1 FROM attachments WHERE attachments.message_id = messages.id))
+  AND ($5::bigint IS NULL OR messages.seq < $5::bigint)
+  AND (coalesce(cardinality($6::uuid[]), 0) = 0
+       OR messages.author_id IS NULL
+       OR NOT (messages.author_id = ANY($6::uuid[])))
+ORDER BY messages.seq DESC
+LIMIT $7::int
+`
+
+type SearchMessagesParams struct {
+	Term            string        `json:"term"`
+	ChannelIds      []pgtype.UUID `json:"channel_ids"`
+	AuthorID        pgtype.UUID   `json:"author_id"`
+	HasFiles        bool          `json:"has_files"`
+	Before          pgtype.Int8   `json:"before"`
+	ExcludedAuthors []pgtype.UUID `json:"excluded_authors"`
+	PageLimit       int32         `json:"page_limit"`
+}
+
+type SearchMessagesRow struct {
+	Seq             int64              `json:"seq"`
+	ID              pgtype.UUID        `json:"id"`
+	ChannelID       pgtype.UUID        `json:"channel_id"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	ClientMessageID string             `json:"client_message_id"`
+	Content         string             `json:"content"`
+	ReplyToID       pgtype.UUID        `json:"reply_to_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	EditedAt        pgtype.Timestamptz `json:"edited_at"`
+	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
+	Kind            MessageKind        `json:"kind"`
+	SystemType      pgtype.Text        `json:"system_type"`
+	SystemTargetID  pgtype.UUID        `json:"system_target_id"`
+	SystemName      pgtype.Text        `json:"system_name"`
+	Search          interface{}        `json:"search"`
+	Headline        string             `json:"headline"`
+}
+
+// Full-text search (FEAT-6). The caller has already narrowed channel_ids to
+// what this account may read; this query only filters and orders the page.
+// Headline markers are control characters so message text cannot fake them.
+func (q *Queries) SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error) {
+	rows, err := q.db.Query(ctx, searchMessages,
+		arg.Term,
+		arg.ChannelIds,
+		arg.AuthorID,
+		arg.HasFiles,
+		arg.Before,
+		arg.ExcludedAuthors,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchMessagesRow{}
+	for rows.Next() {
+		var i SearchMessagesRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.ID,
+			&i.ChannelID,
+			&i.AuthorID,
+			&i.ClientMessageID,
+			&i.Content,
+			&i.ReplyToID,
+			&i.CreatedAt,
+			&i.EditedAt,
+			&i.DeletedAt,
+			&i.Kind,
+			&i.SystemType,
+			&i.SystemTargetID,
+			&i.SystemName,
+			&i.Search,
+			&i.Headline,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

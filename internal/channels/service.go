@@ -99,6 +99,9 @@ type Store interface {
 	// Channel returns ErrNotFound when there is no such channel.
 	Channel(ctx context.Context, id uuid.UUID) (Channel, error)
 	List(ctx context.Context, workspaceID uuid.UUID) ([]Channel, error)
+	// Channels reads a set of channels by id for callers that already checked
+	// access, such as search results naming their channel.
+	Channels(ctx context.Context, ids []uuid.UUID) ([]Channel, error)
 	Update(ctx context.Context, id uuid.UUID, u Update) (Channel, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	// Reorder writes the positions of every listed channel in one transaction.
@@ -339,6 +342,20 @@ func (s *Service) Reorder(ctx context.Context, workspaceID, callerID uuid.UUID, 
 // after they have checked access themselves (a webhook has no session).
 func (s *Service) Lookup(ctx context.Context, channelID uuid.UUID) (Channel, error) {
 	return s.store.Channel(ctx, channelID)
+}
+
+// LookupMany is Lookup for a whole page in one query, for callers that already
+// checked each channel themselves and only need the names.
+func (s *Service) LookupMany(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Channel, error) {
+	list, err := s.store.Channels(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]Channel, len(list))
+	for _, channel := range list {
+		out[channel.ID] = channel
+	}
+	return out, nil
 }
 
 // ListVoice returns the voice channels of a server, in their sidebar order.

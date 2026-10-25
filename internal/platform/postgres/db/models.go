@@ -266,6 +266,7 @@ type Message struct {
 	SystemType      pgtype.Text        `json:"system_type"`
 	SystemTargetID  pgtype.UUID        `json:"system_target_id"`
 	SystemName      pgtype.Text        `json:"system_name"`
+	Search          interface{}        `json:"search"`
 }
 
 type MessageMention struct {

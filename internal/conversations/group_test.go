@@ -61,6 +61,16 @@ func (s *fakeChannelStore) SetReadOnly(context.Context, channels.Channel, bool) 
 
 func (s *fakeChannelStore) Reorder(context.Context, uuid.UUID, []uuid.UUID) error { return nil }
 
+func (s *fakeChannelStore) Channels(_ context.Context, ids []uuid.UUID) ([]channels.Channel, error) {
+	out := make([]channels.Channel, 0, len(ids))
+	for _, id := range ids {
+		if id == s.channel.ID {
+			out = append(out, s.channel)
+		}
+	}
+	return out, nil
+}
+
 func groupWith(t *testing.T, w world, members ...uuid.UUID) Conversation {
 	t.Helper()
 	group, _, err := w.svc.Start(t.Context(), members[0], members[1:])

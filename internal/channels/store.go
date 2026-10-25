@@ -71,6 +71,22 @@ func (s *PostgresStore) Channel(ctx context.Context, id uuid.UUID) (Channel, err
 	return toChannel(row, overrides), nil
 }
 
+func (s *PostgresStore) Channels(ctx context.Context, ids []uuid.UUID) ([]Channel, error) {
+	keys := make([]pgtype.UUID, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, pgUUID(id))
+	}
+	rows, err := s.q.GetChannelsByIDs(ctx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("get channels by ids: %w", err)
+	}
+	out := make([]Channel, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toChannel(row, nil))
+	}
+	return out, nil
+}
+
 // List reads the channels of a server and the overrides of all of them in two
 // queries, never one per channel.
 func (s *PostgresStore) List(ctx context.Context, workspaceID uuid.UUID) ([]Channel, error) {
