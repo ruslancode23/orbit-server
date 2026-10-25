@@ -27,6 +27,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/friends"
 	"github.com/ruslancode23/orbit-server/internal/health"
 	"github.com/ruslancode23/orbit-server/internal/invites"
+	"github.com/ruslancode23/orbit-server/internal/linkpreview"
 	"github.com/ruslancode23/orbit-server/internal/messages"
 	"github.com/ruslancode23/orbit-server/internal/notifysettings"
 	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
@@ -108,6 +109,8 @@ type Deps struct {
 	Push *push.Handler
 	// NotificationSettings serves the levels of servers, channels and conversations.
 	NotificationSettings *notifysettings.Handler
+	// LinkPreviews serves the images of OpenGraph cards through this server.
+	LinkPreviews *linkpreview.Handler
 	// MaxUploadBytes is how large an attachment may be; the body limit for the
 	// upload route is set from it.
 	MaxUploadBytes int64
@@ -132,7 +135,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	// A nil auth dependency would silently turn every session check into a panic
 	// (or worse, into open access): refuse to build such a router.
-	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Push == nil || d.NotificationSettings == nil || d.Voice == nil {
+	if d.Auth == nil || d.Sessions == nil || d.Workspaces == nil || d.Channels == nil || d.Messages == nil || d.Invites == nil || d.Reads == nil || d.Files == nil || d.Conversations == nil || d.Secrets == nil || d.Privacy == nil || d.Profiles == nil || d.Friends == nil || d.Feedback == nil || d.Push == nil || d.NotificationSettings == nil || d.LinkPreviews == nil || d.Voice == nil {
 		return nil, errors.New("httpserver: every module handler is required: Auth, Sessions, Workspaces, Channels, Messages, Invites, Reads")
 	}
 
@@ -181,8 +184,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.VoiceWebhook != nil {
 		r.Post(voiceWebhookPath, d.VoiceWebhook.ServeHTTP)
 	}
+	// A preview image is loaded by an <img>: the request carries no session
+	// header, and the response is binary, so it lives beside the contract.
+	r.Get("/api/v1/link-previews/{previewId}/image", d.LinkPreviews.Image)
 
-	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, push: d.Push, notificationSettings: d.NotificationSettings, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{health: d.Health, auth: d.Auth, workspaces: d.Workspaces, channels: d.Channels, messages: d.Messages, invites: d.Invites, reads: d.Reads, files: d.Files, conversations: d.Conversations, secrets: d.Secrets, privacy: d.Privacy, profiles: d.Profiles, friends: d.Friends, feedback: d.Feedback, push: d.Push, notificationSettings: d.NotificationSettings, linkPreviews: d.LinkPreviews, voice: d.Voice}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
 		},
@@ -233,7 +239,9 @@ type server struct {
 	push          *push.Handler
 	// notificationSettings is the levels of servers, channels and conversations.
 	notificationSettings *notifysettings.Handler
-	voice                *voice.Handler
+	// linkPreviews is the image proxy of OpenGraph cards.
+	linkPreviews *linkpreview.Handler
+	voice        *voice.Handler
 }
 
 var _ api.StrictServerInterface = (*server)(nil)
@@ -364,6 +372,10 @@ func (s *server) EditMessage(ctx context.Context, req api.EditMessageRequestObje
 
 func (s *server) DeleteMessage(ctx context.Context, req api.DeleteMessageRequestObject) (api.DeleteMessageResponseObject, error) {
 	return s.messages.DeleteMessage(ctx, req)
+}
+
+func (s *server) DeleteMessagePreview(ctx context.Context, req api.DeleteMessagePreviewRequestObject) (api.DeleteMessagePreviewResponseObject, error) {
+	return s.messages.DeleteMessagePreview(ctx, req)
 }
 
 func (s *server) AddReaction(ctx context.Context, req api.AddReactionRequestObject) (api.AddReactionResponseObject, error) {

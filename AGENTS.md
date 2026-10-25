@@ -236,6 +236,26 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
 - Тесты: `internal/push` (адреса, кому уходит, мёртвые подписки, хендлеры, PostgreSQL),
   `internal/messages/notify_test.go` (получатели и отсутствие текста).
 
+## Превью ссылок (FEAT-8, SCRUM-130)
+
+`internal/linkpreview` читает OpenGraph первой ссылки и владеет таблицами `link_previews` и
+`message_previews`. `messages.Service` запускает получение после ответа на `Send` (`startPreview`,
+`Wait` при остановке), публикует `message.updated` и отдаёт `Message.preview` в API.
+
+- Адрес проверяется в `net.Dialer.Control` (резолв уже произошёл): loopback, private, link-local,
+  CGNAT, multicast, unspecified, IPv6 ULA, reserved; порты только 80/443. Не переноси проверку в
+  `CheckRedirect` или в разбор URL: rebinding и редирект проходят только через dial.
+- `ORBIT_LINK_PREVIEW_ALLOW_PRIVATE=1` — только для локальных e2e; он снимает проверку адреса и
+  порта. Не включай его в продакшене и не строй на нём поведение.
+- Картинка отдаётся только через `GET /api/v1/link-previews/{id}/image` (вне OpenAPI, двоичный
+  ответ): тип по содержимому, png/jpeg/webp/gif, svg запрещён, лимит 5 МБ. Браузер не должен ходить
+  на чужой хост.
+- Кеш — по нормализованному URL, TTL 24 ч, ошибки тоже кешируются (`status = 'error'`). Автор
+  убирает карточку `DELETE /messages/{id}/preview`; правка пересчитывает её; секретные чаты —
+  никогда. Лимит исходящих запросов — 30/мин на аккаунт.
+- Тесты: `internal/linkpreview` (адреса, OG, кеш, прокси, PostgreSQL), `internal/messages/preview_test.go`,
+  web `e2e/link-preview.spec.ts`.
+
 ## Поиск сообщений (FEAT-6, SCRUM-128)
 
 Поиск живёт в `internal/messages` (`Service.Search`, SQL `SearchMessages`): модуль владеет
