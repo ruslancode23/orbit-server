@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -58,7 +59,28 @@ type Config struct {
 	// Push holds the VAPID keys for Web Push; all empty turns push off.
 	Push    Push
 	Storage Storage
+	// SMTP is the outgoing mail server; an empty host turns mail off.
+	SMTP SMTP
 }
+
+// SMTP is the mail server Orbit writes through. Mail is not optional decoration:
+// a password reset is the only way back into a forgotten account, so an instance
+// that cannot send it says so in its configuration instead of losing accounts.
+type SMTP struct {
+	Host string
+	Port int
+	// Username and Password are empty for a relay that needs no authentication.
+	Username    string
+	Password    string
+	From        string
+	ImplicitTLS bool // TLS from the first byte (port 465), not STARTTLS
+}
+
+// Enabled reports whether mail can be sent at all.
+func (s SMTP) Enabled() bool { return s.Host != "" }
+
+// Addr is the host:port to dial.
+func (s SMTP) Addr() string { return net.JoinHostPort(s.Host, strconv.Itoa(s.Port)) }
 
 // Storage is the object store for attachments (SeaweedFS locally, S3 elsewhere).
 type Storage struct {
@@ -124,6 +146,11 @@ func Load() (Config, error) {
 	sessionTTL, err := time.ParseDuration(getenv("ORBIT_SESSION_TTL", "720h"))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("ORBIT_SESSION_TTL: %w", err))
+	}
+
+	smtpPort, err := strconv.Atoi(getenv("ORBIT_SMTP_PORT", "587"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORBIT_SMTP_PORT: %w", err))
 	}
 
 	maxGroup, err := strconv.Atoi(getenv("ORBIT_MAX_GROUP_MEMBERS", "10"))
@@ -281,6 +308,28 @@ func Load() (Config, error) {
 	}
 
 	cfg.LiveKit.PublicURL = getenv("LIVEKIT_PUBLIC_URL", cfg.LiveKit.URL)
+
+	cfg.SMTP = SMTP{
+		Host:        os.Getenv("ORBIT_SMTP_HOST"),
+		Port:        smtpPort,
+		Username:    os.Getenv("ORBIT_SMTP_USERNAME"),
+		Password:    os.Getenv("ORBIT_SMTP_PASSWORD"),
+		From:        os.Getenv("ORBIT_SMTP_FROM"),
+		ImplicitTLS: envBool("ORBIT_SMTP_IMPLICIT_TLS"),
+	}
+	if cfg.SMTP.Enabled() {
+		if cfg.SMTP.From == "" || !strings.Contains(cfg.SMTP.From, "@") {
+			errs = append(errs, fmt.Errorf("ORBIT_SMTP_FROM must be an email address when ORBIT_SMTP_HOST is set, got %q", cfg.SMTP.From))
+		}
+		if cfg.SMTP.Port < 1 || cfg.SMTP.Port > 65535 {
+			errs = append(errs, fmt.Errorf("ORBIT_SMTP_PORT must be 1-65535, got %d", cfg.SMTP.Port))
+		}
+		if (cfg.SMTP.Username == "") != (cfg.SMTP.Password == "") {
+			errs = append(errs, errors.New("ORBIT_SMTP_USERNAME and ORBIT_SMTP_PASSWORD go together: set both or neither"))
+		}
+	} else if cfg.SMTP.From != "" || cfg.SMTP.Username != "" || cfg.SMTP.Password != "" {
+		errs = append(errs, errors.New("ORBIT_SMTP_HOST is required when any other ORBIT_SMTP_ variable is set"))
+	}
 
 	cfg.Push = Push{
 		PublicKey:  os.Getenv("ORBIT_VAPID_PUBLIC_KEY"),
