@@ -18,7 +18,17 @@ type fakeStore struct {
 	users    []StoredUser
 	sessions []fakeSession
 	released map[string]time.Time
-	now      func() time.Time
+	// resets are keyed by the string form of the token hash; only the hash is kept.
+	resets map[string]fakeReset
+	now    func() time.Time
+	// deleteErr lets a test make the account delete fail, as owning a server does.
+	deleteErr error
+}
+
+type fakeReset struct {
+	userID    uuid.UUID
+	expiresAt time.Time
+	used      bool
 }
 
 type fakeSession struct {
@@ -31,7 +41,7 @@ type fakeSession struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{now: time.Now, released: map[string]time.Time{}}
+	return &fakeStore{now: time.Now, released: map[string]time.Time{}, resets: map[string]fakeReset{}}
 }
 
 func (s *fakeStore) CreateUser(_ context.Context, u NewUser) (User, error) {
@@ -192,6 +202,63 @@ func (s *fakeStore) ChangeEmail(_ context.Context, id uuid.UUID, email string) (
 		return s.users[i].User, nil
 	}
 	return User{}, ErrNoUser
+}
+
+func (s *fakeStore) CreatePasswordResetToken(_ context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) error {
+	for key, reset := range s.resets {
+		if reset.userID == userID && !reset.used {
+			delete(s.resets, key)
+		}
+	}
+	s.resets[string(tokenHash)] = fakeReset{userID: userID, expiresAt: expiresAt}
+	return nil
+}
+
+func (s *fakeStore) ResetPasswordWithToken(_ context.Context, tokenHash []byte, passwordHash string) (uuid.UUID, error) {
+	key := string(tokenHash)
+	reset, ok := s.resets[key]
+	if !ok || reset.used || !reset.expiresAt.After(s.now()) {
+		return uuid.Nil, ErrNoUser
+	}
+	for i := range s.users {
+		if s.users[i].ID != reset.userID {
+			continue
+		}
+		reset.used = true
+		s.resets[key] = reset
+		s.users[i].PasswordHash = passwordHash
+		for j := range s.sessions {
+			if s.sessions[j].userID == reset.userID {
+				s.sessions[j].revoked = true
+			}
+		}
+		return reset.userID, nil
+	}
+	return uuid.Nil, ErrNoUser
+}
+
+func (s *fakeStore) DeleteUser(_ context.Context, id uuid.UUID) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	kept := s.users[:0]
+	for _, user := range s.users {
+		if user.ID != id {
+			kept = append(kept, user)
+		}
+	}
+	s.users = kept
+	for i := range s.sessions {
+		if s.sessions[i].userID == id {
+			s.sessions[i].revoked = true
+		}
+	}
+	for key, reset := range s.resets {
+		if reset.userID == id {
+			delete(s.resets, key)
+		}
+	}
+	return nil
 }
 
 const testPassword = "correct horse battery"

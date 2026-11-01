@@ -283,6 +283,41 @@ func TestAvatarChangeIsAnnounced(t *testing.T) {
 	}
 }
 
+// Account deletion needs the avatar removed after the row is gone, so the key
+// is captured first and both stored sizes are dropped by the returned function.
+func TestPrepareAvatarDeletionRemovesBothSizes(t *testing.T) {
+	h, storage := newAvatarHarness(t, 8<<20)
+	user := uuid.New()
+	h.seed(user, "anna")
+	stored, err := h.svc.SetAvatar(t.Context(), user, bytes.NewReader(pngAvatar(t, 64, 64)))
+	if err != nil {
+		t.Fatalf("SetAvatar: %v", err)
+	}
+	if stored.AvatarURL == "" {
+		t.Fatal("no avatar was stored")
+	}
+	key, _ := h.store.Profile(t.Context(), user)
+	if key.AvatarKey == "" {
+		t.Fatal("the profile has no avatar key")
+	}
+
+	cleanup, err := h.svc.PrepareAvatarDeletion(t.Context(), user)
+	if err != nil {
+		t.Fatalf("PrepareAvatarDeletion: %v", err)
+	}
+	// The capture alone deletes nothing: a wrong password must leave it alone.
+	if len(storage.deletedKeys()) != 0 {
+		t.Fatalf("objects were deleted before the account: %v", storage.deletedKeys())
+	}
+
+	cleanup(t.Context())
+	for _, size := range []int{avatarLarge, avatarSmall} {
+		if !contains(storage.deletedKeys(), avatarObjectKey(key.AvatarKey, size)) {
+			t.Errorf("object %q was not deleted", avatarObjectKey(key.AvatarKey, size))
+		}
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

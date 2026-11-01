@@ -85,6 +85,9 @@ type Querier interface {
 	// xmax = 0 on a row this statement inserted; anything else means the resend
 	// found the message already stored.
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (CreateMessageRow, error)
+	// Tokens are stored as the SHA-256 of the raw value, like sessions. Issuing a
+	// new token drops the unused ones of the account, so only the last link works.
+	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) error
 	// Roles of a server (internal/servers) and their overrides in channels
 	// (internal/channels). The permission bits are those of internal/perms.
 	CreateRole(ctx context.Context, arg CreateRoleParams) (ServerRole, error)
@@ -120,6 +123,12 @@ type Querier interface {
 	DeleteRole(ctx context.Context, id pgtype.UUID) (int64, error)
 	DeleteSecretChatChannel(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretEnvelope(ctx context.Context, id pgtype.UUID) error
+	// Deleting the account is what removes its personal data: sessions, devices,
+	// memberships, friendships, push subscriptions and notification settings all
+	// cascade. Messages stay behind with a NULL author. A server the account still
+	// owns blocks the delete through workspaces.owner_id, which the caller reports
+	// as a conflict instead of destroying a community.
+	DeleteUser(ctx context.Context, id pgtype.UUID) error
 	DeleteWorkspace(ctx context.Context, id pgtype.UUID) error
 	DetachOrphanedAttachment(ctx context.Context, id pgtype.UUID) error
 	DeviceSecretChatIDs(ctx context.Context, deviceID pgtype.UUID) ([]pgtype.UUID, error)
@@ -312,6 +321,10 @@ type Querier interface {
 	RemoveReaction(ctx context.Context, arg RemoveReactionParams) (int64, error)
 	RemoveWorkspaceMember(ctx context.Context, arg RemoveWorkspaceMemberParams) (int64, error)
 	RenameConversation(ctx context.Context, arg RenameConversationParams) error
+	// One statement consumes the token, writes the new password and revokes every
+	// session: either all three happen or none. A used, expired or unknown token
+	// returns no row, which the caller turns into one generic refusal.
+	ResetPasswordWithToken(ctx context.Context, arg ResetPasswordWithTokenParams) (pgtype.UUID, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) (int64, error)
 	RevokeInvite(ctx context.Context, id pgtype.UUID) (int64, error)
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) (int64, error)

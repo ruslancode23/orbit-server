@@ -3,9 +3,11 @@ package auth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	orbitmail "github.com/ruslancode23/orbit-server/internal/email"
 	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
@@ -701,5 +704,327 @@ func TestRegisterPerAddress(t *testing.T) {
 	}
 	if _, ok := register("203.0.113.2", "Bob").(api.Register201JSONResponse); !ok {
 		t.Error("another address was limited too")
+	}
+}
+
+// fakeMailer records what would go out and can pretend SMTP is off.
+type fakeMailer struct {
+	enabled bool
+	sendErr error
+	mu      sync.Mutex
+	sent    []orbitmail.Message
+}
+
+func (m *fakeMailer) Send(_ context.Context, msg orbitmail.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent = append(m.sent, msg)
+	return m.sendErr
+}
+
+func (m *fakeMailer) Enabled() bool { return m.enabled }
+
+// letters is a safe copy: the sends happen in goroutines.
+func (m *fakeMailer) letters() []orbitmail.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]orbitmail.Message(nil), m.sent...)
+}
+
+// resetTokenFromLetter digs the raw token out of the link the way a person
+// would: the letter is the only place it exists.
+func resetTokenFromLetter(t *testing.T, msg orbitmail.Message) string {
+	t.Helper()
+	const marker = "/reset?token="
+	at := strings.Index(msg.Text, marker)
+	if at < 0 {
+		t.Fatalf("no reset link in the letter: %q", msg.Text)
+	}
+	rest := msg.Text[at+len(marker):]
+	if end := strings.IndexAny(rest, " \r\n"); end >= 0 {
+		rest = rest[:end]
+	}
+	if rest == "" {
+		t.Fatal("the reset link has no token")
+	}
+	return rest
+}
+
+func resetRequest(t *testing.T, h *Handler, login string) api.RequestPasswordResetResponseObject {
+	t.Helper()
+	resp, err := h.RequestPasswordReset(context.Background(), api.RequestPasswordResetRequestObject{
+		Body: &api.PasswordResetRequest{Login: login},
+	})
+	if err != nil {
+		t.Fatalf("RequestPasswordReset: %v", err)
+	}
+	return resp
+}
+
+// The answer must not tell an existing account from an unknown one, an account
+// with an email from one without it, or a working SMTP from an absent one.
+func TestPasswordResetRequestIsTheSameForEveryAccount(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	mailer := &fakeMailer{enabled: true}
+	h.SetPasswordReset(mailer, "https://orbit.example", time.Hour, ResetLimits{})
+
+	registerTestUser(t, svc)
+	if _, _, err := svc.Register(t.Context(), "NoMail", "", testPassword); err != nil {
+		t.Fatalf("Register without email: %v", err)
+	}
+
+	for _, login := range []string{"Anna", "anna@example.com", "NoMail", "nobody"} {
+		if _, ok := resetRequest(t, h, login).(api.RequestPasswordReset204Response); !ok {
+			t.Errorf("login %q did not answer 204", login)
+		}
+	}
+	h.Wait()
+
+	// Two of the four names are the same account (nickname and email), so it
+	// gets two letters; the other two get none.
+	letters := mailer.letters()
+	if len(letters) != 2 {
+		t.Fatalf("letters = %d, want only the account with an email", len(letters))
+	}
+	for _, letter := range letters {
+		if letter.To != "anna@example.com" {
+			t.Errorf("letter went to %q", letter.To)
+		}
+		if !strings.Contains(letter.Text, "https://orbit.example/reset?token=") {
+			t.Errorf("the link is not absolute: %q", letter.Text)
+		}
+	}
+}
+
+// Without SMTP the endpoint still answers 204, but no token is even issued:
+// there is no link to put in the database.
+func TestPasswordResetRequestWithoutSMTPIsSilent(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	mailer := &fakeMailer{enabled: false}
+	h.SetPasswordReset(mailer, "https://orbit.example", time.Hour, ResetLimits{})
+	registerTestUser(t, svc)
+
+	if _, ok := resetRequest(t, h, "Anna").(api.RequestPasswordReset204Response); !ok {
+		t.Error("the disabled-mail answer is not 204")
+	}
+	h.Wait()
+
+	if letters := mailer.letters(); len(letters) != 0 {
+		t.Errorf("a letter was sent without SMTP: %+v", letters)
+	}
+	store := svc.store.(*fakeStore)
+	if len(store.resets) != 0 {
+		t.Errorf("a reset token was stored without SMTP: %d", len(store.resets))
+	}
+}
+
+func TestPasswordResetTokenIsOneTimeAndRevokesSessions(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	mailer := &fakeMailer{enabled: true}
+	h.SetPasswordReset(mailer, "https://orbit.example", time.Hour, ResetLimits{})
+
+	user, first := registerTestUser(t, svc)
+	_, second, err := svc.Login(t.Context(), "Anna", testPassword)
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	resetRequest(t, h, "Anna")
+	h.Wait()
+	token := resetTokenFromLetter(t, mailer.letters()[0])
+
+	resp, err := h.ResetPassword(context.Background(), api.ResetPasswordRequestObject{
+		Body: &api.PasswordResetConfirmRequest{Token: token, Password: "a brand new password"},
+	})
+	if err != nil {
+		t.Fatalf("ResetPassword: %v", err)
+	}
+	done, ok := resp.(api.ResetPassword204Response)
+	if !ok {
+		t.Fatalf("response = %T, want 204", resp)
+	}
+	cookie := parseCookie(t, done.Headers.SetCookie)
+	if cookie.Name != SessionCookieName || cookie.MaxAge >= 0 {
+		t.Errorf("cookie = %+v, want the session cookie cleared", cookie)
+	}
+
+	for name, credentials := range map[string]Credentials{"this device": first, "the other device": second} {
+		if _, err := svc.Authenticate(t.Context(), credentials.Token); !errors.Is(err, ErrNoSession) {
+			t.Errorf("%s: err = %v, want ErrNoSession", name, err)
+		}
+	}
+	if _, _, err := svc.Login(t.Context(), "Anna", testPassword); !errors.Is(err, ErrCredentials) {
+		t.Errorf("the old password still works: %v", err)
+	}
+	if _, _, err := svc.Login(t.Context(), "Anna", "a brand new password"); err != nil {
+		t.Errorf("the new password does not work: %v", err)
+	}
+	if got, err := svc.store.UserByID(t.Context(), user.ID); err != nil || got.Email != "anna@example.com" {
+		t.Errorf("the account was disturbed: %+v, %v", got, err)
+	}
+
+	again, err := h.ResetPassword(context.Background(), api.ResetPasswordRequestObject{
+		Body: &api.PasswordResetConfirmRequest{Token: token, Password: "yet another password"},
+	})
+	if err != nil {
+		t.Fatalf("ResetPassword again: %v", err)
+	}
+	if _, ok := again.(api.ResetPassword400JSONResponse); !ok {
+		t.Errorf("a second use answered %T, want 400", again)
+	}
+}
+
+func TestExpiredPasswordResetTokenIsRefused(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	mailer := &fakeMailer{enabled: true}
+	h.SetPasswordReset(mailer, "https://orbit.example", time.Hour, ResetLimits{})
+	registerTestUser(t, svc)
+
+	resetRequest(t, h, "Anna")
+	h.Wait()
+	token := resetTokenFromLetter(t, mailer.letters()[0])
+
+	// The fake store's clock is the service's too: moving it expires the token.
+	store := svc.store.(*fakeStore)
+	store.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+
+	resp, err := h.ResetPassword(context.Background(), api.ResetPasswordRequestObject{
+		Body: &api.PasswordResetConfirmRequest{Token: token, Password: "a brand new password"},
+	})
+	if err != nil {
+		t.Fatalf("ResetPassword: %v", err)
+	}
+	refused, ok := resp.(api.ResetPassword400JSONResponse)
+	if !ok {
+		t.Fatalf("response = %T, want 400", resp)
+	}
+	if !strings.Contains(refused.Error.Message, "invalid or has expired") {
+		t.Errorf("message = %q, want the generic refusal", refused.Error.Message)
+	}
+}
+
+// fakeAvatarCleaner stands in for the profile module's half of account deletion.
+type fakeAvatarCleaner struct {
+	prepared bool
+	cleaned  bool
+	fail     error
+}
+
+func (f *fakeAvatarCleaner) PrepareAvatarDeletion(context.Context, uuid.UUID) (func(context.Context), error) {
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	f.prepared = true
+	return func(context.Context) { f.cleaned = true }, nil
+}
+
+type cleaningProfiles struct {
+	*fakeProfiles
+	cleaner *fakeAvatarCleaner
+}
+
+func (p *cleaningProfiles) PrepareAvatarDeletion(ctx context.Context, userID uuid.UUID) (func(context.Context), error) {
+	return p.cleaner.PrepareAvatarDeletion(ctx, userID)
+}
+
+func deleteRequest(t *testing.T, h *Handler, ctx context.Context, password string) api.DeleteCurrentUserResponseObject {
+	t.Helper()
+	req := api.DeleteCurrentUserRequestObject{}
+	if password != "" {
+		req.Body = &api.DeleteCurrentUserJSONRequestBody{Password: &password}
+	}
+	resp, err := h.DeleteCurrentUser(ctx, req)
+	if err != nil {
+		t.Fatalf("DeleteCurrentUser: %v", err)
+	}
+	return resp
+}
+
+func TestDeleteCurrentUserNeedsThePasswordAndRemovesTheAccount(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	cleaner := &fakeAvatarCleaner{}
+	h.SetProfiles(&cleaningProfiles{fakeProfiles: &fakeProfiles{}, cleaner: cleaner})
+
+	user, creds := registerTestUser(t, svc)
+	session, err := svc.Authenticate(t.Context(), creds.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	ctx := WithSession(context.Background(), session)
+
+	if _, ok := deleteRequest(t, h, ctx, "not my password").(api.DeleteCurrentUser401JSONResponse); !ok {
+		t.Error("a wrong password was not refused")
+	}
+	if cleaner.cleaned {
+		t.Error("the avatar was deleted before the account")
+	}
+	if _, err := svc.store.UserByID(t.Context(), user.ID); err != nil {
+		t.Fatalf("a wrong password removed the account: %v", err)
+	}
+
+	resp := deleteRequest(t, h, ctx, testPassword)
+	done, ok := resp.(api.DeleteCurrentUser204Response)
+	if !ok {
+		t.Fatalf("response = %T, want 204", resp)
+	}
+	cookie := parseCookie(t, done.Headers.SetCookie)
+	if cookie.Name != SessionCookieName || cookie.MaxAge >= 0 {
+		t.Errorf("cookie = %+v, want the session cookie cleared", cookie)
+	}
+	if !cleaner.cleaned {
+		t.Error("the avatar objects were not removed after the account")
+	}
+	if _, err := svc.store.UserByID(t.Context(), user.ID); !errors.Is(err, ErrNoUser) {
+		t.Errorf("the account is still there: %v", err)
+	}
+	if _, err := svc.Authenticate(t.Context(), creds.Token); !errors.Is(err, ErrNoSession) {
+		t.Errorf("the session survived the account: %v", err)
+	}
+}
+
+// A guest has no password, so its session is the only confirmation; the delete
+// must not demand a credential that cannot exist.
+func TestGuestDeletesItsAccountWithTheSessionAlone(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	guest, creds, err := svc.RegisterGuest(t.Context(), "Guest")
+	if err != nil {
+		t.Fatalf("RegisterGuest: %v", err)
+	}
+	session, err := svc.Authenticate(t.Context(), creds.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	resp := deleteRequest(t, h, WithSession(context.Background(), session), "")
+	if _, ok := resp.(api.DeleteCurrentUser204Response); !ok {
+		t.Fatalf("response = %T, want 204", resp)
+	}
+	if _, err := svc.store.UserByID(t.Context(), guest.ID); !errors.Is(err, ErrNoUser) {
+		t.Errorf("the guest is still there: %v", err)
+	}
+}
+
+// A server owner cannot delete the account: the server would lose its owner,
+// and deleting the server here would silently destroy a community. The avatar
+// must survive the refusal too.
+func TestDeleteCurrentUserRefusesAServerOwner(t *testing.T) {
+	h, svc, _ := newTestHandler(t, true)
+	cleaner := &fakeAvatarCleaner{}
+	h.SetProfiles(&cleaningProfiles{fakeProfiles: &fakeProfiles{}, cleaner: cleaner})
+	user, creds := registerTestUser(t, svc)
+	svc.store.(*fakeStore).deleteErr = ErrOwnsServers
+	session, err := svc.Authenticate(t.Context(), creds.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	resp := deleteRequest(t, h, WithSession(context.Background(), session), testPassword)
+	if _, ok := resp.(api.DeleteCurrentUser409JSONResponse); !ok {
+		t.Fatalf("response = %T, want 409", resp)
+	}
+	if cleaner.cleaned {
+		t.Error("the avatar was removed although the account stayed")
+	}
+	if _, err := svc.store.UserByID(t.Context(), user.ID); err != nil {
+		t.Errorf("the account is gone after a refusal: %v", err)
 	}
 }

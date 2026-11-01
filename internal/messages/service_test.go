@@ -895,3 +895,11 @@ func TestSecretChannelRefusesMessages(t *testing.T) {
 		t.Errorf("History: err = %v, want ErrNotFound", err)
 	}
 }
+
+// A deleted account leaves a NULL author behind. A notification that has to name
+// one must not panic and must not print an empty string.
+func TestNotificationNamesADeletedAuthor(t *testing.T) {
+	if got := authorName(Message{}); got != "Удалённый пользователь" {
+		t.Errorf("authorName = %q, want the deleted-account placeholder", got)
+	}
+}

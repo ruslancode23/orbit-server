@@ -265,6 +265,62 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/password/reset-request:
+    post:
+      operationId: requestPasswordReset
+      tags: [auth]
+      summary: Ask for a password reset link.
+      description: |
+        The answer is always 204, whether the account exists, has an email or whether
+        this instance can send mail at all: telling those apart would turn the
+        endpoint into an oracle for guessing accounts. A letter goes out only when
+        all three are true. The link lives `ORBIT_PASSWORD_RESET_TTL` (one hour by
+        default) and replaces any unused link of the same account. Without SMTP the
+        request is accepted and no mail is sent.
+        Requests are limited per client address; a refusal is the only answer this
+        endpoint gives that differs, and it never depends on the account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordResetRequest" }
+      responses:
+        "204":
+          description: Accepted. Mail is sent only if the account exists, has an email and SMTP is configured.
+        "400": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /api/v1/auth/password/reset:
+    post:
+      operationId: resetPassword
+      tags: [auth]
+      summary: Set a new password with a reset token.
+      description: |
+        The token is one-time and expires after `ORBIT_PASSWORD_RESET_TTL`. A used,
+        expired or unknown token gets one generic 400 that does not say which it was.
+        A successful reset revokes every session of the account, this one included,
+        and clears the session cookie, so the client signs in with the new password.
+        Attempts with one token are limited; a refusal answers 429 with `Retry-After`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordResetConfirmRequest" }
+      responses:
+        "204":
+          description: Password changed; every session is revoked and the cookie is cleared.
+          headers:
+            Set-Cookie:
+              description: The cleared session cookie.
+              schema: { type: string }
+        "400":
+          description: The reset link is invalid, expired or already used.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/workspaces:
     get:
       operationId: listWorkspaces
@@ -1385,6 +1441,52 @@ paths:
           description: The device is revoked; its pending envelopes go with it.
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me:
+    delete:
+      operationId: deleteCurrentUser
+      tags: [auth]
+      summary: Delete the account. Needs a session.
+      description: |
+        `DELETE` names the resource that really goes away — the account of this
+        session — and the body is only its confirmation, so a proxy that drops the
+        body cannot make the request delete the wrong thing: it is still scoped by
+        the cookie, and a missing password is simply refused.
+        An account with a password must confirm it. A guest has no password and
+        confirms with its session alone: there is no other credential to ask for,
+        and the session already is its only key.
+        Personal data is removed: sessions, secret-chat devices, friendships, push
+        subscriptions, notification settings, server and conversation memberships,
+        blocks and the avatar in the object store. Messages in shared channels stay,
+        attributed to a deleted account (`authorId` absent); direct conversations
+        stay for the other participant, who keeps the history. A server the account
+        owns blocks the request with 409 until ownership is handed over or the
+        server is deleted — deleting it here would silently destroy a community.
+        On success the cookie is cleared and the client starts over.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteAccountRequest" }
+      responses:
+        "204":
+          description: Account deleted; personal data and the avatar are gone, the cookie is cleared.
+          headers:
+            Set-Cookie:
+              description: The cleared session cookie.
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401":
+          description: No session, or the confirmation password is wrong.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The account still owns a server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/me/dm-policy:
     get:
@@ -3311,6 +3413,42 @@ components:
         newPassword:
           type: string
           minLength: 10
+          maxLength: 256
+    PasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [login]
+      properties:
+        login:
+          type: string
+          minLength: 1
+          maxLength: 254
+          description: Nickname or email, either case.
+          example: Anna
+    PasswordResetConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: The one-time token from the link in the letter.
+        password:
+          type: string
+          minLength: 10
+          maxLength: 256
+          description: The new password; stored only as an argon2id hash.
+    DeleteAccountRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Confirmation of an account deletion. An account with a password must send it;
+        a guest sends no body at all, because it has no password to confirm with.
+      properties:
+        password:
+          type: string
           maxLength: 256
     WorkspaceRole:
       type: string

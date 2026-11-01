@@ -5,13 +5,16 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	orbitmail "github.com/ruslancode23/orbit-server/internal/email"
 	"github.com/ruslancode23/orbit-server/internal/platform/clientip"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
@@ -40,6 +43,22 @@ type ProfileEvents interface {
 	ProfileChanged(ctx context.Context, userID uuid.UUID)
 }
 
+// AvatarCleaner is the profile module's part in account deletion. It captures
+// the stored avatar before the row disappears and returns the function that
+// removes its objects: deleting them first would leave a live account without
+// an avatar if the account delete then failed.
+type AvatarCleaner interface {
+	PrepareAvatarDeletion(ctx context.Context, userID uuid.UUID) (func(context.Context), error)
+}
+
+// ResetLimits guard the two password reset endpoints. The request limit is
+// keyed by client address, the attempt limit by the hash of the token: a raw
+// token never becomes a map key.
+type ResetLimits struct {
+	RequestsPerIP    *ratelimit.Limiter
+	AttemptsPerToken *ratelimit.Limiter
+}
+
 // Handler serves the generated auth operations. The request body is already
 // validated against api/openapi.yaml when a method runs.
 type Handler struct {
@@ -53,6 +72,16 @@ type Handler struct {
 	profileEvents ProfileEvents
 	// limits guard sign-in and sign-up; a nil limiter in it lets everything through.
 	limits Limits
+	// mailer sends the password reset letter; nil or disabled turns mail off.
+	mailer orbitmail.Sender
+	// publicURL is the instance's base address for the link in that letter.
+	publicURL string
+	// resetTTL is how long the link lives, also stated in the letter.
+	resetTTL time.Duration
+	// resetLimits guard the two reset endpoints.
+	resetLimits ResetLimits
+	// mailWG waits for reset letters already being sent, at shutdown and in tests.
+	mailWG sync.WaitGroup
 }
 
 // Limits are the guards in front of the endpoints that need no session. They
@@ -83,6 +112,23 @@ func (h *Handler) SetProfileEvents(events ProfileEvents) { h.profileEvents = eve
 
 // SetLimits turns on the sign-in and sign-up guards.
 func (h *Handler) SetLimits(limits Limits) { h.limits = limits }
+
+// SetPasswordReset wires in the mail sender and the address its links point to.
+// A nil or disabled sender keeps the endpoints working and simply sends nothing.
+func (h *Handler) SetPasswordReset(mailer orbitmail.Sender, publicURL string, ttl time.Duration, limits ResetLimits) {
+	h.mailer = mailer
+	h.publicURL = publicURL
+	h.resetTTL = ttl
+	h.resetLimits = limits
+}
+
+// Wait waits for reset letters already being sent: a shutdown and a test both
+// need the round to finish before the process goes away.
+func (h *Handler) Wait() { h.mailWG.Wait() }
+
+// resetMailTimeout bounds one letter: a slow SMTP server must not keep the
+// goroutine, and therefore shutdown, forever.
+const resetMailTimeout = 10 * time.Second
 
 // tooMany is the shared 429 body of the endpoints that need no session.
 func tooMany(wait time.Duration, message string) api.TooManyRequestsJSONResponse {
@@ -252,6 +298,133 @@ func (h *Handler) ChangePassword(ctx context.Context, req api.ChangePasswordRequ
 	// Every session is gone, this one too: the client signs in again.
 	cookie := h.clearedCookie()
 	return api.ChangePassword204Response{Headers: api.ChangePassword204ResponseHeaders{SetCookie: &cookie}}, nil
+}
+
+// RequestPasswordReset answers 204 whatever happens: whether the account exists,
+// has an email or whether mail is configured is exactly what the endpoint must
+// not reveal. Only a spent address budget is visible, as 429, before any lookup.
+func (h *Handler) RequestPasswordReset(ctx context.Context, req api.RequestPasswordResetRequestObject) (api.RequestPasswordResetResponseObject, error) {
+	if req.Body == nil {
+		return api.RequestPasswordReset400JSONResponse{ErrorJSONResponse: errorBody(httpx.CodeInvalidRequest, "request body is required")}, nil
+	}
+	if ok, wait := h.resetLimits.RequestsPerIP.AllowKey(clientip.From(ctx)); !ok {
+		return api.RequestPasswordReset429JSONResponse{TooManyRequestsJSONResponse: tooMany(wait,
+			"too many password reset requests from this address, try again later")}, nil
+	}
+
+	// Without mail or a base URL there is no link to send. The answer stays the
+	// same, so an instance without SMTP does not become an account oracle.
+	if h.mailer == nil || !h.mailer.Enabled() || h.publicURL == "" {
+		return api.RequestPasswordReset204Response{}, nil
+	}
+
+	address, token, err := h.svc.RequestPasswordReset(ctx, req.Body.Login)
+	if err != nil {
+		// A database failure is logged, not answered: a different status for an
+		// existing account would be the oracle this endpoint avoids.
+		h.log.ErrorContext(ctx, "request password reset", slog.Any("error", err))
+		return api.RequestPasswordReset204Response{}, nil
+	}
+	if address != "" {
+		h.sendPasswordReset(ctx, address, token)
+	}
+	return api.RequestPasswordReset204Response{}, nil
+}
+
+// sendPasswordReset is the letter itself: the raw token lives only in the link. The
+// goroutine is why the response does not wait on SMTP; Wait collects it at
+// shutdown and in tests. Errors are logged without the token or the link.
+func (h *Handler) sendPasswordReset(ctx context.Context, to, token string) {
+	link := strings.TrimRight(h.publicURL, "/") + "/reset?token=" + url.QueryEscape(token)
+	msg := orbitmail.PasswordReset(to, link, h.resetTTL)
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resetMailTimeout)
+	h.mailWG.Add(1)
+	go func() {
+		defer h.mailWG.Done()
+		defer cancel()
+		if err := h.mailer.Send(ctx, msg); err != nil {
+			h.log.WarnContext(ctx, "password reset mail was not sent", slog.Any("error", err))
+		}
+	}()
+}
+
+// ResetPassword consumes the one-time token, sets the new password and revokes
+// every session of the account. A used, expired or unknown token is the same
+// 400: the client learns nothing beyond "this link does not work".
+func (h *Handler) ResetPassword(ctx context.Context, req api.ResetPasswordRequestObject) (api.ResetPasswordResponseObject, error) {
+	if req.Body == nil {
+		return api.ResetPassword400JSONResponse(errorBody(httpx.CodeInvalidRequest, "request body is required")), nil
+	}
+	// The key is the hash, never the raw token: the limiter keeps keys in memory.
+	if ok, wait := h.resetLimits.AttemptsPerToken.AllowKey(string(hashToken(req.Body.Token))); !ok {
+		return api.ResetPassword429JSONResponse{TooManyRequestsJSONResponse: tooMany(wait,
+			"too many attempts with this reset link, try again later")}, nil
+	}
+
+	err := h.svc.ResetPassword(ctx, req.Body.Token, req.Body.Password)
+	switch {
+	case errors.Is(err, ErrResetToken):
+		return api.ResetPassword400JSONResponse(errorBody(httpx.CodeInvalidRequest,
+			"the reset link is invalid or has expired")), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "reset password", slog.Any("error", err))
+		return api.ResetPassword500JSONResponse(errorBody(httpx.CodeInternal, "could not reset the password")), nil
+	}
+
+	// Every session is gone, including the one that made this request.
+	cookie := h.clearedCookie()
+	return api.ResetPassword204Response{Headers: api.ResetPassword204ResponseHeaders{SetCookie: &cookie}}, nil
+}
+
+// DeleteCurrentUser removes the account after confirming the password. A guest
+// has no password, so its session is the only confirmation there is; its answer
+// is the same 204. Personal data cascades in the database, the avatar objects
+// are removed after a successful delete, and the cookie is cleared.
+func (h *Handler) DeleteCurrentUser(ctx context.Context, req api.DeleteCurrentUserRequestObject) (api.DeleteCurrentUserResponseObject, error) {
+	session, ok := SessionFrom(ctx)
+	if !ok {
+		return api.DeleteCurrentUser401JSONResponse(errorBody(httpx.CodeUnauthorized, "sign in first")), nil
+	}
+	password := ""
+	if req.Body != nil && req.Body.Password != nil {
+		password = *req.Body.Password
+	}
+
+	// Capture the avatar before the row disappears, but delete nothing yet: a
+	// wrong password must leave the account, its avatar included, untouched.
+	var cleanup func(context.Context)
+	if cleaner, ok := h.profiles.(AvatarCleaner); ok {
+		var err error
+		cleanup, err = cleaner.PrepareAvatarDeletion(ctx, session.User.ID)
+		if err != nil {
+			h.log.ErrorContext(ctx, "prepare account deletion", slog.Any("error", err))
+			return api.DeleteCurrentUser500JSONResponse(errorBody(httpx.CodeInternal, "could not delete the account")), nil
+		}
+	}
+
+	err := h.svc.DeleteAccount(ctx, session.User.ID, password)
+	switch {
+	case errors.Is(err, ErrCredentials):
+		return api.DeleteCurrentUser401JSONResponse(errorBody(httpx.CodeUnauthorized, "the password is wrong")), nil
+	case errors.Is(err, ErrNoUser):
+		return api.DeleteCurrentUser401JSONResponse(errorBody(httpx.CodeUnauthorized, "sign in first")), nil
+	case errors.Is(err, ErrOwnsServers):
+		return api.DeleteCurrentUser409JSONResponse(errorBody(httpx.CodeConflict,
+			"hand over or delete the servers you own first")), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "delete account", slog.Any("error", err))
+		return api.DeleteCurrentUser500JSONResponse(errorBody(httpx.CodeInternal, "could not delete the account")), nil
+	}
+
+	if cleanup != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resetMailTimeout)
+		cleanup(cleanupCtx)
+		cancel()
+	}
+
+	cookie := h.clearedCookie()
+	return api.DeleteCurrentUser204Response{Headers: api.DeleteCurrentUser204ResponseHeaders{SetCookie: &cookie}}, nil
 }
 
 // UpdateMyNickname changes the unique handle. The current password is required,
