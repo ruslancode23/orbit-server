@@ -22,6 +22,16 @@ tags:
       gets 404, not 403, so the API does not reveal which servers exist.
       A server decides what its members may do (`memberPermissions`): invite people,
       create channels, attach files. The owner and admins may always do all of it.
+  - name: audit
+    description: |
+      The moderation journal of a server: who banned, kicked or unbanned a
+      member, granted or took a role, made, edited or deleted a role or a
+      channel, deleted a message, made or revoked an invite, or handed the
+      server over. It is the record an organization's security service asks
+      for after an incident, so it is written server-side for every such
+      action. Reading it takes `manageServer`. A moderator whose account was
+      deleted stays in the record as `actorDeleted`, with no profile; the row
+      itself is never removed.
   - name: channels
     description: |
       Text channels inside a server. Reading follows membership; writing is open to
@@ -586,6 +596,75 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/audit:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listWorkspaceAudit
+      tags: [audit]
+      summary: The moderation journal of a server. Needs manageServer.
+      description: |
+        One page of what moderators did on this server, newest first: bans,
+        kicks and unbans, granted and revoked roles, created, edited and
+        deleted roles and channels, messages deleted by a moderator, invites,
+        and a handed-over owner. `actor` is the public profile of the
+        moderator; when that account has been deleted the row stays and
+        `actorDeleted` is true. Reading takes `manageServer` — an
+        administrator role and the owner have it. An outsider gets 404, as for
+        any server that is not theirs; a member without the permission gets
+        403.
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: |
+            The opaque `nextCursor` of the previous page; omit for the newest
+            page. A value this server did not issue answers 400.
+          schema: { type: string, maxLength: 200 }
+        - name: action
+          in: query
+          required: false
+          description: |
+            Only this kind of action, with the same spelling the entry uses:
+            `member.ban`, `member.unban`, `member.kick`,
+            `member.role.grant`, `member.role.revoke`,
+            `server.ownership_transfer`, `role.create`, `role.update`,
+            `role.delete`, `channel.create`, `channel.update`,
+            `channel.delete`, `message.delete`, `invite.create`,
+            `invite.revoke`.
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - name: actorId
+          in: query
+          required: false
+          description: Only actions taken by this account.
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: One page of the journal, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditPage" }
+        "400":
+          description: The cursor is not one this server issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: The caller is a member but may not manage the server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such server, or the caller is not a member of it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/workspaces/{workspaceId}/channels:
     parameters:
@@ -3556,6 +3635,61 @@ components:
           format: uuid
           description: Absent when the account that banned has been deleted.
         createdAt: { type: string, format: date-time }
+    AuditEntry:
+      type: object
+      additionalProperties: false
+      required: [id, action, targetType, createdAt, actorDeleted, metadata]
+      properties:
+        id: { type: string, format: uuid }
+        actor:
+          allOf:
+            - $ref: "#/components/schemas/UserProfile"
+          description: |
+            The moderator's public profile. Absent when the account has been
+            deleted; `actorDeleted` says so.
+        actorDeleted:
+          type: boolean
+          description: |
+            True when the moderator's account no longer exists. The row stays:
+            a journal that forgets who banned someone is not a journal.
+        action:
+          type: string
+          example: member.ban
+          description: |
+            What happened. The list is open: a new module may add an action
+            without a new version of the API, and a client must show an
+            unknown one as is.
+        targetType:
+          type: string
+          example: user
+          description: What `targetId` names — user, role, channel, message or invite.
+        targetId:
+          type: string
+          format: uuid
+          description: |
+            The account, role, channel, message or invite the action was about.
+            Absent only for an action that has no single target.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            The little a row needs beyond its target: the channel of a deleted
+            message, the id and name of a granted role. Never message text,
+            invite codes, tokens or other secrets.
+        createdAt: { type: string, format: date-time }
+    AuditPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+        nextCursor:
+          type: string
+          description: |
+            The cursor of the next, older page. Absent on the last page, which
+            is how a client knows to stop.
     WorkspaceCreateRequest:
       type: object
       additionalProperties: false

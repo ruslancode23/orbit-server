@@ -322,6 +322,10 @@ func (s *server) ListWorkspaceMembers(ctx context.Context, req api.ListWorkspace
 	return s.workspaces.ListWorkspaceMembers(ctx, req)
 }
 
+func (s *server) ListWorkspaceAudit(ctx context.Context, req api.ListWorkspaceAuditRequestObject) (api.ListWorkspaceAuditResponseObject, error) {
+	return s.workspaces.ListWorkspaceAudit(ctx, req)
+}
+
 func (s *server) SetWorkspaceMemberRole(ctx context.Context, req api.SetWorkspaceMemberRoleRequestObject) (api.SetWorkspaceMemberRoleResponseObject, error) {
 	return s.workspaces.SetWorkspaceMemberRole(ctx, req)
 }
