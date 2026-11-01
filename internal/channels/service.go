@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/servers"
@@ -131,12 +132,19 @@ type Watchers interface {
 	Announce(ctx context.Context, event events.Event, also ...uuid.UUID)
 }
 
+// Auditor records moderation actions in the journal (internal/audit). Optional:
+// with nil nothing is written, and a failure never undoes the channel change.
+type Auditor interface {
+	Record(ctx context.Context, entry audit.Entry) error
+}
+
 type Service struct {
 	store    Store
 	roles    Authorizer
 	watchers Watchers
 	// participants resolves access to conversations; see Participants.
 	participants Participants
+	auditor      Auditor
 }
 
 func NewService(store Store, roles Authorizer) *Service {
@@ -150,6 +158,20 @@ func (s *Service) SetParticipants(p Participants) { s.participants = p }
 // SetWatchers wires in the live stream, so the other members of the server see
 // a channel appear, change, move or go without reloading.
 func (s *Service) SetWatchers(w Watchers) { s.watchers = w }
+
+// SetAuditor wires the journal in after construction.
+func (s *Service) SetAuditor(a Auditor) { s.auditor = a }
+
+// record writes one channel action to the journal. A missing or failing
+// journal does not undo a channel that has already been created or deleted:
+// internal/audit logs the failure, and the channel table remains the truth.
+func (s *Service) record(ctx context.Context, actorID uuid.UUID, entry audit.Entry) {
+	if s.auditor == nil {
+		return
+	}
+	entry.ActorID = &actorID
+	_ = s.auditor.Record(ctx, entry)
+}
 
 // announce tells the server that its channel list changed. The payload names
 // the channel only: the channel as the API shows it carries canWrite, which
@@ -245,6 +267,13 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, c
 			return View{}, err
 		}
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionChannelCreate,
+		TargetType:  audit.TargetChannel,
+		TargetID:    audit.Target(created.ID),
+		Metadata:    map[string]any{"name": created.Name, "kind": string(created.Kind)},
+	})
 	s.announce(ctx, events.KindChannelChanged, workspaceID, created.ID)
 	return view(created, inChannel(access, created)), nil
 }
@@ -289,6 +318,13 @@ func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u U
 	if err != nil {
 		return View{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: updated.WorkspaceID,
+		Action:      audit.ActionChannelUpdate,
+		TargetType:  audit.TargetChannel,
+		TargetID:    audit.Target(updated.ID),
+		Metadata:    map[string]any{"name": updated.Name},
+	})
 	s.announce(ctx, events.KindChannelChanged, updated.WorkspaceID, updated.ID)
 	return view(updated, inChannel(access, updated)), nil
 }
@@ -303,6 +339,13 @@ func (s *Service) Delete(ctx context.Context, channelID, callerID uuid.UUID) err
 	if err := s.store.Delete(ctx, channelID); err != nil {
 		return err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: channel.WorkspaceID,
+		Action:      audit.ActionChannelDelete,
+		TargetType:  audit.TargetChannel,
+		TargetID:    audit.Target(channelID),
+		Metadata:    map[string]any{"name": channel.Name},
+	})
 	s.announce(ctx, events.KindChannelDeleted, channel.WorkspaceID, channelID)
 	return nil
 }
