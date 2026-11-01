@@ -112,6 +112,20 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const deleteUser = `-- name: DeleteUser :exec
+DELETE FROM users WHERE id = $1
+`
+
+// Deleting the account is what removes its personal data: sessions, devices,
+// memberships, friendships, push subscriptions and notification settings all
+// cascade. Messages stay behind with a NULL author. A server the account still
+// owns blocks the delete through workspaces.owner_id, which the caller reports
+// as a conflict instead of destroying a community.
+func (q *Queries) DeleteUser(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUser, id)
+	return err
+}
+
 const getUser = `-- name: GetUser :one
 SELECT id, nickname, email, password_hash, is_guest, created_at, updated_at, dm_policy, friend_request_policy, display_name, bio, accent_color, avatar_key, custom_status_emoji, custom_status_text, custom_status_expires_at, profile_updated_at, email_verified_at, profile_onboarded_at FROM users WHERE id = $1
 `

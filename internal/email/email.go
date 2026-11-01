@@ -83,10 +83,11 @@ func send(ctx context.Context, cfg config.SMTP, from string, msg Message) error 
 	var conn net.Conn
 	var err error
 	if cfg.ImplicitTLS {
-		conn, err = tls.DialWithDialer(dialer, "tcp", cfg.Addr(), &tls.Config{
-			ServerName: cfg.Host,
-			MinVersion: tls.VersionTLS12,
-		})
+		tlsDialer := &tls.Dialer{
+			NetDialer: dialer,
+			Config:    &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12},
+		}
+		conn, err = tlsDialer.DialContext(ctx, "tcp", cfg.Addr())
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", cfg.Addr())
 	}

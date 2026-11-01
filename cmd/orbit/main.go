@@ -16,6 +16,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/config"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
+	"github.com/ruslancode23/orbit-server/internal/email"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/feedback"
 	"github.com/ruslancode23/orbit-server/internal/files"
@@ -166,10 +167,17 @@ func run() error {
 	// and then asks the profile module to announce the account like any other
 	// profile change. Two renames per hour is the account-wide budget.
 	sessions.SetNicknameLimiter(ratelimit.NewHourly(cfg.NicknameChangeHourlyLimit))
+	sessions.SetPasswordResetTTL(cfg.PasswordReset.TTL)
 
 	authHandler := auth.NewHandler(sessions, !cfg.IsDevelopment(), log)
 	authHandler.SetProfiles(profileService)
 	authHandler.SetProfileEvents(profileService)
+	// A forgotten password leads back into the account through a one-time link in
+	// an email; without SMTP the endpoint still answers 204 and sends nothing.
+	authHandler.SetPasswordReset(email.New(cfg.SMTP, log), cfg.PublicURL, cfg.PasswordReset.TTL, auth.ResetLimits{
+		RequestsPerIP:    ratelimit.NewHourly(cfg.PasswordReset.RequestsPerHourPerIP),
+		AttemptsPerToken: ratelimit.NewHourly(cfg.PasswordReset.AttemptsPerHourPerToken),
+	})
 	// One budget for both doors that create an account: registration and the
 	// guest entrance by invite link.
 	signups := ratelimit.NewHourly(cfg.SignupsPerHourPerIP)
@@ -300,9 +308,10 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
-	// Notifications and link previews already on their way finish; each round is
-	// bounded by its own timeout.
+	// Notifications, reset letters and link previews already on their way finish;
+	// each round is bounded by its own timeout.
 	messageService.Wait()
 	pushService.Wait()
+	authHandler.Wait()
 	return nil
 }

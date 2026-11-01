@@ -72,3 +72,11 @@ SET email = sqlc.narg(email)::text,
     updated_at = now()
 WHERE users.id = sqlc.arg(id)
 RETURNING *;
+
+-- Deleting the account is what removes its personal data: sessions, devices,
+-- memberships, friendships, push subscriptions and notification settings all
+-- cascade. Messages stay behind with a NULL author. A server the account still
+-- owns blocks the delete through workspaces.owner_id, which the caller reports
+-- as a conflict instead of destroying a community.
+-- name: DeleteUser :exec
+DELETE FROM users WHERE id = $1;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -61,6 +62,24 @@ type Config struct {
 	Storage Storage
 	// SMTP is the outgoing mail server; an empty host turns mail off.
 	SMTP SMTP
+	// PublicURL is the base address of the instance (for example
+	// https://orbit.example). A link in an email must be absolute, so a reset
+	// link is built from it.
+	PublicURL string
+	// PasswordReset holds the lifetime of a reset link and the guards in front of
+	// the two public endpoints.
+	PasswordReset PasswordReset
+}
+
+// PasswordReset configures the forgotten-password flow. The request limit is
+// keyed by client address and the attempt limit by token: neither can tell an
+// account that exists from one that does not.
+type PasswordReset struct {
+	TTL time.Duration
+	// RequestsPerHourPerIP caps reset requests from one address per hour.
+	RequestsPerHourPerIP int
+	// AttemptsPerHourPerToken caps submissions of one reset token per hour.
+	AttemptsPerHourPerToken int
 }
 
 // SMTP is the mail server Orbit writes through. Mail is not optional decoration:
@@ -148,6 +167,12 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_SESSION_TTL: %w", err))
 	}
 
+	passwordResetTTL, err := time.ParseDuration(getenv("ORBIT_PASSWORD_RESET_TTL", "1h"))
+	if err != nil || passwordResetTTL <= 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_PASSWORD_RESET_TTL must be a positive duration, got %q",
+			os.Getenv("ORBIT_PASSWORD_RESET_TTL")))
+	}
+
 	smtpPort, err := strconv.Atoi(getenv("ORBIT_SMTP_PORT", "587"))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("ORBIT_SMTP_PORT: %w", err))
@@ -193,6 +218,18 @@ func Load() (Config, error) {
 	if err != nil || bugReports < 0 {
 		errs = append(errs, fmt.Errorf("ORBIT_BUG_REPORTS_PER_HOUR must be zero or a positive number, got %q",
 			os.Getenv("ORBIT_BUG_REPORTS_PER_HOUR")))
+	}
+
+	resetRequests, err := strconv.Atoi(getenv("ORBIT_PASSWORD_RESET_REQUESTS_PER_HOUR", "5"))
+	if err != nil || resetRequests < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_PASSWORD_RESET_REQUESTS_PER_HOUR must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_PASSWORD_RESET_REQUESTS_PER_HOUR")))
+	}
+
+	resetAttempts, err := strconv.Atoi(getenv("ORBIT_PASSWORD_RESET_ATTEMPTS_PER_HOUR", "10"))
+	if err != nil || resetAttempts < 0 {
+		errs = append(errs, fmt.Errorf("ORBIT_PASSWORD_RESET_ATTEMPTS_PER_HOUR must be zero or a positive number, got %q",
+			os.Getenv("ORBIT_PASSWORD_RESET_ATTEMPTS_PER_HOUR")))
 	}
 
 	trustedProxies, err := clientip.ParseTrusted(splitList(os.Getenv("ORBIT_TRUSTED_PROXIES")))
@@ -267,13 +304,31 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORBIT_AVATAR_LINK_TTL must not exceed 168h, got %q", os.Getenv("ORBIT_AVATAR_LINK_TTL")))
 	}
 
+	// The base of an absolute link in an email. A trailing slash would double up
+	// with the one before /reset.
+	publicURL := strings.TrimSpace(os.Getenv("ORBIT_PUBLIC_URL"))
+	if publicURL != "" {
+		parsed, err := url.Parse(publicURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			errs = append(errs, fmt.Errorf("ORBIT_PUBLIC_URL must be an absolute http(s) URL, got %q", publicURL))
+		} else {
+			publicURL = strings.TrimRight(publicURL, "/")
+		}
+	}
+
 	cfg := Config{
-		Env:                       getenv("ORBIT_ENV", "production"),
-		HTTPAddr:                  getenv("ORBIT_HTTP_ADDR", ":8080"),
-		ShutdownTimeout:           shutdownTimeout,
-		DatabaseURL:               required("ORBIT_DATABASE_URL"),
-		CORSOrigins:               splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
-		SessionTTL:                sessionTTL,
+		Env:             getenv("ORBIT_ENV", "production"),
+		HTTPAddr:        getenv("ORBIT_HTTP_ADDR", ":8080"),
+		ShutdownTimeout: shutdownTimeout,
+		DatabaseURL:     required("ORBIT_DATABASE_URL"),
+		CORSOrigins:     splitList(os.Getenv("ORBIT_CORS_ORIGINS")),
+		SessionTTL:      sessionTTL,
+		PublicURL:       publicURL,
+		PasswordReset: PasswordReset{
+			TTL:                     passwordResetTTL,
+			RequestsPerHourPerIP:    resetRequests,
+			AttemptsPerHourPerToken: resetAttempts,
+		},
 		MaxGroupMembers:           maxGroup,
 		NewConversationLimit:      newConversations,
 		MaxFriends:                maxFriends,
@@ -326,6 +381,9 @@ func Load() (Config, error) {
 		}
 		if (cfg.SMTP.Username == "") != (cfg.SMTP.Password == "") {
 			errs = append(errs, errors.New("ORBIT_SMTP_USERNAME and ORBIT_SMTP_PASSWORD go together: set both or neither"))
+		}
+		if cfg.PublicURL == "" {
+			errs = append(errs, errors.New("ORBIT_PUBLIC_URL is required when ORBIT_SMTP_HOST is set: a reset link must be absolute"))
 		}
 	} else if cfg.SMTP.From != "" || cfg.SMTP.Username != "" || cfg.SMTP.Password != "" {
 		errs = append(errs, errors.New("ORBIT_SMTP_HOST is required when any other ORBIT_SMTP_ variable is set"))

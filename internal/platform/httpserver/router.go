@@ -278,6 +278,18 @@ func (s *server) ChangePassword(ctx context.Context, req api.ChangePasswordReque
 	return s.auth.ChangePassword(ctx, req)
 }
 
+func (s *server) RequestPasswordReset(ctx context.Context, req api.RequestPasswordResetRequestObject) (api.RequestPasswordResetResponseObject, error) {
+	return s.auth.RequestPasswordReset(ctx, req)
+}
+
+func (s *server) ResetPassword(ctx context.Context, req api.ResetPasswordRequestObject) (api.ResetPasswordResponseObject, error) {
+	return s.auth.ResetPassword(ctx, req)
+}
+
+func (s *server) DeleteCurrentUser(ctx context.Context, req api.DeleteCurrentUserRequestObject) (api.DeleteCurrentUserResponseObject, error) {
+	return s.auth.DeleteCurrentUser(ctx, req)
+}
+
 func (s *server) ListWorkspaces(ctx context.Context, req api.ListWorkspacesRequestObject) (api.ListWorkspacesResponseObject, error) {
 	return s.workspaces.ListWorkspaces(ctx, req)
 }

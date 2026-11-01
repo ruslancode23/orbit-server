@@ -341,12 +341,35 @@ func TestIdentityRoutesExist(t *testing.T) {
 		{http.MethodPatch, "/api/v1/users/me/nickname", `{"nickname":"Bob","currentPassword":"secret"}`},
 		{http.MethodPatch, "/api/v1/users/me/email", `{"email":"bob@example.com","currentPassword":"secret"}`},
 		{http.MethodDelete, "/api/v1/users/me/avatar", ""},
+		{http.MethodDelete, "/api/v1/users/me", `{"password":"secret"}`},
 	}
 	for _, route := range routes {
 		rec := do(t, router, route.method, route.path, route.body)
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s = %d, want 401 (route missing?), body %s", route.method, route.path, rec.Code, rec.Body)
 		}
+	}
+}
+
+// The reset endpoints are part of the contract. With mail off the request is
+// accepted before any store is touched, and a malformed reset body is refused
+// by the schema instead of reaching a handler.
+func TestPasswordResetRoutesExist(t *testing.T) {
+	router := newRouter(t, nil)
+
+	rec := do(t, router, http.MethodPost, "/api/v1/auth/password/reset-request", `{"login":"nobody"}`)
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("reset-request = %d, want 204, body %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, router, http.MethodPost, "/api/v1/auth/password/reset-request", `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("reset-request without a login = %d, want 400", rec.Code)
+	}
+
+	rec = do(t, router, http.MethodPost, "/api/v1/auth/password/reset", `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("reset without a token = %d, want 400", rec.Code)
 	}
 }
 

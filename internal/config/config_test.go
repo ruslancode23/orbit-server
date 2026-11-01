@@ -18,6 +18,9 @@ func setRequired(t *testing.T) {
 		"ORBIT_NICKNAME_CHANGE_HOURLY_LIMIT", "ORBIT_TRUSTED_PROXIES", "ORBIT_LOGIN_PER_MINUTE_PER_IP",
 		"ORBIT_LOGIN_FAILURES_PER_HOUR", "ORBIT_SIGNUPS_PER_HOUR_PER_IP",
 		"ORBIT_VAPID_PUBLIC_KEY", "ORBIT_VAPID_PRIVATE_KEY", "ORBIT_VAPID_SUBJECT",
+		"ORBIT_PUBLIC_URL", "ORBIT_PASSWORD_RESET_TTL", "ORBIT_PASSWORD_RESET_REQUESTS_PER_HOUR",
+		"ORBIT_PASSWORD_RESET_ATTEMPTS_PER_HOUR", "ORBIT_SMTP_HOST", "ORBIT_SMTP_PORT",
+		"ORBIT_SMTP_USERNAME", "ORBIT_SMTP_PASSWORD", "ORBIT_SMTP_FROM", "ORBIT_SMTP_IMPLICIT_TLS",
 	} {
 		t.Setenv(name, "")
 	}
@@ -390,4 +393,71 @@ func TestLoadPush(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadPasswordReset(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		setRequired(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.PasswordReset.TTL != time.Hour {
+			t.Errorf("TTL = %v, want 1h", cfg.PasswordReset.TTL)
+		}
+		if cfg.PasswordReset.RequestsPerHourPerIP != 5 || cfg.PasswordReset.AttemptsPerHourPerToken != 10 {
+			t.Errorf("limits = %d/%d, want 5/10",
+				cfg.PasswordReset.RequestsPerHourPerIP, cfg.PasswordReset.AttemptsPerHourPerToken)
+		}
+	})
+
+	t.Run("from the environment", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_PUBLIC_URL", "https://orbit.example/")
+		t.Setenv("ORBIT_PASSWORD_RESET_TTL", "30m")
+		t.Setenv("ORBIT_PASSWORD_RESET_REQUESTS_PER_HOUR", "0")
+		t.Setenv("ORBIT_PASSWORD_RESET_ATTEMPTS_PER_HOUR", "3")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.PublicURL != "https://orbit.example" {
+			t.Errorf("PublicURL = %q, want the trailing slash removed", cfg.PublicURL)
+		}
+		if cfg.PasswordReset.TTL != 30*time.Minute ||
+			cfg.PasswordReset.RequestsPerHourPerIP != 0 ||
+			cfg.PasswordReset.AttemptsPerHourPerToken != 3 {
+			t.Errorf("PasswordReset = %+v", cfg.PasswordReset)
+		}
+	})
+
+	t.Run("bad public url", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_PUBLIC_URL", "orbit.example")
+
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ORBIT_PUBLIC_URL") {
+			t.Errorf("Load() error = %v, want a complaint about ORBIT_PUBLIC_URL", err)
+		}
+	})
+
+	t.Run("mail needs an absolute base", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_SMTP_HOST", "mail.orbit.example")
+		t.Setenv("ORBIT_SMTP_FROM", "orbit@orbit.example")
+
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ORBIT_PUBLIC_URL") {
+			t.Errorf("Load() error = %v, want a complaint about ORBIT_PUBLIC_URL", err)
+		}
+	})
+
+	t.Run("bad ttl", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("ORBIT_PASSWORD_RESET_TTL", "0s")
+
+		if _, err := Load(); err == nil {
+			t.Error("Load() error = nil, want a complaint about ORBIT_PASSWORD_RESET_TTL")
+		}
+	})
 }

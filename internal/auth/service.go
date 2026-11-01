@@ -41,6 +41,13 @@ var (
 	ErrNicknameReserved = errors.New("auth: the nickname is reserved for 7 days after release")
 	// ErrRateLimited means this account changed its nickname too often lately.
 	ErrRateLimited = errors.New("auth: too many nickname changes")
+	// ErrResetToken means the password reset token is unknown, already used or
+	// expired. The caller must not say which: it is one answer for all three.
+	ErrResetToken = errors.New("auth: the reset token is invalid or expired")
+	// ErrOwnsServers means the account still owns a server, so deleting it would
+	// leave that server without an owner. The owner has to hand it over or delete
+	// it first.
+	ErrOwnsServers = errors.New("auth: the account still owns a server")
 )
 
 // RateLimitedError carries how long the caller should wait; the handler puts it
@@ -118,6 +125,15 @@ type Store interface {
 	// ChangeEmail replaces the address and marks it unverified; an empty address
 	// clears it.
 	ChangeEmail(ctx context.Context, id uuid.UUID, email string) (User, error)
+	// CreatePasswordResetToken stores the hash of a fresh token and drops the
+	// account's previous unused ones, so only the newest link works.
+	CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) error
+	// ResetPasswordWithToken consumes the token, writes the new password and
+	// revokes every session in one statement. ErrNoUser means no live token.
+	ResetPasswordWithToken(ctx context.Context, tokenHash []byte, passwordHash string) (uuid.UUID, error)
+	// DeleteUser removes the account; personal rows cascade. ErrOwnsServers when
+	// a server still points at this account as its owner.
+	DeleteUser(ctx context.Context, id uuid.UUID) error
 }
 
 // Service holds the rules; it knows nothing about HTTP.
@@ -128,14 +144,20 @@ type Service struct {
 	// nicknameLimiter is the per-account hourly budget for renames. A nil
 	// limiter allows everything, which is how an operator turns the guard off.
 	nicknameLimiter *ratelimit.Limiter
+	// resetTTL is how long a password reset link lives. It is set from
+	// configuration; one hour keeps a leaked mailbox from being useful later.
+	resetTTL time.Duration
 }
 
 func NewService(store Store, sessionTTL time.Duration) *Service {
-	return &Service{store: store, sessionTTL: sessionTTL, now: time.Now}
+	return &Service{store: store, sessionTTL: sessionTTL, now: time.Now, resetTTL: time.Hour}
 }
 
 // SetNicknameLimiter wires in the rename budget after both exist.
 func (s *Service) SetNicknameLimiter(limiter *ratelimit.Limiter) { s.nicknameLimiter = limiter }
+
+// SetPasswordResetTTL sets how long a reset link stays usable.
+func (s *Service) SetPasswordResetTTL(ttl time.Duration) { s.resetTTL = ttl }
 
 // Credentials is a session handed to the client: the token goes into the cookie.
 type Credentials struct {
@@ -286,6 +308,76 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, current,
 		return err
 	}
 	return s.store.RevokeUserSessions(ctx, userID)
+}
+
+// RequestPasswordReset issues a one-time token for a nickname or an email. An
+// unknown account and an account without an address are not errors and produce
+// no token: the caller answers the same 204 either way, so the endpoint cannot
+// be used to discover accounts. A new token replaces the account's unused ones.
+func (s *Service) RequestPasswordReset(ctx context.Context, login string) (address, token string, err error) {
+	stored, err := s.store.UserByLogin(ctx, strings.TrimSpace(login))
+	switch {
+	case errors.Is(err, ErrNoUser):
+		return "", "", nil
+	case err != nil:
+		return "", "", fmt.Errorf("find account for reset: %w", err)
+	case stored.Email == "":
+		// A guest has no address and nothing to recover by mail.
+		return "", "", nil
+	}
+
+	token, hash, err := newSessionToken()
+	if err != nil {
+		return "", "", err
+	}
+	expiresAt := s.now().Add(s.resetTTL)
+	if err := s.store.CreatePasswordResetToken(ctx, stored.ID, hash, expiresAt); err != nil {
+		return "", "", err
+	}
+	return stored.Email, token, nil
+}
+
+// ResetPassword consumes a reset token, writes the new password and revokes
+// every session of the account, this one included. An unknown, used or expired
+// token is one ErrResetToken and never says which.
+func (s *Service) ResetPassword(ctx context.Context, token, password string) error {
+	if token == "" {
+		return ErrResetToken
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	if _, err := s.store.ResetPasswordWithToken(ctx, hashToken(token), hash); err != nil {
+		if errors.Is(err, ErrNoUser) {
+			return ErrResetToken
+		}
+		return fmt.Errorf("reset password: %w", err)
+	}
+	return nil
+}
+
+// DeleteAccount removes the account after confirming the password. A guest has
+// no password and confirms with its session alone: there is no credential to
+// ask for, and the session already is the only key it has. Personal rows
+// cascade; messages in shared channels stay with a NULL author.
+func (s *Service) DeleteAccount(ctx context.Context, userID uuid.UUID, password string) error {
+	stored, err := s.store.UserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if stored.PasswordHash != "" {
+		if password == "" {
+			return ErrCredentials
+		}
+		if err := VerifyPassword(stored.PasswordHash, password); err != nil {
+			if errors.Is(err, ErrPasswordMismatch) {
+				return ErrCredentials
+			}
+			return fmt.Errorf("verify password: %w", err)
+		}
+	}
+	return s.store.DeleteUser(ctx, userID)
 }
 
 // ChangeNickname replaces the unique handle after confirming the password. The

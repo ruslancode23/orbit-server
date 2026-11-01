@@ -18,6 +18,9 @@ import (
 const (
 	// uniqueViolation is PostgreSQL's SQLSTATE for a broken unique constraint.
 	uniqueViolation = "23505"
+	// foreignKeyViolation is what a row still pointed at from another table
+	// reports; deleting an account that owns a server leaves such a row.
+	foreignKeyViolation = "23503"
 	// raiseException is what RAISE EXCEPTION without a code reports. The nickname
 	// trigger uses it, so the message tells this one apart from any other.
 	raiseException = "P0001"
@@ -192,6 +195,45 @@ func (s *PostgresStore) ChangeEmail(ctx context.Context, id uuid.UUID, email str
 		return User{}, fmt.Errorf("set email: %w", err)
 	}
 	return toUser(row), nil
+}
+
+func (s *PostgresStore) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) error {
+	err := s.q.CreatePasswordResetToken(ctx, db.CreatePasswordResetTokenParams{
+		AccountID:   pgUUID(userID),
+		HashedToken: tokenHash,
+		ExpiresAt:   pgTime(expiresAt),
+	})
+	if err != nil {
+		return fmt.Errorf("create password reset token: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ResetPasswordWithToken(ctx context.Context, tokenHash []byte, passwordHash string) (uuid.UUID, error) {
+	row, err := s.q.ResetPasswordWithToken(ctx, db.ResetPasswordWithTokenParams{
+		HashedToken:     tokenHash,
+		NewPasswordHash: text(passwordHash),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, ErrNoUser
+		}
+		return uuid.Nil, fmt.Errorf("reset password with token: %w", err)
+	}
+	return uuid.UUID(row.Bytes), nil
+}
+
+func (s *PostgresStore) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	if err := s.q.DeleteUser(ctx, pgUUID(id)); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation {
+			// The only reference without a cascade or a SET NULL is
+			// workspaces.owner_id: the account still owns a server.
+			return ErrOwnsServers
+		}
+		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
 }
 
 // mapAccountConflict turns the two database guards behind a nickname into the

@@ -125,6 +125,23 @@ func (s *Service) ClearAvatar(ctx context.Context, userID uuid.UUID) (Public, er
 	return s.present(ctx, stored), nil
 }
 
+// PrepareAvatarDeletion captures the stored avatar of an account that is about
+// to be deleted and returns the function that removes its objects. The read
+// happens before the account row goes away; the deletion waits until the
+// account delete has actually succeeded, so a wrong password leaves the avatar
+// in place. An account without an avatar returns a no-op.
+func (s *Service) PrepareAvatarDeletion(ctx context.Context, userID uuid.UUID) (func(context.Context), error) {
+	stored, err := s.store.Profile(ctx, userID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return func(context.Context) {}, nil
+	case err != nil:
+		return nil, fmt.Errorf("read avatar for deletion: %w", err)
+	}
+	key := stored.AvatarKey
+	return func(ctx context.Context) { s.dropAvatar(ctx, key) }, nil
+}
+
 // ProfileChanged schedules a user.updated announcement without changing a
 // profile field. internal/auth owns nickname and email and calls this after a
 // successful change, so the same debounce and audience apply.
