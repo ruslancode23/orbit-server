@@ -207,6 +207,9 @@ type Querier interface {
 	// Deleting a secret chat deletes the pair: the channel cascades to bindings,
 	// envelopes and files. Only a device in the chat may do it.
 	LeaveSecretChat(ctx context.Context, arg LeaveSecretChatParams) (int64, error)
+	// One page of one server's journal, newest first. `before_created_at` and
+	// `before_id` are the keyset cursor: both set for every page but the first.
+	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error)
 	// The accounts this person blocked: their authors are hidden in history and in
 	// live group events.
 	ListBlockedIDs(ctx context.Context, blockerID pgtype.UUID) ([]pgtype.UUID, error)
@@ -317,6 +320,9 @@ type Querier interface {
 	NicknameIsHeld(ctx context.Context, arg NicknameIsHeldParams) (bool, error)
 	// A guest that signs up keeps its id, so its messages and memberships stay with it.
 	PromoteGuest(ctx context.Context, arg PromoteGuestParams) (User, error)
+	// The moderation journal (internal/audit). The table is owned by that package;
+	// nothing else reads or writes it through SQL.
+	RecordAuditEntry(ctx context.Context, arg RecordAuditEntryParams) (AuditLog, error)
 	RemoveConversationMember(ctx context.Context, arg RemoveConversationMemberParams) (int64, error)
 	RemoveReaction(ctx context.Context, arg RemoveReactionParams) (int64, error)
 	RemoveWorkspaceMember(ctx context.Context, arg RemoveWorkspaceMemberParams) (int64, error)
