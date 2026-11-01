@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/perms"
 	"github.com/ruslancode23/orbit-server/internal/profile"
@@ -216,6 +217,13 @@ type Profiles interface {
 	Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]profile.Public, error)
 }
 
+// Auditor records moderation actions in the journal (internal/audit). Optional:
+// with nil nothing is written, and a failure is never allowed to undo the
+// action it describes — see record.
+type Auditor interface {
+	Record(ctx context.Context, entry audit.Entry) error
+}
+
 // Service holds the rules. It knows nothing about HTTP.
 type Service struct {
 	store    Store
@@ -224,10 +232,28 @@ type Service struct {
 	// profiles is optional at construction; main wires it in. Without it a member
 	// carries only the id, which is still enough for every permission check.
 	profiles Profiles
+	auditor  Auditor
+	auditLog AuditLog
 }
 
 func NewService(store Store, watchers Watchers, icons Icons) *Service {
 	return &Service{store: store, watchers: watchers, icons: icons}
+}
+
+// SetAuditor wires the journal in after construction.
+func (s *Service) SetAuditor(a Auditor) { s.auditor = a }
+
+// record appends one moderation action to the journal. A missing journal or a
+// failed insert is deliberately ignored here: the ban, kick, role or channel
+// change has already been committed, and the journal's own error is logged by
+// internal/audit. Undoing a moderation action because its second record could
+// not be written would be worse than a gap that shows up in the log.
+func (s *Service) record(ctx context.Context, actorID uuid.UUID, entry audit.Entry) {
+	if s.auditor == nil {
+		return
+	}
+	entry.ActorID = &actorID
+	_ = s.auditor.Record(ctx, entry)
 }
 
 // SetProfiles wires the profile module in after both exist.
@@ -649,6 +675,19 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 	if err != nil {
 		return Member{}, err
 	}
+	action := audit.ActionMemberRoleRevoke
+	if role == RoleAdmin {
+		action = audit.ActionMemberRoleGrant
+	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      action,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+		// The old API's roles are the only names this path has: the server's
+		// administrator role is created on demand and has no id to cite here.
+		Metadata: map[string]any{"role": string(role)},
+	})
 	s.announce(ctx, workspaceID, targetID, role, true)
 	return s.memberOf(ctx, workspaceID, targetID)
 }
@@ -672,6 +711,15 @@ func (s *Service) moveOwnership(ctx context.Context, workspaceID, callerID, targ
 				return Member{}, err
 			}
 		}
+		// Taking ownership away from an owner is a role change like any other;
+		// the new owner is not named, because there is none in this branch.
+		s.record(ctx, callerID, audit.Entry{
+			WorkspaceID: workspaceID,
+			Action:      audit.ActionMemberRoleRevoke,
+			TargetType:  audit.TargetUser,
+			TargetID:    audit.Target(targetID),
+			Metadata:    map[string]any{"role": string(RoleOwner)},
+		})
 		s.announce(ctx, workspaceID, targetID, role, true)
 		return s.memberOf(ctx, workspaceID, targetID)
 	}
@@ -689,6 +737,13 @@ func (s *Service) moveOwnership(ctx context.Context, workspaceID, callerID, targ
 		}
 		s.announce(ctx, workspaceID, callerID, RoleAdmin, true)
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionOwnershipTransfer,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+		Metadata:    map[string]any{"previousOwnerId": callerID},
+	})
 	return s.memberOf(ctx, workspaceID, targetID)
 }
 
@@ -752,7 +807,16 @@ func (s *Service) Remove(ctx context.Context, workspaceID, callerID, targetID uu
 	if !caller.Base().Has(perms.KickMembers) || !caller.Outranks(target.Member) {
 		return ErrForbidden
 	}
-	return s.removeMember(ctx, workspaceID, targetID)
+	if err := s.removeMember(ctx, workspaceID, targetID); err != nil {
+		return err
+	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionMemberKick,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+	})
+	return nil
 }
 
 // removeMember drops the membership and ends the live connections of that account.
@@ -791,6 +855,12 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 	if err != nil {
 		return Ban{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionMemberBan,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+	})
 	if err := s.withProfile(ctx, &ban.User); err != nil {
 		return Ban{}, err
 	}
@@ -807,6 +877,12 @@ func (s *Service) Unban(ctx context.Context, workspaceID, callerID, targetID uui
 	if err := s.store.Unban(ctx, workspaceID, targetID); err != nil {
 		return err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionMemberUnban,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+	})
 	s.AnnounceToStaff(ctx, events.Event{Kind: events.KindBansChanged, WorkspaceID: workspaceID})
 	return nil
 }

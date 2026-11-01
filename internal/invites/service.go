@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/perms"
@@ -99,14 +100,36 @@ type Guests interface {
 	RegisterGuest(ctx context.Context, nickname string) (auth.User, auth.Credentials, error)
 }
 
+// Auditor records moderation actions in the journal (internal/audit). Optional:
+// with nil nothing is written, and a failure never undoes the invite change.
+type Auditor interface {
+	Record(ctx context.Context, entry audit.Entry) error
+}
+
 type Service struct {
 	store   Store
 	members Members
 	guests  Guests
+	auditor Auditor
 }
 
 func NewService(store Store, members Members, guests Guests) *Service {
 	return &Service{store: store, members: members, guests: guests}
+}
+
+// SetAuditor wires the journal in after construction.
+func (s *Service) SetAuditor(a Auditor) { s.auditor = a }
+
+// record appends one invite action to the journal. The code itself is never
+// recorded — it is a password to the server. A missing or failing journal does
+// not undo the link that has already been made or revoked; internal/audit logs
+// the failure.
+func (s *Service) record(ctx context.Context, actorID uuid.UUID, entry audit.Entry) {
+	if s.auditor == nil {
+		return
+	}
+	entry.ActorID = &actorID
+	_ = s.auditor.Record(ctx, entry)
 }
 
 // Create issues a link. Admins and the owner may, and members too when the
@@ -137,6 +160,12 @@ func (s *Service) Create(ctx context.Context, workspaceID, callerID uuid.UUID, n
 	if err != nil {
 		return Invite{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionInviteCreate,
+		TargetType:  audit.TargetInvite,
+		TargetID:    audit.Target(invite.ID),
+	})
 	s.linksChanged(ctx, workspaceID)
 	return invite, nil
 }
@@ -165,6 +194,12 @@ func (s *Service) Revoke(ctx context.Context, inviteID, callerID uuid.UUID) erro
 	if err := s.store.Revoke(ctx, inviteID); err != nil {
 		return err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: invite.WorkspaceID,
+		Action:      audit.ActionInviteRevoke,
+		TargetType:  audit.TargetInvite,
+		TargetID:    audit.Target(inviteID),
+	})
 	s.linksChanged(ctx, invite.WorkspaceID)
 	return nil
 }

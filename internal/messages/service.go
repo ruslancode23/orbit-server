@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
@@ -324,6 +325,12 @@ type Profiles interface {
 	Profiles(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]profile.Public, error)
 }
 
+// Auditor records moderation actions in the journal (internal/audit). Optional:
+// with nil nothing is written, and a failure never undoes a delete.
+type Auditor interface {
+	Record(ctx context.Context, entry audit.Entry) error
+}
+
 type Service struct {
 	store    Store
 	channels ChannelAccess
@@ -352,6 +359,8 @@ type Service struct {
 	searchLimiter *ratelimit.Limiter
 	// previews is optional; see LinkPreviews.
 	previews LinkPreviews
+	// auditor is optional; see Auditor.
+	auditor Auditor
 	// previewsRunning waits for attach rounds at shutdown and in tests.
 	previewsRunning sync.WaitGroup
 }
@@ -395,6 +404,21 @@ func (s *Service) SetSearchLimiter(limiter *ratelimit.Limiter) { s.searchLimiter
 
 // SetLinkPreviews wires the OpenGraph cache in after construction.
 func (s *Service) SetLinkPreviews(previews LinkPreviews) { s.previews = previews }
+
+// SetAuditor wires the journal in after construction.
+func (s *Service) SetAuditor(a Auditor) { s.auditor = a }
+
+// record writes a moderator's action to the journal. A missing or failing
+// journal is ignored here on purpose: the message is already deleted, and
+// internal/audit logs the insert failure. A failed second record must not turn
+// a successful moderation action into an error for the client.
+func (s *Service) record(ctx context.Context, actorID uuid.UUID, entry audit.Entry) {
+	if s.auditor == nil {
+		return
+	}
+	entry.ActorID = &actorID
+	_ = s.auditor.Record(ctx, entry)
+}
 
 // Wait waits for previews already being fetched: a shutdown and a test both
 // need the round to finish before the process goes away.
@@ -1186,6 +1210,17 @@ func (s *Service) Delete(ctx context.Context, messageID, callerID uuid.UUID) (Me
 		loaded.Preview = nil
 	}
 	s.publish(ctx, events.KindMessageDeleted, channel.WorkspaceID, loaded)
+	// Only a moderator's delete is a moderation action: an author removing
+	// their own message is not, and a conversation has no moderators at all.
+	if message.Author.ID != callerID && channel.WorkspaceID != uuid.Nil {
+		s.record(ctx, callerID, audit.Entry{
+			WorkspaceID: channel.WorkspaceID,
+			Action:      audit.ActionMessageDelete,
+			TargetType:  audit.TargetMessage,
+			TargetID:    audit.Target(messageID),
+			Metadata:    map[string]any{"channelId": channel.ID, "authorId": message.Author.ID},
+		})
+	}
 	return loaded, nil
 }
 

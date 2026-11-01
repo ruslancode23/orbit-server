@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/perms"
 )
@@ -99,6 +100,13 @@ func (s *Service) CreateRole(ctx context.Context, workspaceID, callerID uuid.UUI
 	if err != nil {
 		return ServerRole{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionRoleCreate,
+		TargetType:  audit.TargetRole,
+		TargetID:    audit.Target(role.ID),
+		Metadata:    map[string]any{"name": role.Name},
+	})
 	s.rolesChanged(ctx, workspaceID)
 	return role, nil
 }
@@ -135,6 +143,13 @@ func (s *Service) UpdateRole(ctx context.Context, roleID, callerID uuid.UUID, u 
 	if err != nil {
 		return ServerRole{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: role.WorkspaceID,
+		Action:      audit.ActionRoleUpdate,
+		TargetType:  audit.TargetRole,
+		TargetID:    audit.Target(role.ID),
+		Metadata:    map[string]any{"name": updated.Name},
+	})
 	s.rolesChanged(ctx, role.WorkspaceID)
 	return updated, nil
 }
@@ -152,6 +167,13 @@ func (s *Service) DeleteRole(ctx context.Context, roleID, callerID uuid.UUID) er
 	if err := s.store.DeleteRole(ctx, role.WorkspaceID, roleID); err != nil {
 		return err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: role.WorkspaceID,
+		Action:      audit.ActionRoleDelete,
+		TargetType:  audit.TargetRole,
+		TargetID:    audit.Target(role.ID),
+		Metadata:    map[string]any{"name": role.Name},
+	})
 	s.rolesChanged(ctx, role.WorkspaceID)
 	return nil
 }
@@ -206,45 +228,61 @@ func (s *Service) ReorderRoles(ctx context.Context, workspaceID, callerID uuid.U
 // GrantRole gives a member a role below the caller's highest; the member must
 // rank below the caller, or be the caller.
 func (s *Service) GrantRole(ctx context.Context, workspaceID, callerID, targetID, roleID uuid.UUID) (Member, error) {
-	if err := s.checkGrant(ctx, workspaceID, callerID, targetID, roleID); err != nil {
+	role, err := s.checkGrant(ctx, workspaceID, callerID, targetID, roleID)
+	if err != nil {
 		return Member{}, err
 	}
 	if err := s.store.GrantRole(ctx, workspaceID, targetID, roleID); err != nil {
 		return Member{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionMemberRoleGrant,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+		Metadata:    map[string]any{"roleId": role.ID, "roleName": role.Name},
+	})
 	return s.afterGrant(ctx, workspaceID, targetID)
 }
 
 // RevokeRole takes a role from a member; the same rules as giving it.
 func (s *Service) RevokeRole(ctx context.Context, workspaceID, callerID, targetID, roleID uuid.UUID) (Member, error) {
-	if err := s.checkGrant(ctx, workspaceID, callerID, targetID, roleID); err != nil {
+	role, err := s.checkGrant(ctx, workspaceID, callerID, targetID, roleID)
+	if err != nil {
 		return Member{}, err
 	}
 	if err := s.store.RevokeRole(ctx, workspaceID, targetID, roleID); err != nil {
 		return Member{}, err
 	}
+	s.record(ctx, callerID, audit.Entry{
+		WorkspaceID: workspaceID,
+		Action:      audit.ActionMemberRoleRevoke,
+		TargetType:  audit.TargetUser,
+		TargetID:    audit.Target(targetID),
+		Metadata:    map[string]any{"roleId": role.ID, "roleName": role.Name},
+	})
 	return s.afterGrant(ctx, workspaceID, targetID)
 }
 
-func (s *Service) checkGrant(ctx context.Context, workspaceID, callerID, targetID, roleID uuid.UUID) error {
+func (s *Service) checkGrant(ctx context.Context, workspaceID, callerID, targetID, roleID uuid.UUID) (ServerRole, error) {
 	role, access, err := s.managedRole(ctx, roleID, callerID)
 	if err != nil {
-		return err
+		return ServerRole{}, err
 	}
 	if role.WorkspaceID != workspaceID {
-		return ErrRoleNotFound
+		return ServerRole{}, ErrRoleNotFound
 	}
 	if role.Default {
-		return ErrDefaultRole
+		return ServerRole{}, ErrDefaultRole
 	}
 	target, err := s.store.Access(ctx, workspaceID, targetID)
 	if err != nil {
-		return err
+		return ServerRole{}, err
 	}
 	if targetID != callerID && !access.Outranks(target.Member) {
-		return ErrForbidden
+		return ServerRole{}, ErrForbidden
 	}
-	return nil
+	return role, nil
 }
 
 func (s *Service) afterGrant(ctx context.Context, workspaceID, targetID uuid.UUID) (Member, error) {

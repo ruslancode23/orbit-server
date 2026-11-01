@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/channels"
 	"github.com/ruslancode23/orbit-server/internal/config"
@@ -68,6 +69,11 @@ func run() error {
 
 	queries := db.New(pool)
 	hub := events.NewHub()
+	// The moderation journal: every module that can ban, kick, grant a role,
+	// delete a channel or a message, make an invite or hand the server over
+	// writes to it through a narrow Auditor interface. Its failure is logged and
+	// never undoes the action it describes.
+	auditService := audit.NewService(audit.NewPostgresStore(queries), log)
 	storage, err := objectstore.New(ctx, cfg.Storage.Endpoint, cfg.Storage.Bucket,
 		cfg.Storage.AccessKey, cfg.Storage.SecretKey)
 	if err != nil {
@@ -76,9 +82,12 @@ func run() error {
 	workspaces := servers.NewService(servers.NewPostgresStore(pool), hub, servers.Icons{
 		Storage: storage, MaxBytes: cfg.Storage.MaxIconBytes, LinkTTL: cfg.Storage.IconLinkTTL,
 	})
+	workspaces.SetAuditor(auditService)
+	workspaces.SetAuditLog(auditService)
 	channelService := channels.NewService(channels.NewPostgresStore(pool), workspaces)
 	// Channel events reach every member through the servers module.
 	channelService.SetWatchers(workspaces)
+	channelService.SetAuditor(auditService)
 
 	// Who may write to whom: the block list, the dm policy and the guest rule.
 	privacyService := privacy.NewService(privacy.NewPostgresStore(queries))
@@ -130,6 +139,7 @@ func run() error {
 
 	messageService := messages.NewService(messages.NewPostgresStore(queries), channelService, workspaces, nil, hub)
 	messageService.SetProfiles(profileService)
+	messageService.SetAuditor(auditService)
 	fileService := files.NewService(files.NewPostgresStore(queries), storage, channelService, messageService,
 		workspaces, cfg.Storage.MaxUploadBytes, cfg.Storage.LinkTTL)
 	// The two know each other: a message carries files, a file needs its channel.
@@ -187,6 +197,7 @@ func run() error {
 		Signups:       signups,
 	})
 	inviteService := invites.NewService(invites.NewPostgresStore(queries), workspaces, sessions)
+	inviteService.SetAuditor(auditService)
 	inviteHandler := invites.NewHandler(inviteService, invites.NewCookies(authHandler), log)
 	inviteHandler.SetSignupLimiter(signups)
 

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ruslancode23/orbit-server/internal/api"
+	"github.com/ruslancode23/orbit-server/internal/audit"
 	"github.com/ruslancode23/orbit-server/internal/auth"
 	"github.com/ruslancode23/orbit-server/internal/platform/httpx"
 	"github.com/ruslancode23/orbit-server/internal/profile"
@@ -266,6 +267,83 @@ func (h *Handler) statuses(members []Member) map[uuid.UUID]api.PresenceStatus {
 		userIDs = append(userIDs, m.User.ID)
 	}
 	return h.presence.Statuses(userIDs)
+}
+
+// ListWorkspaceAudit serves one page of the moderation journal. The permission
+// check and the actor profiles live in Service.ListAudit; this method only
+// decodes the cursor and maps the result.
+func (h *Handler) ListWorkspaceAudit(ctx context.Context, req api.ListWorkspaceAuditRequestObject) (api.ListWorkspaceAuditResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.ListWorkspaceAudit401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+
+	params := audit.ListParams{}
+	if req.Params.Action != nil {
+		action := audit.Action(*req.Params.Action)
+		params.Action = &action
+	}
+	if req.Params.ActorId != nil {
+		actorID := *req.Params.ActorId
+		params.ActorID = &actorID
+	}
+	if req.Params.Limit != nil {
+		params.Limit = *req.Params.Limit
+	}
+	if req.Params.Before != nil {
+		cursor, err := audit.ParseCursor(*req.Params.Before)
+		if err != nil {
+			return api.ListWorkspaceAudit400JSONResponse(errorBody(httpx.CodeInvalidRequest, "the cursor is not one this server issued")), nil
+		}
+		params.Before = &cursor
+	}
+
+	page, err := h.svc.ListAudit(ctx, req.WorkspaceId, userID, params)
+	switch {
+	case errors.Is(err, ErrNotMember):
+		return api.ListWorkspaceAudit404JSONResponse(errorBody(httpx.CodeNotFound, "not found")), nil
+	case errors.Is(err, ErrForbidden):
+		return api.ListWorkspaceAudit403JSONResponse(errorBody(httpx.CodeForbidden, "the journal needs manageServer")), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "list workspace audit", slog.Any("error", err))
+		return api.ListWorkspaceAudit500JSONResponse(errorBody(httpx.CodeInternal, "could not read the journal")), nil
+	}
+
+	out := api.AuditPage{Items: make([]api.AuditEntry, 0, len(page.Entries))}
+	for _, entry := range page.Entries {
+		out.Items = append(out.Items, toAPIAuditEntry(entry))
+	}
+	if page.Next != nil {
+		cursor := page.Next.String()
+		out.NextCursor = &cursor
+	}
+	return api.ListWorkspaceAudit200JSONResponse(out), nil
+}
+
+// toAPIAuditEntry maps one journal row. Metadata is always an object on the
+// wire, even when the row has none: the schema requires it, and `{}` is easier
+// for a client than a nullable field.
+func toAPIAuditEntry(entry AuditEntry) api.AuditEntry {
+	out := api.AuditEntry{
+		Id:           entry.ID,
+		ActorDeleted: entry.ActorDeleted,
+		Action:       string(entry.Action),
+		TargetType:   string(entry.TargetType),
+		Metadata:     entry.Metadata,
+		CreatedAt:    entry.CreatedAt,
+	}
+	if out.Metadata == nil {
+		out.Metadata = map[string]interface{}{}
+	}
+	if entry.Actor != nil {
+		actor := profile.APIProfile(*entry.Actor)
+		out.Actor = &actor
+	}
+	if entry.TargetID != nil {
+		target := *entry.TargetID
+		out.TargetId = &target
+	}
+	return out
 }
 
 func (h *Handler) SetWorkspaceMemberRole(ctx context.Context, req api.SetWorkspaceMemberRoleRequestObject) (api.SetWorkspaceMemberRoleResponseObject, error) {
