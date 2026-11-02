@@ -215,6 +215,26 @@ db/queries/           SQL для sqlc → internal/platform/postgres/db (сге�
   переопределение — `channel.changed`, а гейтвей заново решает, кому канал виден.
 - Сквозная проверка с клиентом — `e2e/roles.spec.ts` в orbit-web (модератор, закрытый канал, иерархия).
 
+## Замедление, мьют и лимиты (SCRUM-163)
+
+Модерация письма: `channels.slowmode_seconds`, таймаут `workspace_members.muted_until` (+
+`mute_reason`), `workspaces.automute_new_members_seconds`, `max_mentions_per_message` и
+`max_links_per_message`. Подробности и API — README, «Замедление, автомут, лимиты и мьют».
+
+- Все проверки — в `messages.Send` (и `Edit` для мьюта), не в клиенте. Ошибки: `ErrSlowmode`
+  (429 + `Retry-After`), `ErrMuted` (403, это запрет, а не частота), `ErrTooManyMentions` /
+  `ErrTooManyLinks` (400, текст не обрезается).
+- Замедление снимают `manageChannels` | `manageMessages` и владелец; лимиты — `manageMessages`.
+  У беседы нет сервера, поэтому её лимиты и мьют не касаются.
+- Мьют не мешает читать, получать события, реагировать и сидеть в голосе. Причина мьюта живёт
+  в `mute_reason` и в журнале (`member.mute` / `member.unmute`) и никогда не уходит в события:
+  `member.changed` несёт только `mutedUntil`.
+- Иерархия — `perms.Outranks`: нельзя замьютить себя (и снять себе), владельца и равного/высшего.
+  Право `manageMessages`, выданное только переопределением канала, на мьют не хватает: он
+  действует на весь сервер.
+- Настройки сервера меняются `PATCH /workspaces/{id}` (`manageServer`) и приходят в
+  `workspace.updated`; новое событие не заводи без нужды.
+
 ## Push-уведомления (FEAT-4, SCRUM-126)
 
 `internal/push` владеет таблицей `push_subscriptions` и отправкой Web Push (библиотека
