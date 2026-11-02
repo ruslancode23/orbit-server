@@ -175,6 +175,34 @@ func (s *PostgresStore) HasMessages(ctx context.Context, channelID uuid.UUID) (b
 	return has, nil
 }
 
+// LastMessageAt is the slowmode clock of one author in one channel.
+func (s *PostgresStore) LastMessageAt(ctx context.Context, channelID, authorID uuid.UUID) (time.Time, error) {
+	last, err := s.q.LastChannelMessageAt(ctx, db.LastChannelMessageAtParams{
+		ChannelID: pgUUID(channelID),
+		AuthorID:  pgUUID(authorID),
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("last message at: %w", err)
+	}
+	if !last.Valid {
+		return time.Time{}, nil
+	}
+	return last.Time, nil
+}
+
+// HasClientMessage reports a resend: the same send twice is one message.
+func (s *PostgresStore) HasClientMessage(ctx context.Context, channelID, authorID uuid.UUID, clientMessageID string) (bool, error) {
+	has, err := s.q.HasClientMessage(ctx, db.HasClientMessageParams{
+		ChannelID:       pgUUID(channelID),
+		AuthorID:        pgUUID(authorID),
+		ClientMessageID: clientMessageID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("has client message: %w", err)
+	}
+	return has, nil
+}
+
 func (s *PostgresStore) Edit(ctx context.Context, id, authorID uuid.UUID, content string) (Message, error) {
 	row, err := s.q.EditMessage(ctx, db.EditMessageParams{
 		ID:       pgUUID(id),

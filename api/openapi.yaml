@@ -539,6 +539,57 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}/members/{userId}/mute:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/UserId"
+    post:
+      operationId: muteWorkspaceMember
+      tags: [workspaces]
+      summary: Put a member into a timeout, or lift one. Needs manageMessages.
+      description: |
+        A mute is a timeout: the member keeps reading, receiving events and sitting in
+        voice, but sending a message in the server's channels answers 403 until it ends.
+        `durationSeconds: 0` lifts an earlier mute.
+
+        The caller needs `manageMessages` (channel-scoped overrides do not count: a
+        timeout is server-wide), must outrank the target and may not be the target.
+        The owner and anyone at or above the caller are out of reach — self-mute and
+        self-unmute are refused too, or a mute would mean nothing. The mute is written
+        to the moderation journal as `member.mute` or `member.unmute` with its reason;
+        the reason never travels in an event. Every member gets a `member.changed`
+        event carrying `mutedUntil` and `null` when it is lifted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceMemberMuteRequest" }
+      responses:
+        "200":
+          description: The member with their new `mutedUntil`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMember" }
+        "400":
+          description: The duration or the reason is out of range.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: |
+            The caller lacks manageMessages, or the target is themselves, the owner,
+            or not ranked below the caller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such server, no such member, or the caller is not a member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/workspaces/{workspaceId}/bans:
     parameters:
       - $ref: "#/components/parameters/WorkspaceId"
@@ -3539,7 +3590,7 @@ components:
     Workspace:
       type: object
       additionalProperties: false
-      required: [id, name, description, iconUrl, memberPermissions, ownerId, createdAt]
+      required: [id, name, description, iconUrl, memberPermissions, automuteNewMembersSeconds, maxMentionsPerMessage, maxLinksPerMessage, ownerId, createdAt]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -3559,6 +3610,27 @@ components:
             A signed link to the icon, valid for a short while; null without an icon.
             Read the server again for a fresh one, do not store it.
         memberPermissions: { $ref: "#/components/schemas/WorkspacePermissions" }
+        automuteNewMembersSeconds:
+          type: integer
+          minimum: 0
+          maximum: 604800
+          description: |
+            A new member joining by invite gets a timeout of this many seconds;
+            0 turns it off. Until it ends the member may read, receive events and
+            sit in voice, but sending a message answers 403.
+        maxMentionsPerMessage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            How many accounts one message may mention; 0 removes the cap. A
+            message over it answers 400 and is not stored. Senders with
+            manageMessages are not capped.
+        maxLinksPerMessage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: How many http(s) links one message may carry; 0 removes the cap.
         ownerId: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
     WorkspacePermissions:
@@ -3619,6 +3691,12 @@ components:
           type: array
           items: { type: string, format: uuid }
           description: The roles granted to the member; @everyone is implied and not listed.
+        mutedUntil:
+          type: string
+          format: date-time
+          description: |
+            When a timeout on this member ends; absent when they may write. The
+            reason behind a mute is not public: it lives in the journal.
         presence:
           $ref: "#/components/schemas/PresenceStatus"
     WorkspaceBan:
@@ -3723,12 +3801,48 @@ components:
           description: The new description; an empty string clears it.
         memberPermissions:
           $ref: "#/components/schemas/WorkspacePermissionsUpdate"
+        automuteNewMembersSeconds:
+          type: integer
+          minimum: 0
+          maximum: 604800
+          description: A timeout given to every new member; 0 turns it off.
+        maxMentionsPerMessage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: How many accounts one message may mention; 0 removes the cap.
+        maxLinksPerMessage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: How many http(s) links one message may carry; 0 removes the cap.
     WorkspaceMemberRoleRequest:
       type: object
       additionalProperties: false
       required: [role]
       properties:
         role: { $ref: "#/components/schemas/WorkspaceRole" }
+    WorkspaceMemberMuteRequest:
+      type: object
+      additionalProperties: false
+      required: [durationSeconds]
+      description: |
+        A timeout on one member: they keep reading, receiving events and sitting in
+        voice, but sending a message answers 403 until it ends. Duration 0 lifts an
+        earlier mute. The caller needs manageMessages and must outrank the target;
+        nobody mutes themselves or the owner.
+      properties:
+        durationSeconds:
+          type: integer
+          minimum: 0
+          maximum: 2419200
+          description: How long the mute lasts, up to 28 days; 0 lifts it.
+        reason:
+          type: string
+          maxLength: 500
+          description: |
+            Why the member was muted. Stored with the mute and written to the
+            moderation journal; never published in an event.
     WorkspaceBanRequest:
       type: object
       additionalProperties: false
@@ -3745,7 +3859,7 @@ components:
     Channel:
       type: object
       additionalProperties: false
-      required: [id, workspaceId, kind, name, position, isReadOnly, canWrite, createdAt]
+      required: [id, workspaceId, kind, name, position, isReadOnly, canWrite, slowmodeSeconds, createdAt]
       properties:
         id: { type: string, format: uuid }
         workspaceId: { type: string, format: uuid }
@@ -3771,6 +3885,14 @@ components:
         canWrite:
           type: boolean
           description: Whether the caller may write in this channel right now.
+        slowmodeSeconds:
+          type: integer
+          minimum: 0
+          maximum: 21600
+          description: |
+            Between two messages of the same author at least this many seconds
+            must pass; 0 turns slowmode off. Moderators who manage the channel or
+            its messages, and the owner, are not held back.
         permissions:
           type: array
           items: { $ref: "#/components/schemas/Permission" }
@@ -3813,6 +3935,14 @@ components:
           description: An empty string removes the topic.
         isReadOnly:
           type: boolean
+        slowmodeSeconds:
+          type: integer
+          minimum: 0
+          maximum: 21600
+          description: |
+            How long one author waits between two messages here; 0 turns it off.
+            Needs manageChannels, like the other channel settings. Every member of
+            the server gets a `channel.changed` event and reads the channel again.
     ChannelOrderRequest:
       type: object
       additionalProperties: false

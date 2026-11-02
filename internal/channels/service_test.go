@@ -78,6 +78,9 @@ func (s *fakeStore) Update(_ context.Context, id uuid.UUID, u Update) (Channel, 
 	if u.Topic != nil {
 		channel.Topic = *u.Topic
 	}
+	if u.SlowmodeSeconds != nil {
+		channel.SlowmodeSeconds = *u.SlowmodeSeconds
+	}
 	s.channels[id] = channel
 	return channel, nil
 }

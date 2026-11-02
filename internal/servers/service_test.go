@@ -80,6 +80,8 @@ func (s *fakeStore) CreateWorkspace(_ context.Context, n NewWorkspace, everyone 
 	w := Workspace{
 		ID: uuid.New(), Name: n.Name, Description: n.Description,
 		OwnerID: ownerID, CreatedAt: time.Now(),
+		// The database starts every server with these caps.
+		MaxMentionsPerMessage: 5, MaxLinksPerMessage: 5,
 	}
 	s.workspaces[w.ID] = w
 	s.roles[w.ID] = []perms.Role{{ID: uuid.New(), Default: true, Permissions: everyone}}
@@ -112,6 +114,15 @@ func (s *fakeStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u Workspa
 	}
 	if u.Description != nil {
 		w.Description = *u.Description
+	}
+	if u.AutomuteNewMembersSeconds != nil {
+		w.AutomuteNewMembersSeconds = *u.AutomuteNewMembersSeconds
+	}
+	if u.MaxMentionsPerMessage != nil {
+		w.MaxMentionsPerMessage = *u.MaxMentionsPerMessage
+	}
+	if u.MaxLinksPerMessage != nil {
+		w.MaxLinksPerMessage = *u.MaxLinksPerMessage
 	}
 	s.workspaces[id] = w
 	return s.Workspace(ctx, id)
@@ -357,6 +368,29 @@ func (s *fakeStore) ListMembers(_ context.Context, workspaceID uuid.UUID) ([]Mem
 		out = append(out, s.presented(workspaceID, m))
 	}
 	return out, nil
+}
+
+func (s *fakeStore) SendRules(_ context.Context, workspaceID, userID uuid.UUID) (SendRules, error) {
+	member, ok := s.members[workspaceID][userID]
+	if !ok {
+		return SendRules{}, ErrNotMember
+	}
+	workspace := s.workspaces[workspaceID]
+	return SendRules{
+		MutedUntil:  member.MutedUntil,
+		MaxMentions: workspace.MaxMentionsPerMessage,
+		MaxLinks:    workspace.MaxLinksPerMessage,
+	}, nil
+}
+
+func (s *fakeStore) SetMute(_ context.Context, workspaceID, userID uuid.UUID, until *time.Time, _ string) error {
+	member, ok := s.members[workspaceID][userID]
+	if !ok {
+		return ErrNotMember
+	}
+	member.MutedUntil = until
+	s.members[workspaceID][userID] = member
+	return nil
 }
 
 func (s *fakeStore) CountOwners(_ context.Context, workspaceID uuid.UUID) (int, error) {

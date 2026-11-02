@@ -303,6 +303,14 @@ func FirstURL(text string) string {
 
 var linkPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
 
+// CountURLs is how many links a message carries. It uses the same pattern as
+// FirstURL, so a server's cap on links per message (SCRUM-163) counts exactly
+// the links the preview would look at, and the two can never disagree about
+// what a link is.
+func CountURLs(text string) int {
+	return len(linkPattern.FindAllString(text, -1))
+}
+
 // safeClient is the only client this package uses for untrusted addresses.
 func safeClient(allowPrivate bool) *http.Client {
 	dialer := &net.Dialer{

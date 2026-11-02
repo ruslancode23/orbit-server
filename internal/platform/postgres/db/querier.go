@@ -188,7 +188,14 @@ type Querier interface {
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (GetWorkspaceRow, error)
 	// Every handler asks this before it acts: no row means no access at all.
 	GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRoleParams) (WorkspaceRole, error)
+	// What a server imposes on one member's next message: whether the member is
+	// silenced and how many mentions and links one message may carry. One query,
+	// because every send in a server channel asks this.
+	GetWorkspaceSendRules(ctx context.Context, arg GetWorkspaceSendRulesParams) (GetWorkspaceSendRulesRow, error)
 	GrantRole(ctx context.Context, arg GrantRoleParams) error
+	// A resend of a message already stored is not a new message, so slowmode does
+	// not hold it back: the same send twice is one message.
+	HasClientMessage(ctx context.Context, arg HasClientMessageParams) (bool, error)
 	// One query twice, so profile visibility never walks a list of conversations:
 	// whether two accounts share any conversation, secret chats included — their
 	// participants already know each other.
@@ -204,6 +211,10 @@ type Querier interface {
 	IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error)
 	IsSecretChatDevice(ctx context.Context, arg IsSecretChatDeviceParams) (bool, error)
 	IsWorkspaceMemberBanned(ctx context.Context, arg IsWorkspaceMemberBannedParams) (bool, error)
+	// The slowmode clock (SCRUM-163): when this author last wrote in this channel.
+	// Deleted messages count too: dropping one must not hand the author a fresh
+	// budget. NULL means the author never wrote here.
+	LastChannelMessageAt(ctx context.Context, arg LastChannelMessageAtParams) (pgtype.Timestamptz, error)
 	// Deleting a secret chat deletes the pair: the channel cascades to bindings,
 	// envelopes and files. Only a device in the chat may do it.
 	LeaveSecretChat(ctx context.Context, arg LeaveSecretChatParams) (int64, error)
@@ -363,6 +374,10 @@ type Querier interface {
 	// Swaps the icon and reports the key it replaced, so the caller can drop the old
 	// object. The row lock keeps two uploads at once from losing track of one.
 	SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconParams) (SetWorkspaceIconRow, error)
+	// A timeout (SCRUM-163): muted_until NULL, or a moment already past, means the
+	// member may write. The reason is written with the mute and cleared with it, so
+	// an expired mute leaves nothing behind.
+	SetWorkspaceMemberMute(ctx context.Context, arg SetWorkspaceMemberMuteParams) (WorkspaceMember, error)
 	SetWorkspaceRole(ctx context.Context, arg SetWorkspaceRoleParams) (WorkspaceMember, error)
 	// Makes room just above @everyone for a new role.
 	ShiftRolesUp(ctx context.Context, workspaceID pgtype.UUID) error
@@ -381,6 +396,7 @@ type Querier interface {
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	// Only what the caller sent changes: a NULL name keeps the old one, and the
 	// description is touched only when set_description is true (NULL then clears it).
+	// The moderation settings (SCRUM-163) follow the same rule: NULL keeps the value.
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 	UpsertLinkPreview(ctx context.Context, arg UpsertLinkPreviewParams) (LinkPreview, error)
 	UpsertNotificationSetting(ctx context.Context, arg UpsertNotificationSettingParams) (NotificationSetting, error)

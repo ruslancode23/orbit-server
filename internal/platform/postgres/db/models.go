@@ -190,15 +190,16 @@ type BugReport struct {
 }
 
 type Channel struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Kind        ChannelKind        `json:"kind"`
-	Name        pgtype.Text        `json:"name"`
-	Topic       pgtype.Text        `json:"topic"`
-	Position    int32              `json:"position"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	DirectKey   pgtype.Text        `json:"direct_key"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Kind            ChannelKind        `json:"kind"`
+	Name            pgtype.Text        `json:"name"`
+	Topic           pgtype.Text        `json:"topic"`
+	Position        int32              `json:"position"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	DirectKey       pgtype.Text        `json:"direct_key"`
+	SlowmodeSeconds int32              `json:"slowmode_seconds"`
 }
 
 type ChannelMember struct {
@@ -417,13 +418,16 @@ type UserBlock struct {
 }
 
 type Workspace struct {
-	ID          pgtype.UUID        `json:"id"`
-	Name        string             `json:"name"`
-	OwnerID     pgtype.UUID        `json:"owner_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	Description pgtype.Text        `json:"description"`
-	IconKey     pgtype.Text        `json:"icon_key"`
+	ID                        pgtype.UUID        `json:"id"`
+	Name                      string             `json:"name"`
+	OwnerID                   pgtype.UUID        `json:"owner_id"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	Description               pgtype.Text        `json:"description"`
+	IconKey                   pgtype.Text        `json:"icon_key"`
+	AutomuteNewMembersSeconds int32              `json:"automute_new_members_seconds"`
+	MaxMentionsPerMessage     int32              `json:"max_mentions_per_message"`
+	MaxLinksPerMessage        int32              `json:"max_links_per_message"`
 }
 
 type WorkspaceMember struct {
@@ -431,4 +435,6 @@ type WorkspaceMember struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        WorkspaceRole      `json:"role"`
 	JoinedAt    pgtype.Timestamptz `json:"joined_at"`
+	MutedUntil  pgtype.Timestamptz `json:"muted_until"`
+	MuteReason  pgtype.Text        `json:"mute_reason"`
 }

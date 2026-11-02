@@ -41,6 +41,13 @@ const (
 	ActionMemberRoleGrant Action = "member.role.grant"
 	// ActionMemberRoleRevoke is a role taken away; the target is the account.
 	ActionMemberRoleRevoke Action = "member.role.revoke"
+	// ActionMemberMute is a timeout put on a member: they keep reading but may
+	// not write until it ends; the target is the account and metadata names the
+	// duration and the reason the moderator gave.
+	ActionMemberMute Action = "member.mute"
+	// ActionMemberUnmute is a timeout lifted before its end, either by a
+	// moderator or with duration zero; the target is the account.
+	ActionMemberUnmute Action = "member.unmute"
 	// ActionOwnershipTransfer is the server handed to another owner; the target
 	// is the new owner.
 	ActionOwnershipTransfer Action = "server.ownership_transfer"

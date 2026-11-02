@@ -14,6 +14,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/conversations"
 	"github.com/ruslancode23/orbit-server/internal/events"
 	"github.com/ruslancode23/orbit-server/internal/perms"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
 // fakeStore keeps messages in memory with the rules the database enforces:
@@ -59,6 +60,26 @@ func (s *fakeStore) Create(_ context.Context, m NewMessage) (Message, bool, erro
 	s.messages[message.ID] = &message
 	s.clientIDs[s.key(m)] = message.ID
 	return message, false, nil
+}
+
+// LastMessageAt is the slowmode clock of one author in one channel.
+func (s *fakeStore) LastMessageAt(_ context.Context, channelID, authorID uuid.UUID) (time.Time, error) {
+	var last time.Time
+	for _, m := range s.messages {
+		if m.ChannelID != channelID || m.Author == nil || m.Author.ID != authorID {
+			continue
+		}
+		if m.CreatedAt.After(last) {
+			last = m.CreatedAt
+		}
+	}
+	return last, nil
+}
+
+// HasClientMessage reports a resend: the key is what Create stores.
+func (s *fakeStore) HasClientMessage(_ context.Context, channelID, authorID uuid.UUID, clientMessageID string) (bool, error) {
+	_, ok := s.clientIDs[channelID.String()+"/"+authorID.String()+"/"+clientMessageID]
+	return ok, nil
 }
 
 func (s *fakeStore) CreateSystem(_ context.Context, m NewSystemMessage) (Message, error) {
@@ -251,22 +272,40 @@ func (c *fakeChannels) LookupMany(_ context.Context, ids []uuid.UUID) (map[uuid.
 }
 
 func (c *fakeChannels) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, error) {
+	channel, _, err := c.WriteAccess(ctx, channelID, callerID)
+	return channel, err
+}
+
+func (c *fakeChannels) WriteAccess(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, perms.Set, error) {
 	view, err := c.Get(ctx, channelID, callerID)
 	if err != nil {
-		return channels.Channel{}, err
+		return channels.Channel{}, 0, err
 	}
 	if !view.CanWrite {
-		return channels.Channel{}, channels.ErrForbidden
+		return channels.Channel{}, 0, channels.ErrForbidden
 	}
-	return view.Channel, nil
+	return view.Channel, view.Permissions, nil
 }
 
 type fakeMembers struct {
 	members map[uuid.UUID]map[uuid.UUID]bool
+	// rules are what each server imposes on writing; a server without an entry
+	// keeps the default the database starts with: five mentions and five links.
+	rules map[uuid.UUID]servers.SendRules
 }
 
 func (m *fakeMembers) IsMember(_ context.Context, workspaceID, userID uuid.UUID) (bool, error) {
 	return m.members[workspaceID][userID], nil
+}
+
+func (m *fakeMembers) SendRules(_ context.Context, workspaceID, userID uuid.UUID) (servers.SendRules, error) {
+	if !m.members[workspaceID][userID] {
+		return servers.SendRules{}, servers.ErrNotMember
+	}
+	if rules, ok := m.rules[workspaceID]; ok {
+		return rules, nil
+	}
+	return servers.SendRules{MaxMentions: 5, MaxLinks: 5}, nil
 }
 
 // recorder keeps what the service published, so a test can read it back.
@@ -365,9 +404,12 @@ func newWorld(t *testing.T) world {
 			w.direct:   {w.anna: true, w.bob: true},
 		},
 	}
-	members := &fakeMembers{members: map[uuid.UUID]map[uuid.UUID]bool{
-		w.workspace: {w.anna: true, w.bob: true, w.admin: true},
-	}}
+	members := &fakeMembers{
+		members: map[uuid.UUID]map[uuid.UUID]bool{
+			w.workspace: {w.anna: true, w.bob: true, w.admin: true},
+		},
+		rules: map[uuid.UUID]servers.SendRules{},
+	}
 	w.published = &recorder{}
 	w.svc = NewService(w.store, w.access, members, nil, w.published)
 	w.svc.SetConversations(&fakeConversations{

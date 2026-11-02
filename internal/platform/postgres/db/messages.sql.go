@@ -280,6 +280,51 @@ func (q *Queries) GetMessage(ctx context.Context, id pgtype.UUID) (Message, erro
 	return i, err
 }
 
+const hasClientMessage = `-- name: HasClientMessage :one
+SELECT EXISTS (
+    SELECT 1 FROM messages
+    WHERE channel_id = $1
+      AND author_id = $2
+      AND client_message_id = $3
+)
+`
+
+type HasClientMessageParams struct {
+	ChannelID       pgtype.UUID `json:"channel_id"`
+	AuthorID        pgtype.UUID `json:"author_id"`
+	ClientMessageID string      `json:"client_message_id"`
+}
+
+// A resend of a message already stored is not a new message, so slowmode does
+// not hold it back: the same send twice is one message.
+func (q *Queries) HasClientMessage(ctx context.Context, arg HasClientMessageParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasClientMessage, arg.ChannelID, arg.AuthorID, arg.ClientMessageID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const lastChannelMessageAt = `-- name: LastChannelMessageAt :one
+SELECT max(created_at)::timestamptz AS last_at
+FROM messages
+WHERE channel_id = $1 AND author_id = $2
+`
+
+type LastChannelMessageAtParams struct {
+	ChannelID pgtype.UUID `json:"channel_id"`
+	AuthorID  pgtype.UUID `json:"author_id"`
+}
+
+// The slowmode clock (SCRUM-163): when this author last wrote in this channel.
+// Deleted messages count too: dropping one must not hand the author a fresh
+// budget. NULL means the author never wrote here.
+func (q *Queries) LastChannelMessageAt(ctx context.Context, arg LastChannelMessageAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, lastChannelMessageAt, arg.ChannelID, arg.AuthorID)
+	var last_at pgtype.Timestamptz
+	err := row.Scan(&last_at)
+	return last_at, err
+}
+
 const listChannelMessages = `-- name: ListChannelMessages :many
 SELECT seq, id, channel_id, author_id, client_message_id, content, reply_to_id, created_at, edited_at, deleted_at, kind, system_type, system_target_id, system_name, search
 FROM messages

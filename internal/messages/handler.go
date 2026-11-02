@@ -3,7 +3,9 @@ package messages
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,17 +80,37 @@ func (h *Handler) SendMessage(ctx context.Context, req api.SendMessageRequestObj
 		AttachmentIDs:   value(req.Body.AttachmentIds),
 	})
 	var limited *RateLimitedError
+	var slow *SlowmodeError
+	var muted *MutedError
+	var mentions *TooManyMentionsError
+	var links *TooManyLinksError
 	switch {
 	case errors.As(err, &limited):
 		// 429 with Retry-After: the client backs off instead of retrying at once.
-		seconds := int((limited.RetryAfter + time.Second - 1) / time.Second)
-		if seconds < 1 {
-			seconds = 1
-		}
+		seconds := retryAfter(limited.RetryAfter)
 		return api.SendMessage429JSONResponse{TooManyRequestsJSONResponse: api.TooManyRequestsJSONResponse{
 			Body:    api.Error(errorBody(httpx.CodeTooManyRequests, "too many new conversations, try again later")),
 			Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
 		}}, nil
+	case errors.As(err, &slow):
+		// Slowmode is a frequency limit like the one above, so 429 with the wait.
+		seconds := retryAfter(slow.RetryAfter)
+		return api.SendMessage429JSONResponse{TooManyRequestsJSONResponse: api.TooManyRequestsJSONResponse{
+			Body: api.Error(errorBody(httpx.CodeTooManyRequests,
+				"this channel is in slowmode: wait "+waitFor(slow.RetryAfter))),
+			Headers: api.TooManyRequestsResponseHeaders{RetryAfter: &seconds},
+		}}, nil
+	case errors.As(err, &muted):
+		// A timeout is a ban on writing, not a rate limit: 403, with the moment
+		// it ends, so the client can say "until when" instead of "try later".
+		return api.SendMessage403JSONResponse(api.Error(forbidden(
+			"you are muted on this server until " + muted.Until.UTC().Format(time.RFC3339)))), nil
+	case errors.As(err, &mentions):
+		return api.SendMessage400JSONResponse{ErrorJSONResponse: badRequest(
+			fmt.Sprintf("a message may mention at most %d accounts on this server", mentions.Limit))}, nil
+	case errors.As(err, &links):
+		return api.SendMessage400JSONResponse{ErrorJSONResponse: badRequest(
+			fmt.Sprintf("a message may carry at most %d links on this server", links.Limit))}, nil
 	case errors.Is(err, ErrNotFound):
 		return api.SendMessage404JSONResponse(api.Error(notFound())), nil
 	case errors.Is(err, ErrAttachNotAllowed):
@@ -120,6 +142,8 @@ func (h *Handler) EditMessage(ctx context.Context, req api.EditMessageRequestObj
 
 	message, err := h.svc.Edit(ctx, req.MessageId, userID, req.Body.Content)
 	switch {
+	case errors.Is(err, ErrMuted):
+		return api.EditMessage403JSONResponse(api.Error(forbidden("you are muted on this server"))), nil
 	case errors.Is(err, ErrNotFound):
 		return api.EditMessage404JSONResponse(api.Error(notFound())), nil
 	case errors.Is(err, ErrForbidden):
@@ -280,6 +304,22 @@ func (h *Handler) SearchMessages(ctx context.Context, req api.SearchMessagesRequ
 	return api.SearchMessages200JSONResponse(out), nil
 }
 
+// retryAfter is a wait as Retry-After states it: whole seconds, at least one.
+func retryAfter(wait time.Duration) int {
+	seconds := int((wait + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
+// waitFor is a wait in words for the error message: "12 seconds".
+func waitFor(wait time.Duration) string {
+	return strconv.Itoa(retryAfter(wait)) + " seconds"
+}
+
+// APIMessage is the shape a message takes on the wire, for HTTP and for the
+// live stream alike: the client parses one thing.
 func APIMessage(m Message) api.Message {
 	kind := m.Kind
 	if kind == "" {

@@ -290,7 +290,7 @@ func (s *Service) afterGrant(ctx context.Context, workspaceID, targetID uuid.UUI
 	if err != nil {
 		return Member{}, err
 	}
-	s.announce(ctx, workspaceID, targetID, member.Role, true)
+	s.announce(ctx, workspaceID, targetID, member.Role, true, member.MutedUntil)
 	return member, nil
 }
 

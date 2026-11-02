@@ -212,15 +212,13 @@ func toAPIInvite(invite Invite) api.Invite {
 	return out
 }
 
+// toAPIMembership is the server as the accepting client sees it. The whole
+// workspace is filled in, not just its name: the moderation settings and what
+// members may do there decide which buttons the client draws.
 func toAPIMembership(m servers.Membership) api.WorkspaceMembership {
 	return api.WorkspaceMembership{
-		Workspace: api.Workspace{
-			Id:        m.Workspace.ID,
-			Name:      m.Workspace.Name,
-			OwnerId:   m.Workspace.OwnerID,
-			CreatedAt: m.Workspace.CreatedAt,
-		},
-		Role: api.WorkspaceRole(m.Role),
+		Workspace: servers.APIWorkspace(m.Workspace),
+		Role:      api.WorkspaceRole(m.Role),
 	}
 }
 
