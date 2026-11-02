@@ -24,6 +24,7 @@ import (
 	"github.com/ruslancode23/orbit-server/internal/profile"
 	"github.com/ruslancode23/orbit-server/internal/push"
 	"github.com/ruslancode23/orbit-server/internal/ratelimit"
+	"github.com/ruslancode23/orbit-server/internal/servers"
 )
 
 var (
@@ -46,6 +47,17 @@ var (
 	ErrInvalidSearch = errors.New("messages: the search query must be 1 to 200 characters")
 	// ErrSearchRateLimited means the account searched too often lately.
 	ErrSearchRateLimited = errors.New("messages: too many searches")
+	// ErrMuted means the account is in a timeout on this server: writing is
+	// forbidden for a while, which is a refusal and not a rate limit.
+	ErrMuted = errors.New("messages: you are muted on this server")
+	// ErrSlowmode means the channel's slowmode has not passed since the
+	// author's previous message.
+	ErrSlowmode = errors.New("messages: this channel is in slowmode")
+	// ErrTooManyMentions and ErrTooManyLinks mean one message names more
+	// accounts or carries more links than the server allows. The text is never
+	// cut down silently: the whole message is refused.
+	ErrTooManyMentions = errors.New("messages: too many mentions in one message")
+	ErrTooManyLinks    = errors.New("messages: too many links in one message")
 )
 
 // RateLimitedError carries how long the caller should wait; the handler puts it
@@ -56,6 +68,52 @@ type RateLimitedError struct {
 
 func (e *RateLimitedError) Error() string { return ErrRateLimited.Error() }
 func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }
+
+// MutedError carries when the timeout ends, so the answer can say how long the
+// refusal lasts. It unwraps to ErrMuted: 403, not 429.
+type MutedError struct {
+	Until time.Time
+}
+
+func (e *MutedError) Error() string {
+	return ErrMuted.Error() + " until " + e.Until.UTC().Format(time.RFC3339)
+}
+
+func (e *MutedError) Unwrap() error { return ErrMuted }
+
+// SlowmodeError carries how long the author must still wait; the handler puts
+// it in Retry-After, the same way the other limits of this package do.
+type SlowmodeError struct {
+	RetryAfter time.Duration
+}
+
+func (e *SlowmodeError) Error() string {
+	return fmt.Sprintf("%s: wait %s", ErrSlowmode.Error(), e.RetryAfter.Round(time.Second))
+}
+
+func (e *SlowmodeError) Unwrap() error { return ErrSlowmode }
+
+// TooManyMentionsError carries the cap the message went over.
+type TooManyMentionsError struct {
+	Limit int
+}
+
+func (e *TooManyMentionsError) Error() string {
+	return fmt.Sprintf("messages: this server allows at most %d mentions per message", e.Limit)
+}
+
+func (e *TooManyMentionsError) Unwrap() error { return ErrTooManyMentions }
+
+// TooManyLinksError carries the cap the message went over.
+type TooManyLinksError struct {
+	Limit int
+}
+
+func (e *TooManyLinksError) Error() string {
+	return fmt.Sprintf("messages: this server allows at most %d links per message", e.Limit)
+}
+
+func (e *TooManyLinksError) Unwrap() error { return ErrTooManyLinks }
 
 const (
 	maxContentLength = 4000
@@ -230,6 +288,12 @@ type Store interface {
 	// HasMessages reports whether the channel has any message yet: the first one
 	// in a new dialogue is rate-limited like opening the dialogue itself.
 	HasMessages(ctx context.Context, channelID uuid.UUID) (bool, error)
+	// LastMessageAt is when this author last wrote in this channel: the
+	// slowmode clock. The zero time means they never wrote here.
+	LastMessageAt(ctx context.Context, channelID, authorID uuid.UUID) (time.Time, error)
+	// HasClientMessage reports whether this very send is already stored: a
+	// resend is the same message and slowmode must not turn it into a 429.
+	HasClientMessage(ctx context.Context, channelID, authorID uuid.UUID, clientMessageID string) (bool, error)
 	// Search is full-text search over the given channels, newest first.
 	Search(ctx context.Context, q SearchQuery) ([]SearchHit, error)
 }
@@ -238,6 +302,9 @@ type Store interface {
 type ChannelAccess interface {
 	// MayWrite returns the channel when the caller may post in it.
 	MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, error)
+	// WriteAccess is MayWrite with the caller's permissions: slowmode exempts
+	// the moderators of the channel, so who writes matters as much as whether.
+	WriteAccess(ctx context.Context, channelID, callerID uuid.UUID) (channels.Channel, perms.Set, error)
 	// Get returns the channel when the caller may read it.
 	Get(ctx context.Context, channelID, callerID uuid.UUID) (channels.View, error)
 	// Visible is which channels of a server the caller may see, for search.
@@ -304,9 +371,14 @@ type Files interface {
 }
 
 // Members answers whether an account is on a server, so a mention of an
-// outsider is dropped instead of notifying someone who cannot read the channel.
+// outsider is dropped instead of notifying someone who cannot read the channel,
+// and what the server imposes on its writing: a timeout and the per-message
+// caps. internal/servers owns both.
 type Members interface {
 	IsMember(ctx context.Context, workspaceID, userID uuid.UUID) (bool, error)
+	// SendRules is the member's timeout and the server's caps on mentions and
+	// links; servers.ErrNotMember when the account is not on the server.
+	SendRules(ctx context.Context, workspaceID, userID uuid.UUID) (servers.SendRules, error)
 }
 
 // Privacy decides whom a reader blocked. internal/privacy owns the rules; this
@@ -782,7 +854,7 @@ func (s *Service) directBlocked(ctx context.Context, channel channels.Channel, c
 }
 
 func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (Message, bool, error) {
-	channel, err := s.channels.MayWrite(ctx, m.ChannelID, callerID)
+	channel, permissions, err := s.channels.WriteAccess(ctx, m.ChannelID, callerID)
 	if err != nil {
 		return Message{}, false, mapAccessError(err)
 	}
@@ -802,6 +874,22 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 		return Message{}, false, ErrNotFound
 	}
 
+	// What the server imposes on this account's writing: a timeout still
+	// running and the caps on mentions and links. A conversation has no server
+	// and so no such rules.
+	var rules servers.SendRules
+	if channel.WorkspaceID != uuid.Nil {
+		rules, err = s.sendRules(ctx, channel.WorkspaceID, callerID)
+		if err != nil {
+			return Message{}, false, err
+		}
+		// A timeout stops writing, not reading: 403 with the moment it ends,
+		// never 429 — the account is not writing too often, it may not write.
+		if rules.Muted(time.Now()) {
+			return Message{}, false, &MutedError{Until: *rules.MutedUntil}
+		}
+	}
+
 	content, err := cleanContent(m.Content)
 	// A message that carries files may have no text at all.
 	emptyWithFiles := errors.Is(err, ErrInvalidContent) && content == "" && len(m.AttachmentIDs) > 0
@@ -810,6 +898,31 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 	}
 	if m.ClientMessageID == "" {
 		return Message{}, false, ErrInvalidContent
+	}
+
+	// The caps are the server's answer to spam: mentions and links are what a
+	// flood is made of. manageMessages lifts them for a moderator, who posts
+	// announcements with many links and can already delete an abusive message;
+	// everyone else is held to the number the server set, and the text is
+	// refused rather than quietly cut down.
+	if !permissions.Has(perms.ManageMessages) {
+		if err := checkCaps(rules, m.Mentions, content); err != nil {
+			return Message{}, false, err
+		}
+	}
+
+	// Slowmode: the same author waits between two messages here. Managing the
+	// channel or its messages lifts it, as the task asks: a moderator cleans up
+	// a flood instead of adding to it. The owner holds every permission and so
+	// is never held back. A resend of a stored message is not a new one.
+	if channel.SlowmodeSeconds > 0 && permissions&(perms.ManageChannels|perms.ManageMessages) == 0 {
+		wait, err := s.slowmodeWait(ctx, channel, callerID, m.ClientMessageID)
+		if err != nil {
+			return Message{}, false, err
+		}
+		if wait > 0 {
+			return Message{}, false, &SlowmodeError{RetryAfter: wait}
+		}
 	}
 
 	// Files need their own right: checked before anything is stored, so a
@@ -892,6 +1005,74 @@ func (s *Service) Send(ctx context.Context, callerID uuid.UUID, m NewMessage) (M
 		s.startPreview(ctx, callerID, loaded, channel.WorkspaceID)
 	}
 	return loaded, existed, nil
+}
+
+// sendRules is what the server imposes on this account's writing. An account
+// that is not a member cannot write at all: the channel check should have
+// refused it already, so this is the same 404 as everywhere else.
+func (s *Service) sendRules(ctx context.Context, workspaceID, callerID uuid.UUID) (servers.SendRules, error) {
+	rules, err := s.members.SendRules(ctx, workspaceID, callerID)
+	switch {
+	case errors.Is(err, servers.ErrNotMember):
+		return servers.SendRules{}, ErrNotFound
+	case err != nil:
+		return servers.SendRules{}, fmt.Errorf("send rules: %w", err)
+	}
+	return rules, nil
+}
+
+// checkMute refuses a write while the account's timeout on the server runs.
+func (s *Service) checkMute(ctx context.Context, channel channels.Channel, callerID uuid.UUID) error {
+	if channel.WorkspaceID == uuid.Nil {
+		return nil
+	}
+	rules, err := s.sendRules(ctx, channel.WorkspaceID, callerID)
+	if err != nil {
+		return err
+	}
+	if rules.Muted(time.Now()) {
+		return &MutedError{Until: *rules.MutedUntil}
+	}
+	return nil
+}
+
+// checkCaps refuses a message that names more accounts or carries more links
+// than the server allows. Mentions are the ids the client sent — the same list
+// the notifications read, so nothing is parsed out of the text — and links come
+// from the pattern the preview fetch uses.
+func checkCaps(rules servers.SendRules, mentions []uuid.UUID, content string) error {
+	if rules.MaxMentions > 0 && len(uniqueIDs(mentions)) > rules.MaxMentions {
+		return &TooManyMentionsError{Limit: rules.MaxMentions}
+	}
+	if rules.MaxLinks > 0 && linkpreview.CountURLs(content) > rules.MaxLinks {
+		return &TooManyLinksError{Limit: rules.MaxLinks}
+	}
+	return nil
+}
+
+// slowmodeWait is how long the author still has to wait before writing here.
+// A resend of a message already stored is that same message: refusing it would
+// turn an idempotent retry after a network failure into a 429.
+func (s *Service) slowmodeWait(ctx context.Context, channel channels.Channel, callerID uuid.UUID, clientMessageID string) (time.Duration, error) {
+	duplicate, err := s.store.HasClientMessage(ctx, channel.ID, callerID, clientMessageID)
+	if err != nil {
+		return 0, fmt.Errorf("check resend: %w", err)
+	}
+	if duplicate {
+		return 0, nil
+	}
+	last, err := s.store.LastMessageAt(ctx, channel.ID, callerID)
+	if err != nil {
+		return 0, fmt.Errorf("last message: %w", err)
+	}
+	if last.IsZero() {
+		return 0, nil
+	}
+	wait := time.Duration(channel.SlowmodeSeconds)*time.Second - time.Since(last)
+	if wait <= 0 {
+		return 0, nil
+	}
+	return wait, nil
 }
 
 // SearchRateLimitedError says how long the account should wait before another
@@ -1130,6 +1311,13 @@ func (s *Service) Edit(ctx context.Context, messageID, callerID uuid.UUID, conte
 	// Editing is not moderation: only the author rewrites their own text.
 	if message.Author == nil || message.Author.ID != callerID {
 		return Message{}, ErrForbidden
+	}
+
+	// A timeout covers what the account says next, and an edit is new text in
+	// the same feed: without this check a muted member would rewrite a message
+	// instead of sending one.
+	if err := s.checkMute(ctx, channel, callerID); err != nil {
+		return Message{}, err
 	}
 
 	content, err = cleanContent(content)

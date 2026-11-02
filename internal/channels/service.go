@@ -40,11 +40,16 @@ var (
 	ErrInvalidTopic = errors.New("channels: topic must be at most 500 characters")
 	// ErrIncompleteOrder means the new order is not exactly the channels of the server.
 	ErrIncompleteOrder = errors.New("channels: the order must list every channel of the server once")
+	// ErrInvalidSlowmode means the slowmode is out of the range a channel allows.
+	ErrInvalidSlowmode = errors.New("channels: slowmode must be 0 to 21600 seconds")
 )
 
 const (
 	maxNameLength  = 64
 	maxTopicLength = 500
+	// maxSlowmodeSeconds is the slowest a channel may be: six hours. A longer
+	// wait stops being a rate limit and becomes a mute.
+	maxSlowmodeSeconds = 21600
 )
 
 type Channel struct {
@@ -59,7 +64,10 @@ type Channel struct {
 	IsReadOnly bool
 	// Overrides change what roles may do in this channel.
 	Overrides []perms.Override
-	CreatedAt time.Time
+	// SlowmodeSeconds is how long one author must wait between two messages
+	// here; 0 turns it off.
+	SlowmodeSeconds int
+	CreatedAt       time.Time
 }
 
 // canWrite reports whether these permissions let one post here. A voice
@@ -89,9 +97,10 @@ type NewChannel struct {
 
 // Update carries only what the caller asked to change.
 type Update struct {
-	Name       *string
-	Topic      *string
-	IsReadOnly *bool
+	Name            *string
+	Topic           *string
+	IsReadOnly      *bool
+	SlowmodeSeconds *int
 }
 
 type Store interface {
@@ -300,6 +309,13 @@ func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u U
 		}
 		u.Topic = &topic
 	}
+	if u.SlowmodeSeconds != nil {
+		seconds, err := cleanSlowmode(*u.SlowmodeSeconds)
+		if err != nil {
+			return View{}, err
+		}
+		u.SlowmodeSeconds = &seconds
+	}
 
 	// The name may be taken: write it first, so a refusal leaves nothing half done.
 	updated, err := s.store.Update(ctx, channelID, u)
@@ -323,7 +339,7 @@ func (s *Service) Update(ctx context.Context, channelID, callerID uuid.UUID, u U
 		Action:      audit.ActionChannelUpdate,
 		TargetType:  audit.TargetChannel,
 		TargetID:    audit.Target(updated.ID),
-		Metadata:    map[string]any{"name": updated.Name},
+		Metadata:    map[string]any{"name": updated.Name, "slowmodeSeconds": updated.SlowmodeSeconds},
 	})
 	s.announce(ctx, events.KindChannelChanged, updated.WorkspaceID, updated.ID)
 	return view(updated, inChannel(access, updated)), nil
@@ -433,14 +449,22 @@ func (s *Service) VoiceAccess(ctx context.Context, channelID, callerID uuid.UUID
 // MayWrite answers "can this account post in this channel" for other modules
 // (messages, the event gateway): one place for the rule.
 func (s *Service) MayWrite(ctx context.Context, channelID, callerID uuid.UUID) (Channel, error) {
+	channel, _, err := s.WriteAccess(ctx, channelID, callerID)
+	return channel, err
+}
+
+// WriteAccess is MayWrite with the caller's permissions: rules that depend on
+// who writes — slowmode lets moderators through — need both from one reading of
+// the roles, not two.
+func (s *Service) WriteAccess(ctx context.Context, channelID, callerID uuid.UUID) (Channel, perms.Set, error) {
 	channel, set, err := s.channelFor(ctx, channelID, callerID, perms.ViewChannel)
 	if err != nil {
-		return Channel{}, err
+		return Channel{}, 0, err
 	}
 	if !canWrite(channel, set) {
-		return Channel{}, ErrForbidden
+		return Channel{}, 0, ErrForbidden
 	}
-	return channel, nil
+	return channel, set, nil
 }
 
 // Permissions is what the caller may do in this channel, for other modules
@@ -585,6 +609,14 @@ func cleanName(name string) (string, error) {
 		return "", ErrInvalidName
 	}
 	return name, nil
+}
+
+// cleanSlowmode keeps the slowmode inside what the column stores.
+func cleanSlowmode(seconds int) (int, error) {
+	if seconds < 0 || seconds > maxSlowmodeSeconds {
+		return 0, ErrInvalidSlowmode
+	}
+	return seconds, nil
 }
 
 func cleanTopic(topic string) (string, error) {

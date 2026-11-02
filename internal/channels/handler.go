@@ -112,9 +112,10 @@ func (h *Handler) UpdateChannel(ctx context.Context, req api.UpdateChannelReques
 	}
 
 	view, err := h.svc.Update(ctx, req.ChannelId, userID, Update{
-		Name:       req.Body.Name,
-		Topic:      req.Body.Topic,
-		IsReadOnly: req.Body.IsReadOnly,
+		Name:            req.Body.Name,
+		Topic:           req.Body.Topic,
+		IsReadOnly:      req.Body.IsReadOnly,
+		SlowmodeSeconds: req.Body.SlowmodeSeconds,
 	})
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -123,7 +124,7 @@ func (h *Handler) UpdateChannel(ctx context.Context, req api.UpdateChannelReques
 		return api.UpdateChannel403JSONResponse(api.Error(forbidden("changing a channel needs the admin role"))), nil
 	case errors.Is(err, ErrNameTaken):
 		return api.UpdateChannel409JSONResponse(api.Error(conflict(err.Error()))), nil
-	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidTopic):
+	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidTopic), errors.Is(err, ErrInvalidSlowmode):
 		return api.UpdateChannel400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:
 		h.log.ErrorContext(ctx, "update channel", slog.Any("error", err))
@@ -182,14 +183,15 @@ func (h *Handler) ReorderChannels(ctx context.Context, req api.ReorderChannelsRe
 
 func toAPIChannel(v View) api.Channel {
 	channel := api.Channel{
-		Id:          v.Channel.ID,
-		WorkspaceId: v.Channel.WorkspaceID,
-		Kind:        api.ChannelKind(v.Channel.Kind),
-		Name:        v.Channel.Name,
-		Position:    v.Channel.Position,
-		IsReadOnly:  v.Channel.IsReadOnly,
-		CanWrite:    v.CanWrite,
-		CreatedAt:   v.Channel.CreatedAt,
+		Id:              v.Channel.ID,
+		WorkspaceId:     v.Channel.WorkspaceID,
+		Kind:            api.ChannelKind(v.Channel.Kind),
+		Name:            v.Channel.Name,
+		Position:        v.Channel.Position,
+		IsReadOnly:      v.Channel.IsReadOnly,
+		CanWrite:        v.CanWrite,
+		SlowmodeSeconds: v.Channel.SlowmodeSeconds,
+		CreatedAt:       v.Channel.CreatedAt,
 	}
 	if v.Channel.Topic != "" {
 		topic := v.Channel.Topic

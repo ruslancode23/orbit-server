@@ -23,7 +23,7 @@ VALUES (
         0
     )
 )
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key, slowmode_seconds
 `
 
 type CreateChannelParams struct {
@@ -52,6 +52,7 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DirectKey,
+		&i.SlowmodeSeconds,
 	)
 	return i, err
 }
@@ -66,7 +67,7 @@ func (q *Queries) DeleteChannel(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getChannel = `-- name: GetChannel :one
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels WHERE id = $1
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key, slowmode_seconds FROM channels WHERE id = $1
 `
 
 func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, error) {
@@ -82,12 +83,13 @@ func (q *Queries) GetChannel(ctx context.Context, id pgtype.UUID) (Channel, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DirectKey,
+		&i.SlowmodeSeconds,
 	)
 	return i, err
 }
 
 const getChannelsByIDs = `-- name: GetChannelsByIDs :many
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels WHERE id = ANY($1::uuid[])
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key, slowmode_seconds FROM channels WHERE id = ANY($1::uuid[])
 `
 
 // Names and servers of a page of channels, for the search results.
@@ -110,6 +112,7 @@ func (q *Queries) GetChannelsByIDs(ctx context.Context, ids []pgtype.UUID) ([]Ch
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DirectKey,
+			&i.SlowmodeSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -122,7 +125,7 @@ func (q *Queries) GetChannelsByIDs(ctx context.Context, ids []pgtype.UUID) ([]Ch
 }
 
 const listWorkspaceChannels = `-- name: ListWorkspaceChannels :many
-SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key FROM channels
+SELECT id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key, slowmode_seconds FROM channels
 WHERE workspace_id = $1
 ORDER BY position, created_at
 `
@@ -146,6 +149,7 @@ func (q *Queries) ListWorkspaceChannels(ctx context.Context, workspaceID pgtype.
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DirectKey,
+			&i.SlowmodeSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -182,16 +186,18 @@ const updateChannel = `-- name: UpdateChannel :one
 UPDATE channels
 SET name = coalesce($1, name),
     topic = CASE WHEN $2::boolean THEN NULL ELSE coalesce($3, topic) END,
+    slowmode_seconds = coalesce($4::integer, slowmode_seconds),
     updated_at = now()
-WHERE id = $4
-RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key
+WHERE id = $5
+RETURNING id, workspace_id, kind, name, topic, position, created_at, updated_at, direct_key, slowmode_seconds
 `
 
 type UpdateChannelParams struct {
-	Name       pgtype.Text `json:"name"`
-	ClearTopic bool        `json:"clear_topic"`
-	Topic      pgtype.Text `json:"topic"`
-	ID         pgtype.UUID `json:"id"`
+	Name            pgtype.Text `json:"name"`
+	ClearTopic      bool        `json:"clear_topic"`
+	Topic           pgtype.Text `json:"topic"`
+	SlowmodeSeconds pgtype.Int4 `json:"slowmode_seconds"`
+	ID              pgtype.UUID `json:"id"`
 }
 
 func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error) {
@@ -199,6 +205,7 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		arg.Name,
 		arg.ClearTopic,
 		arg.Topic,
+		arg.SlowmodeSeconds,
 		arg.ID,
 	)
 	var i Channel
@@ -212,6 +219,7 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DirectKey,
+		&i.SlowmodeSeconds,
 	)
 	return i, err
 }

@@ -25,6 +25,7 @@ ORDER BY position, created_at;
 UPDATE channels
 SET name = coalesce(sqlc.narg(name), name),
     topic = CASE WHEN sqlc.arg(clear_topic)::boolean THEN NULL ELSE coalesce(sqlc.narg(topic), topic) END,
+    slowmode_seconds = coalesce(sqlc.narg(slowmode_seconds)::integer, slowmode_seconds),
     updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;

@@ -152,6 +152,9 @@ func (s *PostgresStore) Update(ctx context.Context, id uuid.UUID, u Update) (Cha
 		params.ClearTopic = *u.Topic == ""
 		params.Topic = text(*u.Topic)
 	}
+	if u.SlowmodeSeconds != nil {
+		params.SlowmodeSeconds = pgtype.Int4{Int32: int32(*u.SlowmodeSeconds), Valid: true} //nolint:gosec // at most six hours
+	}
 
 	row, err := s.q.UpdateChannel(ctx, params)
 	if err != nil {
@@ -231,13 +234,14 @@ func (s *PostgresStore) SetOverride(ctx context.Context, channelID uuid.UUID, o 
 
 func toChannel(row db.Channel, overrides []override) Channel {
 	channel := Channel{
-		ID:          uuid.UUID(row.ID.Bytes),
-		WorkspaceID: uuid.UUID(row.WorkspaceID.Bytes),
-		Kind:        Kind(row.Kind),
-		Name:        row.Name.String,
-		Topic:       row.Topic.String,
-		Position:    int(row.Position),
-		CreatedAt:   row.CreatedAt.Time,
+		ID:              uuid.UUID(row.ID.Bytes),
+		WorkspaceID:     uuid.UUID(row.WorkspaceID.Bytes),
+		Kind:            Kind(row.Kind),
+		Name:            row.Name.String,
+		Topic:           row.Topic.String,
+		Position:        int(row.Position),
+		SlowmodeSeconds: int(row.SlowmodeSeconds),
+		CreatedAt:       row.CreatedAt.Time,
 	}
 	for _, o := range overrides {
 		deny := perms.Set(o.deny) //nolint:gosec // stored from a perms.Set

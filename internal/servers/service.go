@@ -67,11 +67,32 @@ var (
 	ErrInvalidDescription = errors.New("servers: description must be at most 500 characters")
 	// ErrNothingToUpdate means an update named no field.
 	ErrNothingToUpdate = errors.New("servers: nothing to update")
+	// ErrInvalidAutomute means the automute of new members is out of range.
+	ErrInvalidAutomute = errors.New("servers: automute must be 0 to 604800 seconds")
+	// ErrInvalidMentionLimit means the mention cap is out of range.
+	ErrInvalidMentionLimit = errors.New("servers: the mention limit must be 0 to 100")
+	// ErrInvalidLinkLimit means the link cap is out of range.
+	ErrInvalidLinkLimit = errors.New("servers: the link limit must be 0 to 100")
+	// ErrInvalidMuteDuration means the timeout is longer than a mute may last.
+	ErrInvalidMuteDuration = errors.New("servers: a mute lasts 0 to 2419200 seconds")
+	// ErrInvalidMuteReason means the reason is longer than a mute reason may be.
+	ErrInvalidMuteReason = errors.New("servers: the mute reason must be at most 500 characters")
 )
 
 const (
 	maxNameLength        = 64
 	maxDescriptionLength = 500
+	// maxAutomuteSeconds is the longest automute a server may give a newcomer:
+	// a week, after which they are simply a member.
+	maxAutomuteSeconds = 604800
+	// maxMentionsPerMessage and maxLinksPerMessage are the largest caps a server
+	// may set; 0 turns a cap off.
+	maxMentionsPerMessage = 100
+	maxLinksPerMessage    = 100
+	// maxMuteDuration is the longest timeout a moderator may set: 28 days, the
+	// same bound the API schema states in seconds.
+	maxMuteDuration = 28 * 24 * time.Hour
+	maxMuteReason   = 500
 )
 
 type Workspace struct {
@@ -86,9 +107,16 @@ type Workspace struct {
 	// MemberPermissions is what @everyone may do here, in the old API's flags.
 	MemberPermissions Permissions
 	// Everyone is what @everyone may do here.
-	Everyone  perms.Set
-	OwnerID   uuid.UUID
-	CreatedAt time.Time
+	Everyone perms.Set
+	// AutomuteNewMembersSeconds silences a new member for this long on joining;
+	// 0 turns it off.
+	AutomuteNewMembersSeconds int
+	// MaxMentionsPerMessage and MaxLinksPerMessage cap one message; 0 turns the
+	// cap off. They exist because mentions and links are what spam is made of.
+	MaxMentionsPerMessage int
+	MaxLinksPerMessage    int
+	OwnerID               uuid.UUID
+	CreatedAt             time.Time
 }
 
 // NewWorkspace is what creating a server takes. Permissions not sent keep
@@ -105,10 +133,15 @@ type WorkspaceUpdate struct {
 	Name        *string
 	Description *string
 	Permissions PermissionsUpdate
+	// The moderation settings (SCRUM-163); nil keeps the current value.
+	AutomuteNewMembersSeconds *int
+	MaxMentionsPerMessage     *int
+	MaxLinksPerMessage        *int
 }
 
 func (u WorkspaceUpdate) empty() bool {
-	return u.Name == nil && u.Description == nil && u.Permissions.empty()
+	return u.Name == nil && u.Description == nil && u.Permissions.empty() &&
+		u.AutomuteNewMembersSeconds == nil && u.MaxMentionsPerMessage == nil && u.MaxLinksPerMessage == nil
 }
 
 // Membership is a server plus the role of the account that asked for it.
@@ -140,6 +173,9 @@ type Member struct {
 	Permissions perms.Set
 	// RoleIDs are the roles granted to the member; @everyone is implied.
 	RoleIDs []uuid.UUID
+	// MutedUntil is when a timeout on the member ends; nil means they may write
+	// now. A past moment reads as no mute: nothing has to clean it up.
+	MutedUntil *time.Time
 }
 
 type Ban struct {
@@ -147,6 +183,24 @@ type Ban struct {
 	Reason    string
 	BannedBy  uuid.UUID // uuid.Nil when the account that banned is gone
 	CreatedAt time.Time
+}
+
+// SendRules is what a server imposes on one member's next message: whether the
+// member is in a timeout, and how many mentions and links one message may
+// carry. The caps are the server's, decided by whoever manages it; the timeout
+// belongs to the member. internal/messages asks for this once per send.
+type SendRules struct {
+	// MutedUntil is when the timeout ends; nil, or a moment already past, means
+	// the member may write.
+	MutedUntil *time.Time
+	// MaxMentions and MaxLinks are the caps; 0 means no cap.
+	MaxMentions int
+	MaxLinks    int
+}
+
+// Muted reports whether the timeout is still running at this moment.
+func (r SendRules) Muted(now time.Time) bool {
+	return r.MutedUntil != nil && now.Before(*r.MutedUntil)
 }
 
 // Store is the persistence this package needs.
@@ -192,6 +246,12 @@ type Store interface {
 	AddMember(ctx context.Context, workspaceID, userID uuid.UUID, role Role) (Member, error)
 	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID) error
 	ListMembers(ctx context.Context, workspaceID uuid.UUID) ([]Member, error)
+	// SendRules is the timeout and the per-message caps that apply to one
+	// member; ErrNotMember when the account is not on the server.
+	SendRules(ctx context.Context, workspaceID, userID uuid.UUID) (SendRules, error)
+	// SetMute writes a member's timeout; nil until lifts it and leaves no
+	// reason behind. ErrNotMember when there is no such membership.
+	SetMute(ctx context.Context, workspaceID, userID uuid.UUID, until *time.Time, reason string) error
 	CountOwners(ctx context.Context, workspaceID uuid.UUID) (int, error)
 	// Ban bans the account and removes its membership in one transaction.
 	Ban(ctx context.Context, workspaceID, userID, bannedBy uuid.UUID, reason string) (Ban, error)
@@ -307,17 +367,31 @@ func (s *Service) changed(ctx context.Context, workspace Workspace) {
 
 // announce tells every member that the membership of one account changed. The
 // account itself hears it too, even when it has just left: its rail must lose
-// the server.
-func (s *Service) announce(ctx context.Context, workspaceID, userID uuid.UUID, role Role, present bool) {
+// the server. The timeout travels with it, so a client shows «you are muted»
+// without asking again; the reason behind it never does.
+func (s *Service) announce(ctx context.Context, workspaceID, userID uuid.UUID, role Role, present bool, mutedUntil *time.Time) {
+	payload := map[string]any{
+		"userId":  userID,
+		"role":    string(role),
+		"present": present,
+		// Always present, null when the member may write: a client replaces the
+		// whole entry and must not keep a timeout that has just been lifted.
+		"mutedUntil": isoOrNil(mutedUntil),
+	}
 	s.Announce(ctx, events.Event{
 		Kind:        events.KindMemberChanged,
 		WorkspaceID: workspaceID,
-		Payload: map[string]any{
-			"userId":  userID,
-			"role":    string(role),
-			"present": present,
-		},
+		Payload:     payload,
 	}, userID)
+}
+
+// isoOrNil is a moment in the API's format, or nil for "no moment".
+func isoOrNil(moment *time.Time) *string {
+	if moment == nil {
+		return nil
+	}
+	formatted := moment.UTC().Format(time.RFC3339)
+	return &formatted
 }
 
 // AnnounceToStaff sends an event about a server to its admins and owner only:
@@ -534,6 +608,16 @@ func (s *Service) Update(ctx context.Context, workspaceID, callerID uuid.UUID, u
 		}
 		u.Description = &description
 	}
+	if u.AutomuteNewMembersSeconds != nil &&
+		(*u.AutomuteNewMembersSeconds < 0 || *u.AutomuteNewMembersSeconds > maxAutomuteSeconds) {
+		return Membership{}, ErrInvalidAutomute
+	}
+	if u.MaxMentionsPerMessage != nil && (*u.MaxMentionsPerMessage < 0 || *u.MaxMentionsPerMessage > maxMentionsPerMessage) {
+		return Membership{}, ErrInvalidMentionLimit
+	}
+	if u.MaxLinksPerMessage != nil && (*u.MaxLinksPerMessage < 0 || *u.MaxLinksPerMessage > maxLinksPerMessage) {
+		return Membership{}, ErrInvalidLinkLimit
+	}
 
 	if !u.Permissions.empty() {
 		current, err := s.store.Workspace(ctx, workspaceID)
@@ -608,7 +692,9 @@ func (s *Service) ListMembers(ctx context.Context, workspaceID, callerID uuid.UU
 }
 
 // Join adds an account as a member. Used by invites (task 2.7); a banned
-// account cannot come back through a link.
+// account cannot come back through a link. A server that automutes its
+// newcomers gives the account a timeout in the same breath, so it cannot slip a
+// message in between joining and being silenced.
 func (s *Service) Join(ctx context.Context, workspaceID, userID uuid.UUID) (Member, error) {
 	banned, err := s.store.IsBanned(ctx, workspaceID, userID)
 	if err != nil {
@@ -621,10 +707,23 @@ func (s *Service) Join(ctx context.Context, workspaceID, userID uuid.UUID) (Memb
 	if err != nil {
 		return Member{}, err
 	}
+	workspace, err := s.store.Workspace(ctx, workspaceID)
+	if err != nil {
+		return Member{}, err
+	}
+	if workspace.AutomuteNewMembersSeconds > 0 {
+		until := time.Now().Add(time.Duration(workspace.AutomuteNewMembersSeconds) * time.Second)
+		// The membership is written; a failed automute is a missing timeout, not
+		// a member left outside, so it is reported rather than rolled back.
+		if err := s.store.SetMute(ctx, workspaceID, userID, &until, ""); err != nil {
+			return Member{}, err
+		}
+		member.MutedUntil = &until
+	}
 	if err := s.withProfile(ctx, &member.User); err != nil {
 		return Member{}, err
 	}
-	s.announce(ctx, workspaceID, userID, RoleMember, true)
+	s.announce(ctx, workspaceID, userID, member.Role, true, member.MutedUntil)
 	return member, nil
 }
 
@@ -688,8 +787,12 @@ func (s *Service) SetRole(ctx context.Context, workspaceID, callerID, targetID u
 		// administrator role is created on demand and has no id to cite here.
 		Metadata: map[string]any{"role": string(role)},
 	})
-	s.announce(ctx, workspaceID, targetID, role, true)
-	return s.memberOf(ctx, workspaceID, targetID)
+	member, err := s.memberOf(ctx, workspaceID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
+	s.announce(ctx, workspaceID, targetID, role, true, member.MutedUntil)
+	return member, nil
 }
 
 // moveOwnership hands the owner over, or takes it from an owner when the
@@ -720,14 +823,22 @@ func (s *Service) moveOwnership(ctx context.Context, workspaceID, callerID, targ
 			TargetID:    audit.Target(targetID),
 			Metadata:    map[string]any{"role": string(RoleOwner)},
 		})
-		s.announce(ctx, workspaceID, targetID, role, true)
-		return s.memberOf(ctx, workspaceID, targetID)
+		member, err := s.memberOf(ctx, workspaceID, targetID)
+		if err != nil {
+			return Member{}, err
+		}
+		s.announce(ctx, workspaceID, targetID, role, true, member.MutedUntil)
+		return member, nil
 	}
 
 	if _, err := s.store.SetRole(ctx, workspaceID, targetID, RoleOwner); err != nil {
 		return Member{}, err
 	}
-	s.announce(ctx, workspaceID, targetID, RoleOwner, true)
+	member, err := s.memberOf(ctx, workspaceID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
+	s.announce(ctx, workspaceID, targetID, RoleOwner, true, member.MutedUntil)
 	if callerID != targetID {
 		if _, err := s.store.SetRole(ctx, workspaceID, callerID, RoleMember); err != nil {
 			return Member{}, err
@@ -735,7 +846,11 @@ func (s *Service) moveOwnership(ctx context.Context, workspaceID, callerID, targ
 		if err := s.store.GrantAdmin(ctx, workspaceID, callerID); err != nil {
 			return Member{}, err
 		}
-		s.announce(ctx, workspaceID, callerID, RoleAdmin, true)
+		previous, err := s.memberOf(ctx, workspaceID, callerID)
+		if err != nil {
+			return Member{}, err
+		}
+		s.announce(ctx, workspaceID, callerID, RoleAdmin, true, previous.MutedUntil)
 	}
 	s.record(ctx, callerID, audit.Entry{
 		WorkspaceID: workspaceID,
@@ -744,7 +859,7 @@ func (s *Service) moveOwnership(ctx context.Context, workspaceID, callerID, targ
 		TargetID:    audit.Target(targetID),
 		Metadata:    map[string]any{"previousOwnerId": callerID},
 	})
-	return s.memberOf(ctx, workspaceID, targetID)
+	return member, nil
 }
 
 // adminPosition is where the server's administrator role sits, or just above
@@ -824,7 +939,7 @@ func (s *Service) removeMember(ctx context.Context, workspaceID, userID uuid.UUI
 	if err := s.store.RemoveMember(ctx, workspaceID, userID); err != nil {
 		return err
 	}
-	s.announce(ctx, workspaceID, userID, "", false)
+	s.announce(ctx, workspaceID, userID, "", false, nil)
 	s.cutOff(workspaceID, userID)
 	return nil
 }
@@ -864,7 +979,7 @@ func (s *Service) Ban(ctx context.Context, workspaceID, callerID, targetID uuid.
 	if err := s.withProfile(ctx, &ban.User); err != nil {
 		return Ban{}, err
 	}
-	s.announce(ctx, workspaceID, targetID, "", false)
+	s.announce(ctx, workspaceID, targetID, "", false, nil)
 	s.AnnounceToStaff(ctx, events.Event{Kind: events.KindBansChanged, WorkspaceID: workspaceID})
 	s.cutOff(workspaceID, targetID)
 	return ban, nil
@@ -907,6 +1022,79 @@ func (s *Service) ListBans(ctx context.Context, workspaceID, callerID uuid.UUID)
 		bans[i].User = accounts[i].User
 	}
 	return bans, nil
+}
+
+// SendRules reports what this server imposes on one member's next message: the
+// timeout still running, if any, and the caps on mentions and links.
+// internal/messages asks before it stores anything.
+func (s *Service) SendRules(ctx context.Context, workspaceID, userID uuid.UUID) (SendRules, error) {
+	return s.store.SendRules(ctx, workspaceID, userID)
+}
+
+// Mute puts a timeout on a member, or lifts it when the duration is zero.
+// ManageMessages is the right over other people's writing, so it is the right
+// to stop it for a while; the actor must outrank the target, and nobody may
+// silence themselves — a mute one could lift at will is not a mute. Reading,
+// events and voice are untouched: only sending is refused while it runs. The
+// reason is stored with the mute and goes to the journal, never to an event.
+func (s *Service) Mute(ctx context.Context, workspaceID, callerID, targetID uuid.UUID, duration time.Duration, reason string) (Member, error) {
+	if duration < 0 || duration > maxMuteDuration {
+		return Member{}, ErrInvalidMuteDuration
+	}
+	reason = strings.TrimSpace(reason)
+	if len([]rune(reason)) > maxMuteReason {
+		return Member{}, ErrInvalidMuteReason
+	}
+	caller, err := s.Require(ctx, workspaceID, callerID, perms.ManageMessages)
+	if err != nil {
+		return Member{}, err
+	}
+	if callerID == targetID {
+		return Member{}, ErrForbidden
+	}
+	target, err := s.store.Access(ctx, workspaceID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
+	// Only downwards: an equal or higher role, and the owner, are out of reach.
+	if !caller.Outranks(target.Member) {
+		return Member{}, ErrForbidden
+	}
+
+	var until *time.Time
+	if duration > 0 {
+		moment := time.Now().Add(duration)
+		until = &moment
+	}
+	if err := s.store.SetMute(ctx, workspaceID, targetID, until, reason); err != nil {
+		return Member{}, err
+	}
+	if until == nil {
+		s.record(ctx, callerID, audit.Entry{
+			WorkspaceID: workspaceID,
+			Action:      audit.ActionMemberUnmute,
+			TargetType:  audit.TargetUser,
+			TargetID:    audit.Target(targetID),
+		})
+	} else {
+		metadata := map[string]any{"durationSeconds": int(duration / time.Second)}
+		if reason != "" {
+			metadata["reason"] = reason
+		}
+		s.record(ctx, callerID, audit.Entry{
+			WorkspaceID: workspaceID,
+			Action:      audit.ActionMemberMute,
+			TargetType:  audit.TargetUser,
+			TargetID:    audit.Target(targetID),
+			Metadata:    metadata,
+		})
+	}
+	member, err := s.memberOf(ctx, workspaceID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
+	s.announce(ctx, workspaceID, targetID, member.Role, true, member.MutedUntil)
+	return member, nil
 }
 
 // canActOn allows moderation only downwards: an admin may act on members, the

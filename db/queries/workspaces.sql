@@ -13,10 +13,14 @@ WHERE workspaces.id = $1;
 
 -- Only what the caller sent changes: a NULL name keeps the old one, and the
 -- description is touched only when set_description is true (NULL then clears it).
+-- The moderation settings (SCRUM-163) follow the same rule: NULL keeps the value.
 -- name: UpdateWorkspace :one
 UPDATE workspaces
 SET name                        = coalesce(sqlc.narg(name), name),
     description                 = CASE WHEN sqlc.arg(set_description)::bool THEN sqlc.narg(description) ELSE description END,
+    automute_new_members_seconds = coalesce(sqlc.narg(automute_new_members_seconds)::integer, automute_new_members_seconds),
+    max_mentions_per_message     = coalesce(sqlc.narg(max_mentions_per_message)::integer, max_mentions_per_message),
+    max_links_per_message        = coalesce(sqlc.narg(max_links_per_message)::integer, max_links_per_message),
     updated_at                  = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
@@ -78,6 +82,7 @@ DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2;
 SELECT workspace_members.user_id,
        workspace_members.role,
        workspace_members.joined_at,
+       workspace_members.muted_until,
        (everyone.permissions | coalesce((
            SELECT bit_or(held_roles.permissions)
            FROM server_member_roles held
@@ -90,6 +95,27 @@ FROM workspace_members
         ON everyone.workspace_id = workspace_members.workspace_id AND everyone.is_default
 WHERE workspace_members.workspace_id = $1
 ORDER BY workspace_members.joined_at;
+
+-- A timeout (SCRUM-163): muted_until NULL, or a moment already past, means the
+-- member may write. The reason is written with the mute and cleared with it, so
+-- an expired mute leaves nothing behind.
+-- name: SetWorkspaceMemberMute :one
+UPDATE workspace_members
+SET muted_until = sqlc.narg(muted_until),
+    mute_reason = sqlc.narg(mute_reason)
+WHERE workspace_id = sqlc.arg(workspace_id) AND user_id = sqlc.arg(user_id)
+RETURNING *;
+
+-- What a server imposes on one member's next message: whether the member is
+-- silenced and how many mentions and links one message may carry. One query,
+-- because every send in a server channel asks this.
+-- name: GetWorkspaceSendRules :one
+SELECT workspaces.max_mentions_per_message,
+       workspaces.max_links_per_message,
+       workspace_members.muted_until
+FROM workspaces
+    JOIN workspace_members ON workspace_members.workspace_id = workspaces.id
+WHERE workspaces.id = sqlc.arg(workspace_id) AND workspace_members.user_id = sqlc.arg(user_id);
 
 -- name: BanWorkspaceMember :one
 INSERT INTO bans (workspace_id, user_id, banned_by, reason)

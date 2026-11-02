@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -134,16 +135,20 @@ func (h *Handler) UpdateWorkspace(ctx context.Context, req api.UpdateWorkspaceRe
 	}
 
 	membership, err := h.svc.Update(ctx, req.WorkspaceId, userID, WorkspaceUpdate{
-		Name:        req.Body.Name,
-		Description: req.Body.Description,
-		Permissions: permissionsUpdate(req.Body.MemberPermissions),
+		Name:                      req.Body.Name,
+		Description:               req.Body.Description,
+		Permissions:               permissionsUpdate(req.Body.MemberPermissions),
+		AutomuteNewMembersSeconds: req.Body.AutomuteNewMembersSeconds,
+		MaxMentionsPerMessage:     req.Body.MaxMentionsPerMessage,
+		MaxLinksPerMessage:        req.Body.MaxLinksPerMessage,
 	})
 	switch {
 	case errors.Is(err, ErrNotMember):
 		return api.UpdateWorkspace404JSONResponse(notFound()), nil
 	case errors.Is(err, ErrForbidden):
 		return api.UpdateWorkspace403JSONResponse(forbidden("changing a server needs the admin role")), nil
-	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDescription), errors.Is(err, ErrNothingToUpdate):
+	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDescription), errors.Is(err, ErrNothingToUpdate),
+		errors.Is(err, ErrInvalidAutomute), errors.Is(err, ErrInvalidMentionLimit), errors.Is(err, ErrInvalidLinkLimit):
 		return api.UpdateWorkspace400JSONResponse{ErrorJSONResponse: badRequest(err.Error())}, nil
 	case err != nil:
 		h.log.ErrorContext(ctx, "update workspace", slog.Any("error", err))
@@ -393,6 +398,38 @@ func (h *Handler) RemoveWorkspaceMember(ctx context.Context, req api.RemoveWorks
 	return api.RemoveWorkspaceMember204Response{}, nil
 }
 
+// MuteWorkspaceMember puts a timeout on a member or lifts one. The rules —
+// manageMessages, rank, the owner, the self-mute ban — live in Service.Mute.
+func (h *Handler) MuteWorkspaceMember(ctx context.Context, req api.MuteWorkspaceMemberRequestObject) (api.MuteWorkspaceMemberResponseObject, error) {
+	userID, ok := caller(ctx)
+	if !ok {
+		return api.MuteWorkspaceMember401JSONResponse{ErrorJSONResponse: unauthorized()}, nil
+	}
+	if req.Body == nil {
+		return api.MuteWorkspaceMember400JSONResponse(badRequest("request body is required")), nil
+	}
+	reason := ""
+	if req.Body.Reason != nil {
+		reason = *req.Body.Reason
+	}
+
+	member, err := h.svc.Mute(ctx, req.WorkspaceId, userID, req.UserId,
+		time.Duration(req.Body.DurationSeconds)*time.Second, reason)
+	switch {
+	case errors.Is(err, ErrNotMember):
+		return api.MuteWorkspaceMember404JSONResponse(notFound()), nil
+	case errors.Is(err, ErrForbidden):
+		return api.MuteWorkspaceMember403JSONResponse(forbidden(
+			"a member is muted only by someone ranked above them, never by themselves and never the owner")), nil
+	case errors.Is(err, ErrInvalidMuteDuration), errors.Is(err, ErrInvalidMuteReason):
+		return api.MuteWorkspaceMember400JSONResponse(badRequest(err.Error())), nil
+	case err != nil:
+		h.log.ErrorContext(ctx, "mute workspace member", slog.Any("error", err))
+		return api.MuteWorkspaceMember500JSONResponse(internal("could not mute the member")), nil
+	}
+	return api.MuteWorkspaceMember200JSONResponse(toAPIMember(member)), nil
+}
+
 func (h *Handler) BanWorkspaceMember(ctx context.Context, req api.BanWorkspaceMemberRequestObject) (api.BanWorkspaceMemberResponseObject, error) {
 	userID, ok := caller(ctx)
 	if !ok {
@@ -482,8 +519,11 @@ func APIWorkspace(w Workspace) api.Workspace {
 			CanCreateChannels: w.MemberPermissions.CreateChannels,
 			CanAttachFiles:    w.MemberPermissions.AttachFiles,
 		},
-		OwnerId:   w.OwnerID,
-		CreatedAt: w.CreatedAt,
+		AutomuteNewMembersSeconds: w.AutomuteNewMembersSeconds,
+		MaxMentionsPerMessage:     w.MaxMentionsPerMessage,
+		MaxLinksPerMessage:        w.MaxLinksPerMessage,
+		OwnerId:                   w.OwnerID,
+		CreatedAt:                 w.CreatedAt,
 	}
 }
 
@@ -519,10 +559,11 @@ func toAPIMember(m Member) api.WorkspaceMember {
 		roleIDs = []uuid.UUID{}
 	}
 	return api.WorkspaceMember{
-		User:     profile.APIProfile(m.User),
-		Role:     api.WorkspaceRole(m.Role),
-		JoinedAt: m.JoinedAt,
-		RoleIds:  &roleIDs,
+		User:       profile.APIProfile(m.User),
+		Role:       api.WorkspaceRole(m.Role),
+		JoinedAt:   m.JoinedAt,
+		RoleIds:    &roleIDs,
+		MutedUntil: m.MutedUntil,
 	}
 }
 

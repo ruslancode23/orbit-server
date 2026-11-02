@@ -87,6 +87,24 @@ LIMIT $2;
 -- name: ChannelHasMessages :one
 SELECT EXISTS (SELECT 1 FROM messages WHERE channel_id = $1);
 
+-- The slowmode clock (SCRUM-163): when this author last wrote in this channel.
+-- Deleted messages count too: dropping one must not hand the author a fresh
+-- budget. NULL means the author never wrote here.
+-- name: LastChannelMessageAt :one
+SELECT max(created_at)::timestamptz AS last_at
+FROM messages
+WHERE channel_id = sqlc.arg(channel_id) AND author_id = sqlc.arg(author_id);
+
+-- A resend of a message already stored is not a new message, so slowmode does
+-- not hold it back: the same send twice is one message.
+-- name: HasClientMessage :one
+SELECT EXISTS (
+    SELECT 1 FROM messages
+    WHERE channel_id = sqlc.arg(channel_id)
+      AND author_id = sqlc.arg(author_id)
+      AND client_message_id = sqlc.arg(client_message_id)
+);
+
 -- name: SearchMessages :many
 -- Full-text search (FEAT-6). The caller has already narrowed channel_ids to
 -- what this account may read; this query only filters and orders the page.

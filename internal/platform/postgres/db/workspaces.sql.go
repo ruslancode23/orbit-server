@@ -15,7 +15,7 @@ const addWorkspaceMember = `-- name: AddWorkspaceMember :one
 INSERT INTO workspace_members (workspace_id, user_id, role)
 VALUES ($1, $2, $3)
 ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = excluded.role
-RETURNING workspace_id, user_id, role, joined_at
+RETURNING workspace_id, user_id, role, joined_at, muted_until, mute_reason
 `
 
 type AddWorkspaceMemberParams struct {
@@ -32,6 +32,8 @@ func (q *Queries) AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMember
 		&i.UserID,
 		&i.Role,
 		&i.JoinedAt,
+		&i.MutedUntil,
+		&i.MuteReason,
 	)
 	return i, err
 }
@@ -83,7 +85,7 @@ func (q *Queries) CountWorkspaceOwners(ctx context.Context, workspaceID pgtype.U
 const createWorkspace = `-- name: CreateWorkspace :one
 INSERT INTO workspaces (name, description, owner_id)
 VALUES ($1, $2, $3)
-RETURNING id, name, owner_id, created_at, updated_at, description, icon_key
+RETURNING id, name, owner_id, created_at, updated_at, description, icon_key, automute_new_members_seconds, max_mentions_per_message, max_links_per_message
 `
 
 type CreateWorkspaceParams struct {
@@ -103,6 +105,9 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.UpdatedAt,
 		&i.Description,
 		&i.IconKey,
+		&i.AutomuteNewMembersSeconds,
+		&i.MaxMentionsPerMessage,
+		&i.MaxLinksPerMessage,
 	)
 	return i, err
 }
@@ -117,7 +122,7 @@ func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
-SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, roles.permissions AS everyone_permissions
+SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, workspaces.automute_new_members_seconds, workspaces.max_mentions_per_message, workspaces.max_links_per_message, roles.permissions AS everyone_permissions
 FROM workspaces
     JOIN server_roles roles ON roles.workspace_id = workspaces.id AND roles.is_default
 WHERE workspaces.id = $1
@@ -141,6 +146,9 @@ func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (GetWorkspac
 		&i.Workspace.UpdatedAt,
 		&i.Workspace.Description,
 		&i.Workspace.IconKey,
+		&i.Workspace.AutomuteNewMembersSeconds,
+		&i.Workspace.MaxMentionsPerMessage,
+		&i.Workspace.MaxLinksPerMessage,
 		&i.EveryonePermissions,
 	)
 	return i, err
@@ -161,6 +169,36 @@ func (q *Queries) GetWorkspaceRole(ctx context.Context, arg GetWorkspaceRolePara
 	var role WorkspaceRole
 	err := row.Scan(&role)
 	return role, err
+}
+
+const getWorkspaceSendRules = `-- name: GetWorkspaceSendRules :one
+SELECT workspaces.max_mentions_per_message,
+       workspaces.max_links_per_message,
+       workspace_members.muted_until
+FROM workspaces
+    JOIN workspace_members ON workspace_members.workspace_id = workspaces.id
+WHERE workspaces.id = $1 AND workspace_members.user_id = $2
+`
+
+type GetWorkspaceSendRulesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+type GetWorkspaceSendRulesRow struct {
+	MaxMentionsPerMessage int32              `json:"max_mentions_per_message"`
+	MaxLinksPerMessage    int32              `json:"max_links_per_message"`
+	MutedUntil            pgtype.Timestamptz `json:"muted_until"`
+}
+
+// What a server imposes on one member's next message: whether the member is
+// silenced and how many mentions and links one message may carry. One query,
+// because every send in a server channel asks this.
+func (q *Queries) GetWorkspaceSendRules(ctx context.Context, arg GetWorkspaceSendRulesParams) (GetWorkspaceSendRulesRow, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceSendRules, arg.WorkspaceID, arg.UserID)
+	var i GetWorkspaceSendRulesRow
+	err := row.Scan(&i.MaxMentionsPerMessage, &i.MaxLinksPerMessage, &i.MutedUntil)
+	return i, err
 }
 
 const isWorkspaceMemberBanned = `-- name: IsWorkspaceMemberBanned :one
@@ -232,7 +270,7 @@ func (q *Queries) ListMutualWorkspaces(ctx context.Context, arg ListMutualWorksp
 }
 
 const listUserWorkspaces = `-- name: ListUserWorkspaces :many
-SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key,
+SELECT workspaces.id, workspaces.name, workspaces.owner_id, workspaces.created_at, workspaces.updated_at, workspaces.description, workspaces.icon_key, workspaces.automute_new_members_seconds, workspaces.max_mentions_per_message, workspaces.max_links_per_message,
        workspace_members.role,
        roles.permissions AS everyone_permissions,
        (roles.permissions | coalesce((
@@ -274,6 +312,9 @@ func (q *Queries) ListUserWorkspaces(ctx context.Context, userID pgtype.UUID) ([
 			&i.Workspace.UpdatedAt,
 			&i.Workspace.Description,
 			&i.Workspace.IconKey,
+			&i.Workspace.AutomuteNewMembersSeconds,
+			&i.Workspace.MaxMentionsPerMessage,
+			&i.Workspace.MaxLinksPerMessage,
 			&i.Role,
 			&i.EveryonePermissions,
 			&i.BasePermissions,
@@ -332,6 +373,7 @@ const listWorkspaceMembers = `-- name: ListWorkspaceMembers :many
 SELECT workspace_members.user_id,
        workspace_members.role,
        workspace_members.joined_at,
+       workspace_members.muted_until,
        (everyone.permissions | coalesce((
            SELECT bit_or(held_roles.permissions)
            FROM server_member_roles held
@@ -350,6 +392,7 @@ type ListWorkspaceMembersRow struct {
 	UserID          pgtype.UUID        `json:"user_id"`
 	Role            WorkspaceRole      `json:"role"`
 	JoinedAt        pgtype.Timestamptz `json:"joined_at"`
+	MutedUntil      pgtype.Timestamptz `json:"muted_until"`
 	BasePermissions int64              `json:"base_permissions"`
 }
 
@@ -370,6 +413,7 @@ func (q *Queries) ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.U
 			&i.UserID,
 			&i.Role,
 			&i.JoinedAt,
+			&i.MutedUntil,
 			&i.BasePermissions,
 		); err != nil {
 			return nil, err
@@ -429,8 +473,45 @@ func (q *Queries) SetWorkspaceIcon(ctx context.Context, arg SetWorkspaceIconPara
 	return i, err
 }
 
+const setWorkspaceMemberMute = `-- name: SetWorkspaceMemberMute :one
+UPDATE workspace_members
+SET muted_until = $1,
+    mute_reason = $2
+WHERE workspace_id = $3 AND user_id = $4
+RETURNING workspace_id, user_id, role, joined_at, muted_until, mute_reason
+`
+
+type SetWorkspaceMemberMuteParams struct {
+	MutedUntil  pgtype.Timestamptz `json:"muted_until"`
+	MuteReason  pgtype.Text        `json:"mute_reason"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+}
+
+// A timeout (SCRUM-163): muted_until NULL, or a moment already past, means the
+// member may write. The reason is written with the mute and cleared with it, so
+// an expired mute leaves nothing behind.
+func (q *Queries) SetWorkspaceMemberMute(ctx context.Context, arg SetWorkspaceMemberMuteParams) (WorkspaceMember, error) {
+	row := q.db.QueryRow(ctx, setWorkspaceMemberMute,
+		arg.MutedUntil,
+		arg.MuteReason,
+		arg.WorkspaceID,
+		arg.UserID,
+	)
+	var i WorkspaceMember
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.Role,
+		&i.JoinedAt,
+		&i.MutedUntil,
+		&i.MuteReason,
+	)
+	return i, err
+}
+
 const setWorkspaceRole = `-- name: SetWorkspaceRole :one
-UPDATE workspace_members SET role = $3 WHERE workspace_id = $1 AND user_id = $2 RETURNING workspace_id, user_id, role, joined_at
+UPDATE workspace_members SET role = $3 WHERE workspace_id = $1 AND user_id = $2 RETURNING workspace_id, user_id, role, joined_at, muted_until, mute_reason
 `
 
 type SetWorkspaceRoleParams struct {
@@ -447,6 +528,8 @@ func (q *Queries) SetWorkspaceRole(ctx context.Context, arg SetWorkspaceRolePara
 		&i.UserID,
 		&i.Role,
 		&i.JoinedAt,
+		&i.MutedUntil,
+		&i.MuteReason,
 	)
 	return i, err
 }
@@ -472,25 +555,35 @@ const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspaces
 SET name                        = coalesce($1, name),
     description                 = CASE WHEN $2::bool THEN $3 ELSE description END,
+    automute_new_members_seconds = coalesce($4::integer, automute_new_members_seconds),
+    max_mentions_per_message     = coalesce($5::integer, max_mentions_per_message),
+    max_links_per_message        = coalesce($6::integer, max_links_per_message),
     updated_at                  = now()
-WHERE id = $4
-RETURNING id, name, owner_id, created_at, updated_at, description, icon_key
+WHERE id = $7
+RETURNING id, name, owner_id, created_at, updated_at, description, icon_key, automute_new_members_seconds, max_mentions_per_message, max_links_per_message
 `
 
 type UpdateWorkspaceParams struct {
-	Name           pgtype.Text `json:"name"`
-	SetDescription bool        `json:"set_description"`
-	Description    pgtype.Text `json:"description"`
-	ID             pgtype.UUID `json:"id"`
+	Name                      pgtype.Text `json:"name"`
+	SetDescription            bool        `json:"set_description"`
+	Description               pgtype.Text `json:"description"`
+	AutomuteNewMembersSeconds pgtype.Int4 `json:"automute_new_members_seconds"`
+	MaxMentionsPerMessage     pgtype.Int4 `json:"max_mentions_per_message"`
+	MaxLinksPerMessage        pgtype.Int4 `json:"max_links_per_message"`
+	ID                        pgtype.UUID `json:"id"`
 }
 
 // Only what the caller sent changes: a NULL name keeps the old one, and the
 // description is touched only when set_description is true (NULL then clears it).
+// The moderation settings (SCRUM-163) follow the same rule: NULL keeps the value.
 func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error) {
 	row := q.db.QueryRow(ctx, updateWorkspace,
 		arg.Name,
 		arg.SetDescription,
 		arg.Description,
+		arg.AutomuteNewMembersSeconds,
+		arg.MaxMentionsPerMessage,
+		arg.MaxLinksPerMessage,
 		arg.ID,
 	)
 	var i Workspace
@@ -502,6 +595,9 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		&i.UpdatedAt,
 		&i.Description,
 		&i.IconKey,
+		&i.AutomuteNewMembersSeconds,
+		&i.MaxMentionsPerMessage,
+		&i.MaxLinksPerMessage,
 	)
 	return i, err
 }

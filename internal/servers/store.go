@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -91,6 +92,15 @@ func (s *PostgresStore) UpdateWorkspace(ctx context.Context, id uuid.UUID, u Wor
 	if u.Description != nil {
 		params.SetDescription = true
 		params.Description = text(*u.Description)
+	}
+	if u.AutomuteNewMembersSeconds != nil {
+		params.AutomuteNewMembersSeconds = pgtype.Int4{Int32: int32(*u.AutomuteNewMembersSeconds), Valid: true} //nolint:gosec // at most a week
+	}
+	if u.MaxMentionsPerMessage != nil {
+		params.MaxMentionsPerMessage = pgtype.Int4{Int32: int32(*u.MaxMentionsPerMessage), Valid: true} //nolint:gosec // at most 100
+	}
+	if u.MaxLinksPerMessage != nil {
+		params.MaxLinksPerMessage = pgtype.Int4{Int32: int32(*u.MaxLinksPerMessage), Valid: true} //nolint:gosec // at most 100
 	}
 	if _, err := s.q.UpdateWorkspace(ctx, params); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -481,9 +491,49 @@ func (s *PostgresStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) 
 			JoinedAt:    row.JoinedAt.Time,
 			Permissions: base,
 			RoleIDs:     roleIDs[uuid.UUID(row.UserID.Bytes)],
+			MutedUntil:  moment(row.MutedUntil),
 		})
 	}
 	return out, nil
+}
+
+// SendRules is the timeout and the per-message caps for one member: one
+// indexed join, asked on every send in a server channel.
+func (s *PostgresStore) SendRules(ctx context.Context, workspaceID, userID uuid.UUID) (SendRules, error) {
+	row, err := s.q.GetWorkspaceSendRules(ctx, db.GetWorkspaceSendRulesParams{
+		WorkspaceID: pgUUID(workspaceID),
+		UserID:      pgUUID(userID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SendRules{}, ErrNotMember
+		}
+		return SendRules{}, fmt.Errorf("get send rules: %w", err)
+	}
+	return SendRules{
+		MutedUntil:  moment(row.MutedUntil),
+		MaxMentions: int(row.MaxMentionsPerMessage),
+		MaxLinks:    int(row.MaxLinksPerMessage),
+	}, nil
+}
+
+// SetMute writes the timeout and its reason together; a nil until clears both.
+func (s *PostgresStore) SetMute(ctx context.Context, workspaceID, userID uuid.UUID, until *time.Time, reason string) error {
+	params := db.SetWorkspaceMemberMuteParams{
+		WorkspaceID: pgUUID(workspaceID),
+		UserID:      pgUUID(userID),
+	}
+	if until != nil {
+		params.MutedUntil = pgtype.Timestamptz{Time: *until, Valid: true}
+		params.MuteReason = text(reason)
+	}
+	if _, err := s.q.SetWorkspaceMemberMute(ctx, params); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotMember
+		}
+		return fmt.Errorf("set member mute: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) CountOwners(ctx context.Context, workspaceID uuid.UUID) (int, error) {
@@ -597,14 +647,17 @@ const (
 
 func toWorkspace(row db.Workspace, everyone int64) Workspace {
 	return Workspace{
-		ID:                uuid.UUID(row.ID.Bytes),
-		Name:              row.Name,
-		Description:       row.Description.String,
-		IconKey:           row.IconKey.String,
-		MemberPermissions: permissionsOf(perms.Set(everyone)), //nolint:gosec // stored from a perms.Set
-		Everyone:          perms.Set(everyone),                //nolint:gosec // stored from a perms.Set
-		OwnerID:           uuid.UUID(row.OwnerID.Bytes),
-		CreatedAt:         row.CreatedAt.Time,
+		ID:                        uuid.UUID(row.ID.Bytes),
+		Name:                      row.Name,
+		Description:               row.Description.String,
+		IconKey:                   row.IconKey.String,
+		MemberPermissions:         permissionsOf(perms.Set(everyone)), //nolint:gosec // stored from a perms.Set
+		Everyone:                  perms.Set(everyone),                //nolint:gosec // stored from a perms.Set
+		AutomuteNewMembersSeconds: int(row.AutomuteNewMembersSeconds),
+		MaxMentionsPerMessage:     int(row.MaxMentionsPerMessage),
+		MaxLinksPerMessage:        int(row.MaxLinksPerMessage),
+		OwnerID:                   uuid.UUID(row.OwnerID.Bytes),
+		CreatedAt:                 row.CreatedAt.Time,
 	}
 }
 
@@ -632,6 +685,15 @@ func toPermsRole(row db.ServerRole) perms.Role {
 
 func pgUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+// moment is a nullable timestamp as a pointer: nil when the column is NULL.
+func moment(value pgtype.Timestamptz) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	moment := value.Time
+	return &moment
 }
 
 func text(s string) pgtype.Text {

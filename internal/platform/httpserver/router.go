@@ -334,6 +334,10 @@ func (s *server) RemoveWorkspaceMember(ctx context.Context, req api.RemoveWorksp
 	return s.workspaces.RemoveWorkspaceMember(ctx, req)
 }
 
+func (s *server) MuteWorkspaceMember(ctx context.Context, req api.MuteWorkspaceMemberRequestObject) (api.MuteWorkspaceMemberResponseObject, error) {
+	return s.workspaces.MuteWorkspaceMember(ctx, req)
+}
+
 func (s *server) BanWorkspaceMember(ctx context.Context, req api.BanWorkspaceMemberRequestObject) (api.BanWorkspaceMemberResponseObject, error) {
 	return s.workspaces.BanWorkspaceMember(ctx, req)
 }
